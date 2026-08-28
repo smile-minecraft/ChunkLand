@@ -1,0 +1,3 @@
+m0:
+  message:
+    smoke: "<hover:show_text:'<green>hover: value={value}</green>'><click:run_command:'/chunkland m0message'>Java click: {value}</click></hover>"

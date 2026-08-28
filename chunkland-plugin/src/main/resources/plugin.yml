@@ -1,0 +1,16 @@
+name: ChunkLand
+version: ${version}
+main: com.smile.chunkland.ChunkLandPlugin
+api-version: '26.1.2'
+folia-supported: true
+depend: [AceLib]
+commands:
+  chunkland:
+    description: ChunkLand debug commands (M0 message smoke probe)
+    permission: chunkland.debug.m0message
+    usage: /chunkland m0message [locale]
+permissions:
+  chunkland.admin.serverland:
+    default: op
+  chunkland.debug.m0message:
+    default: op

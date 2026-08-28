@@ -1,0 +1,3 @@
+m0:
+  message:
+    smoke: "<hover:show_text:'<green>懸停：數值={value}</green>'><click:run_command:'/chunkland m0message'>點擊：{value}</click></hover>"

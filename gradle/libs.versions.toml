@@ -1,0 +1,15 @@
+[versions]
+java = "25"
+project = "0.1.0"
+junit = "5.12.2"
+junit-platform = "1.12.2"
+sqlite = "3.50.3.0"
+paper = "26.1.2.build.74-stable"
+snakeyaml = "2.3"
+
+[libraries]
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite" }
+paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
+snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
