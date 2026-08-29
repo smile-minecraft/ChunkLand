@@ -47,7 +47,7 @@ trap 'rm -rf "$TMP"' EXIT
 # 缺 jar
 verify_acelib_jar "$TMP/missing.jar" "" ; check "缺 jar 應失敗" 1 $?
 
-# 錯版本 jar（plugin.yml 版本不是 1.1.2）
+# 錯版本 jar（plugin.yml 版本不是 1.2.0）
 mkdir -p "$TMP/badver/com/smile/acelib"
 printf 'x' > "$TMP/badver/com/smile/acelib/AceLibVersion.class"
 printf 'version: 9.9.9\n' > "$TMP/badver/plugin.yml"

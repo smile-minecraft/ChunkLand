@@ -10,6 +10,7 @@ import com.smile.acelib.platform.Platform;
  * reachable "not usable" states are null or uninitialized; {@link #readyWithBedrock()} returns
  * a ready API whose bedrock service is present.
  */
+@SuppressWarnings("deprecation")
 final class StubAceLibApi {
 
     private StubAceLibApi() {
@@ -20,7 +21,7 @@ final class StubAceLibApi {
     }
 
     static AceLibApi readyWithBedrock() {
-        return AceLibApi.ready("1.1.2", Platform.UNKNOWN, () -> true, () -> {
+        return AceLibApi.ready("1.2.0", Platform.UNKNOWN, () -> true, () -> {
         });
     }
 }

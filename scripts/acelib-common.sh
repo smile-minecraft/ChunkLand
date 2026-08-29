@@ -6,17 +6,17 @@
 #
 # 鎖定依據（可查證）：
 #   - 倉庫：smile-minecraft/AceLib（GitHub）
-#   - 標籤：v1.1.2（lightweight tag）
-#   - commit：2e2d7d19db3e8e71ac0a9eef0f1c2ff52a88cd41（git ls-remote 查證，tag 直接指向）
-#   - 產物：AceLib-1.1.2.jar（plugin JAR，供 Folia plugins/ 使用）
-#   - checksum：15c63f90ab04d97364d164bca2902e7bc2d3f573c527cd3ab87f80bb7a4e152e
+#   - 標籤：v1.2.0（annotated tag）
+#   - commit：a2ceb90b18648623b8146ba1e68d9f3f6ec41aeb（annotated tag v1.2.0 指向的 commit）
+#   - 產物：AceLib-1.2.0.jar（plugin JAR，供 Folia plugins/ 使用）
+#   - checksum：本機自建產物 SHA-256（見 ACE_EXPECTED_SHA256_DEFAULT，建置後核對）
 #     （本環境兩次 clean build 位元組一致；工具鏈不同時請以 ACE_EXPECTED_SHA256 覆寫）
 
 ACE_REPO_URL_DEFAULT="https://github.com/smile-minecraft/AceLib.git"
-ACE_TAG="v1.1.2"
-ACE_COMMIT="2e2d7d19db3e8e71ac0a9eef0f1c2ff52a88cd41"
-ACE_VERSION="1.1.2"
-ACE_EXPECTED_SHA256_DEFAULT="15c63f90ab04d97364d164bca2902e7bc2d3f573c527cd3ab87f80bb7a4e152e"
+ACE_TAG="v1.2.0"
+ACE_COMMIT="a2ceb90b18648623b8146ba1e68d9f3f6ec41aeb"
+ACE_VERSION="1.2.0"
+ACE_EXPECTED_SHA256_DEFAULT="da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278"
 
 ACE_REPO_URL="${ACE_REPO_URL:-$ACE_REPO_URL_DEFAULT}"
 ACE_EXPECTED_SHA256="${ACE_EXPECTED_SHA256:-$ACE_EXPECTED_SHA256_DEFAULT}"
@@ -32,14 +32,14 @@ verify_acelib_jar() {
     return 1
   fi
   local ver yml
-  # 固定版本：本任務鎖定 AceLib v1.1.2。比較直接使用字面量，避免 sourced 檔案函式在
+  # 固定版本：本任務鎖定 AceLib v1.2.0。比較直接使用字面量，避免 sourced 檔案函式在
   # set -u 下看不到同檔案全域變數的 bash 怪異行為（local 指派亦不受影響）。
   # 先將 plugin.yml 內容讀入變數，再經 sed/tr/head 處理，避免 pipefail 下 unzip 因
   # head 提前關閉管線而收到 SIGPIPE（141）導致版本擷取失敗。
   yml="$(unzip -p "$jar" plugin.yml 2>/dev/null)"
   ver="$(printf '%s\n' "$yml" | sed -n 's/^version:[[:space:]]*//p' | tr -d "'\"" | head -1)"
-  if [[ "$ver" != "1.1.2" ]]; then
-    echo "verify: plugin.yml 版本不符 — 預期 1.1.2，實際 '${ver:-<none>}'" >&2
+  if [[ "$ver" != "1.2.0" ]]; then
+    echo "verify: plugin.yml 版本不符 — 預期 1.2.0，實際 '${ver:-<none>}'" >&2
     return 1
   fi
   local listing

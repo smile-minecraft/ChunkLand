@@ -3,15 +3,15 @@
 #
 # 來源與版本皆寫死，不使用 mavenLocal() / SNAPSHOT / latest / 浮動下載：
 #   - 倉庫：smile-minecraft/AceLib（GitHub）
-#   - 標籤：v1.1.2（lightweight tag → 固定 commit，見 acelib-common.sh）
-#   - 產物：AceLib-1.1.2.jar（plugin JAR，供 Folia plugins/ 使用）
+#   - 標籤：v1.2.0（annotated tag → 固定 commit，見 acelib-common.sh）
+#   - 產物：AceLib-1.2.0.jar（plugin JAR，供 Folia plugins/ 使用）
 #   - 完整性：產物 SHA-256 與 ACE_EXPECTED_SHA256 比對（預設為已驗證建置值）
 #
 # 失敗語意（安全失敗，非零離開，暫存目錄清理）：
 #   - 來源無法取得（clone 失敗 / 網路 / 憑證）
 #   - checkout 的 commit 與 ACE_COMMIT 不符（來源被移動或 tag 被改指）
 #   - 產物不存在 / 為空
-#   - plugin.yml 版本不是 1.1.2（錯版本）
+#   - plugin.yml 版本不是 1.2.0（錯版本）
 #   - 產物 SHA-256 與預期不符（checksum 不符）
 #
 # 用法：

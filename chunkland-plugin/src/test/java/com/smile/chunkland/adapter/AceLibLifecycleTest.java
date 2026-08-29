@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 @SuppressWarnings("deprecation")
 class AceLibLifecycleTest {
 
-    private static final AceLibApi READY = AceLibApi.ready("1.1.2", Platform.UNKNOWN, () -> true, () -> {});
+    private static final AceLibApi READY = AceLibApi.ready("1.2.0", Platform.UNKNOWN, () -> true, () -> {});
 
     private static final class RecordingHandler extends Handler {
         final List<LogRecord> records = new ArrayList<>();

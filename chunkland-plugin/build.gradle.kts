@@ -9,13 +9,13 @@ dependencies {
     compileOnly(libs.paper.api)
     // Compile-only: AceLib is a server-provided plugin (depend: [AceLib] in plugin.yml).
     // Resolved from the locally built jar via the flatDir repo; never embedded.
-    compileOnly("com.smile.acelib:AceLib:1.1.2")
+    compileOnly("com.smile.acelib:AceLib:1.2.0")
 
     // Tests exercise the Bukkit lifecycle seams and the AceLib public API directly,
     // so both must be available on the test classpath. testImplementation does not
     // affect the plugin jar (only main sources are packaged).
     testImplementation(libs.paper.api)
-    testImplementation("com.smile.acelib:AceLib:1.1.2")
+    testImplementation("com.smile.acelib:AceLib:1.2.0")
     testImplementation(libs.snakeyaml)
 }
 

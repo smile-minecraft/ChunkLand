@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 @SuppressWarnings("deprecation")
 class AceLibBridgeTest {
 
-    private static final AceLibApi READY = AceLibApi.ready("1.1.2", Platform.UNKNOWN, () -> true, () -> {});
+    private static final AceLibApi READY = AceLibApi.ready("1.2.0", Platform.UNKNOWN, () -> true, () -> {});
     private static final AceLibApi NOT_READY = AceLibApi.uninitialized();
 
     private static AceLibBridge.ProviderResolver resolverReturning(AceLibApi.AceLibProvider provider) {
@@ -62,7 +62,7 @@ class AceLibBridgeTest {
         assertTrue(bridge.acquire(resolverReturning(() -> READY)));
         assertSame(READY, bridge.getApi());
 
-        AceLibApi ready2 = AceLibApi.ready("1.1.2", Platform.UNKNOWN, () -> true, () -> {});
+        AceLibApi ready2 = AceLibApi.ready("1.2.0", Platform.UNKNOWN, () -> true, () -> {});
         assertNotSame(READY, ready2);
         assertTrue(bridge.reacquire(resolverReturning(() -> ready2)));
         assertSame(ready2, bridge.getApi());
@@ -77,7 +77,7 @@ class AceLibBridgeTest {
         assertSame(READY, bridge.getApi());
 
         // After reload, the provider serves a fresh ready facade.
-        AceLibApi ready2 = AceLibApi.ready("1.1.2", Platform.UNKNOWN, () -> true, () -> {});
+        AceLibApi ready2 = AceLibApi.ready("1.2.0", Platform.UNKNOWN, () -> true, () -> {});
         current.set(() -> ready2);
         bridge.reload(resolver);
         assertSame(ready2, bridge.getApi());
@@ -130,7 +130,7 @@ class AceLibBridgeTest {
     void isReadyThrowsRuntimeExceptionIsNotAcquired() {
         AceLibBridge bridge = new AceLibBridge();
         // A candidate whose isReady() throws (readyCheck blows up).
-        AceLibApi candidate = AceLibApi.ready("1.1.2", Platform.UNKNOWN,
+        AceLibApi candidate = AceLibApi.ready("1.2.0", Platform.UNKNOWN,
             () -> {
                 throw new RuntimeException("ready check down");
             }, () -> {});
@@ -144,7 +144,7 @@ class AceLibBridgeTest {
     void reloadThrowsRuntimeExceptionClearsApi() {
         AceLibBridge bridge = new AceLibBridge();
         // A ready API whose reload() throws (onReload blows up).
-        AceLibApi readyButExplosive = AceLibApi.ready("1.1.2", Platform.UNKNOWN,
+        AceLibApi readyButExplosive = AceLibApi.ready("1.2.0", Platform.UNKNOWN,
             () -> true, () -> {
                 throw new RuntimeException("reload down");
             });
@@ -187,7 +187,7 @@ class AceLibBridgeTest {
     void isReadyFalseClearsApi() {
         AceLibBridge bridge = new AceLibBridge();
         AtomicBoolean ready = new AtomicBoolean(true);
-        AceLibApi api = AceLibApi.ready("1.1.2", Platform.UNKNOWN, ready::get, () -> {});
+        AceLibApi api = AceLibApi.ready("1.2.0", Platform.UNKNOWN, ready::get, () -> {});
         assertTrue(bridge.acquire(resolverReturning(() -> api)));
         assertTrue(bridge.isAcquired());
 
@@ -202,7 +202,7 @@ class AceLibBridgeTest {
     void isReadyThrowsRuntimeExceptionClearsApi() {
         AceLibBridge bridge = new AceLibBridge();
         AtomicBoolean blow = new AtomicBoolean(false);
-        AceLibApi api = AceLibApi.ready("1.1.2", Platform.UNKNOWN,
+        AceLibApi api = AceLibApi.ready("1.2.0", Platform.UNKNOWN,
             () -> {
                 if (blow.get()) {
                     throw new RuntimeException("ready down");
