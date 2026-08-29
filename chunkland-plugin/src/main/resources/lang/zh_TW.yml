@@ -1,3 +1,11 @@
 m0:
   message:
-    smoke: "<hover:show_text:'<green>懸停：數值={value}</green>'><click:run_command:'/chunkland m0message'>點擊：{value}</click></hover>"
+    smoke: "<hover:show_text:'<green>懸停：數值=<value></green>'><click:run_command:'/chunkland m0message'>點擊：<value></click></hover>"
+message:
+  bedrock:
+    fallback:
+      run_command: '執行指令：<payload>'
+      suggest_command: '建議指令：<payload>'
+      open_url: '開啟網址：<payload>'
+      copy_to_clipboard: '複製到剪貼簿：<payload>'
+      unknown: '未知動作：<payload>'

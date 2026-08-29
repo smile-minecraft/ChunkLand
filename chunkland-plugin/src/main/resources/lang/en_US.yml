@@ -1,3 +1,11 @@
 m0:
   message:
-    smoke: "<hover:show_text:'<green>hover: value={value}</green>'><click:run_command:'/chunkland m0message'>Java click: {value}</click></hover>"
+    smoke: "<hover:show_text:'<green>hover: value=<value></green>'><click:run_command:'/chunkland m0message'>Java click: <value></click></hover>"
+message:
+  bedrock:
+    fallback:
+      run_command: 'Run command: <payload>'
+      suggest_command: 'Suggest command: <payload>'
+      open_url: 'Open URL: <payload>'
+      copy_to_clipboard: 'Copy to clipboard: <payload>'
+      unknown: 'Action: <payload>'

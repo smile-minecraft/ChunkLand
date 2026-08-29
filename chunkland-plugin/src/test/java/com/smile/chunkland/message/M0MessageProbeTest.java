@@ -11,8 +11,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.smile.acelib.bedrock.BedrockPlayerInfo;
 import com.smile.acelib.bedrock.BedrockService;
 import com.smile.acelib.form.FormService;
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import org.bukkit.configuration.file.YamlConfiguration;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -170,6 +172,40 @@ class M0MessageProbeTest {
     void probeInitializationUsesNoOverwrite() {
         assertFalse(M0MessageProbe.LANG_RESOURCE_OVERWRITE,
             "saveResource must use overwrite=false so player-edited lang files are preserved");
+    }
+
+    // --- resource contract (AceLib v1.2.0): <value> placeholder + bedrock fallback keys ---
+
+    @Test
+    void langResourcesUseV120PlaceholderAndFallbackKeys() throws Exception {
+        // AceLib v1.2.0 parseMiniMessage uses <key> placeholders (not {var}); the Bedrock
+        // fallback prompts live at root-level dotted keys message.bedrock.fallback.* with a
+        // <payload> placeholder. This guards both the chat value substitution and the
+        // ACELIB-MSG-004 missing-key warning without needing a live Folia server.
+        String[] locales = {"en_US", "zh_TW"};
+        String[] fallbackKeys = {
+            "message.bedrock.fallback.run_command",
+            "message.bedrock.fallback.suggest_command",
+            "message.bedrock.fallback.open_url",
+            "message.bedrock.fallback.copy_to_clipboard",
+            "message.bedrock.fallback.unknown"
+        };
+        for (String locale : locales) {
+            YamlConfiguration cfg = new YamlConfiguration();
+            cfg.load(new File("src/main/resources/lang/" + locale + ".yml"));
+            String smoke = cfg.getString("m0.message.smoke");
+            assertNotNull(smoke, locale + ": m0.message.smoke must exist");
+            assertTrue(smoke.contains("<value>"),
+                locale + ": smoke template must use <value> placeholder for parseMiniMessage");
+            assertFalse(smoke.contains("{value}"),
+                locale + ": smoke template must not use {value} (AceLib v1.2.0 parseMiniMessage)");
+            for (String key : fallbackKeys) {
+                String value = cfg.getString(key);
+                assertNotNull(value, locale + ": bedrock fallback key missing: " + key);
+                assertTrue(value.contains("<payload>"),
+                    locale + ": bedrock fallback key must use <payload> placeholder: " + key);
+            }
+        }
     }
 
     // --- locale chain (review fix: Bedrock Floodgate languageCode fallback) ---
