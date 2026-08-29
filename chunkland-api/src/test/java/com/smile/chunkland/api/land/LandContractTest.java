@@ -81,15 +81,16 @@ class LandContractTest {
     void landSnapshotDeepCopiesCollections() {
         var chunks = new HashSet<ChunkKey>();
         chunks.add(new ChunkKey(worldA, 1, 1));
+        var landId = new LandId(UUID.randomUUID());
         var sub = new SubLandSnapshot(
                 new SubLandId(UUID.randomUUID()),
-                new LandId(UUID.randomUUID()),
+                landId,
                 null, 0, 10,
                 Set.of(new ChunkKey(worldA, 2, 2)));
         var subs = new ArrayList<SubLandSnapshot>();
         subs.add(sub);
         var snap = new LandSnapshot(
-                new LandId(UUID.randomUUID()), "Home", "home",
+                landId, "Home", "home",
                 OwnerRef.server(), worldA, chunks, subs, 1L, 2L,
                 Instant.EPOCH, Instant.EPOCH);
         chunks.add(new ChunkKey(worldA, 9, 9));
