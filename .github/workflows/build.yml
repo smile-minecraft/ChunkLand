@@ -37,11 +37,11 @@ jobs:
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
       # AceLib is compileOnly/testImplementation and resolved only via flatDir at
-      # $ACE_OUTPUT_DIR (see settings.gradle.kts). On a clean runner the cache is
-      # empty, so we must build the pinned AceLib 1.2.0 from source before any
-      # Gradle compile/test. The same pinned output is reused for build/test and
-      # both reproducibility jar builds; no Maven fallback or embedded jar.
-      - name: Build AceLib 1.2.0 from pinned source
+      # $ACE_OUTPUT_DIR (see settings.gradle.kts). We fetch the pinned v1.2.0
+      # release asset (AceLib-1.2.0.jar) from GitHub Releases before any Gradle
+      # compile/test. The same pinned output is reused for build/test and both
+      # reproducibility jar builds; no Maven fallback, no embedded jar, no source build.
+      - name: Fetch AceLib 1.2.0 release asset
         env:
           ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-acelib
         run: bash scripts/build-acelib.sh
@@ -58,11 +58,22 @@ jobs:
           ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-acelib
         run: |
           set -euo pipefail
-          ./gradlew clean jar --no-daemon
+          ./gradlew clean jar sourcesJar --no-daemon
           mkdir -p /tmp/repro-a
           cp chunkland-api/build/libs/*.jar chunkland-plugin/build/libs/*.jar /tmp/repro-a/
-          ./gradlew clean jar --no-daemon
+          ./gradlew clean jar sourcesJar --no-daemon
           mkdir -p /tmp/repro-b
           cp chunkland-api/build/libs/*.jar chunkland-plugin/build/libs/*.jar /tmp/repro-b/
-          diff <(cd /tmp/repro-a && sha256sum *.jar | sort) <(cd /tmp/repro-b && sha256sum *.jar | sort) \
-            && echo "REPRODUCIBLE: jar contents identical across builds"
+          # 雙向 manifest/hash 比較：同時反映 A/B 兩邊完整 archive 名稱與 SHA，
+          # A-only 或 B-only archive 都會使 job 失敗（不再使用單向 ls|xargs loop）。
+          # 使用 diff <(sha256sum ... | sort) 比較兩邊完整清單，避免空 glob 與噪音。
+          # `sha256sum -- *.jar`（--）防止檔名以 dash 開頭被當成 option，符合 shellcheck SC2086/SC2035。
+          diff -u <(cd /tmp/repro-a && sha256sum -- *.jar | sort) <(cd /tmp/repro-b && sha256sum -- *.jar | sort) || {
+            echo "REPRODUCIBILITY FAIL: manifest/hash 差異（A-only 或 B-only archive，或內容不同）" >&2
+            echo "A manifest:" >&2
+            (cd /tmp/repro-a && sha256sum -- *.jar | sort) >&2 || true
+            echo "B manifest:" >&2
+            (cd /tmp/repro-b && sha256sum -- *.jar | sort) >&2 || true
+            exit 1
+          }
+          echo "REPRODUCIBLE: A/B manifest 與 hash 完全一致（含 main + sources JAR）"

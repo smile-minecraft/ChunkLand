@@ -6,20 +6,32 @@
 #
 # 鎖定依據（可查證）：
 #   - 倉庫：smile-minecraft/AceLib（GitHub）
-#   - 標籤：v1.2.0（annotated tag）
-#   - commit：a2ceb90b18648623b8146ba1e68d9f3f6ec41aeb（annotated tag v1.2.0 指向的 commit）
+#   - 標籤：v1.2.0（annotated tag → 固定 commit，見下方 provenance sidecar）
+#   - 產物來源：GitHub Release v1.2.0 固定附件 AceLib-1.2.0.jar（不再由 source build 產生）
+#   - 下載 URL：固定 HTTPS release asset URL（允許 GitHub redirect，不允許浮動 URL）
 #   - 產物：AceLib-1.2.0.jar（plugin JAR，供 Folia plugins/ 使用）
-#   - checksum：本機自建產物 SHA-256（見 ACE_EXPECTED_SHA256_DEFAULT，建置後核對）
-#     （本環境兩次 clean build 位元組一致；工具鏈不同時請以 ACE_EXPECTED_SHA256 覆寫）
+#   - checksum：Release 提供的 SHA-256（固定 literal ACE_EXPECTED_SHA256，與本機驗證一致）
+#
+# 來源取得方式已由「clone + gradlew clean jar」改為「下載固定 release asset」；
+# ACE_REPO_URL / ACE_TAG / ACE_COMMIT 保留為 provenance sidecar（記錄上游來源），
+# 不再用於實際取得 JAR。
+
+ACE_RELEASE_URL="https://github.com/smile-minecraft/AceLib/releases/download/v1.2.0/AceLib-1.2.0.jar"
+ACE_ASSET_NAME="AceLib-1.2.0.jar"
 
 ACE_REPO_URL_DEFAULT="https://github.com/smile-minecraft/AceLib.git"
 ACE_TAG="v1.2.0"
-ACE_COMMIT="a2ceb90b18648623b8146ba1e68d9f3f6ec41aeb"
+ACE_COMMIT="55b27651f0156047e622354e2542e47f1f6bfffd"
 ACE_VERSION="1.2.0"
-ACE_EXPECTED_SHA256_DEFAULT="da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278"
+ACE_EXPECTED_SHA256="da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278"
 
-ACE_REPO_URL="${ACE_REPO_URL:-$ACE_REPO_URL_DEFAULT}"
-ACE_EXPECTED_SHA256="${ACE_EXPECTED_SHA256:-$ACE_EXPECTED_SHA256_DEFAULT}"
+# 固定來源與完整性常數：不可由環境變數覆寫（防止空字串跳過 checksum 或浮動 URL）。
+ACE_RELEASE_URL_FIXED="$ACE_RELEASE_URL"
+ACE_ASSET_NAME_FIXED="$ACE_ASSET_NAME"
+ACE_EXPECTED_SHA256_FIXED="$ACE_EXPECTED_SHA256"
+
+# Provenance sidecar（僅記錄上游來源，不再用於實際取得 JAR）
+ACE_REPO_URL="$ACE_REPO_URL_DEFAULT"
 
 OUT_NAME="AceLib-${ACE_VERSION}.jar"
 
@@ -43,20 +55,27 @@ verify_acelib_jar() {
     return 1
   fi
   local listing
-  listing="$(unzip -l "$jar" 2>/dev/null)"
-  if printf '%s\n' "$listing" | grep -q "com/smile/acelib/AceLibVersion.class"; then
-    : # AceLibVersion.class 存在，通過
+  # 用 `unzip -Z1` 一次只列 entry name（一行一個，保留含空白 entry 的原始名稱），
+  # 再以 `grep -Fxq` 做完整逐行字面比對：拒絕任何 prefix / suffix / 子字串 / 含空白 token
+  # 假匹配。`unzip -l` 會把長格式欄位與 entry name 同行輸出，欄位數隨路徑含空白而變，
+  # 用 awk 取 $NF 會被「evil com/.../AceLibVersion.class」這類 entry 誤判為精確命中
+  # （$NF 剛好等於最後一個以空白分隔的 token，等於預期路徑）。
+  listing="$(unzip -Z1 "$jar" 2>/dev/null)"
+  if printf '%s\n' "$listing" | grep -Fxq "com/smile/acelib/AceLibVersion.class"; then
+    : # 精確 ZIP entry 命中（完整名稱逐行字面比對）
   else
     echo "verify: 缺少 com/smile/acelib/AceLibVersion.class" >&2
     return 1
   fi
-  if [[ -n "$expected_sha" ]]; then
-    local actual
-    actual="$(shasum -a 256 "$jar" | awk '{print $1}')"
-    if [[ "$actual" != "$expected_sha" ]]; then
-      echo "verify: checksum 不符 — 預期 $expected_sha，實際 $actual" >&2
-      return 1
-    fi
+  if [[ -z "$expected_sha" ]]; then
+    echo "verify: 預期 checksum 為空（安全失敗，不允許跳過完整性驗證）" >&2
+    return 1
+  fi
+  local actual
+  actual="$(shasum -a 256 "$jar" | awk '{print $1}')"
+  if [[ "$actual" != "$expected_sha" ]]; then
+    echo "verify: checksum 不符 — 預期 $expected_sha，實際 $actual" >&2
+    return 1
   fi
   return 0
 }
