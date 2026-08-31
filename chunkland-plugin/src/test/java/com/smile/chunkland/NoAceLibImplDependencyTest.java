@@ -117,7 +117,28 @@ class NoAceLibImplDependencyTest {
                 || ref.equals("com.smile.acelib.message.MessageService")
                 || ref.equals("com.smile.acelib.config.LangManager")
                 || ref.equals("com.smile.acelib.bedrock.BedrockService")
-                || ref.equals("com.smile.acelib.bedrock.BedrockPlayerInfo");
+                || ref.equals("com.smile.acelib.bedrock.BedrockPlayerInfo")
+                // M0-07 capability smoke: only the public AceLib surface is allowed here.
+                || ref.equals("com.smile.acelib.platform.Platform")
+                || ref.startsWith("com.smile.acelib.platform.Platform$")
+                || ref.equals("com.smile.acelib.platform.PlatformCapability")
+                || ref.equals("com.smile.acelib.scheduler.AceLibScheduler")
+                || ref.startsWith("com.smile.acelib.scheduler.AceLibScheduler$")
+                || ref.equals("com.smile.acelib.scheduler.SafeScheduler")
+                || ref.equals("com.smile.acelib.scheduler.ScheduledTask")
+                || ref.equals("com.smile.acelib.scheduler.TaskErrorRecord")
+                || ref.equals("com.smile.acelib.gui.GuiService")
+                || ref.equals("com.smile.acelib.gui.GuiArgument")
+                || ref.startsWith("com.smile.acelib.gui.GuiArgument$")
+                || ref.equals("com.smile.acelib.gui.GuiResult")
+                || ref.equals("com.smile.acelib.gui.GuiSession")
+                || ref.equals("com.smile.acelib.form.FormService")
+                || ref.startsWith("com.smile.acelib.form.FormService$")
+                || ref.equals("com.smile.acelib.form.FormSpec")
+                || ref.startsWith("com.smile.acelib.form.FormSpec$")
+                || ref.equals("com.smile.acelib.form.FormSendResult")
+                || ref.equals("com.smile.acelib.form.FormResponse")
+                || ref.equals("com.smile.acelib.form.FormResponseStatus");
             if (!allowed) {
                 return ref;
             }

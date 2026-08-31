@@ -6,11 +6,12 @@ folia-supported: true
 depend: [AceLib]
 commands:
   chunkland:
-    description: ChunkLand debug commands (M0 message smoke probe)
-    permission: chunkland.debug.m0message
-    usage: /chunkland m0message [locale]
+    description: ChunkLand debug commands (M0 message + capability smoke probes)
+    usage: /chunkland m0message [locale] | /chunkland m0test [scheduler|gui|form|cancelall]
 permissions:
   chunkland.admin.serverland:
     default: op
   chunkland.debug.m0message:
+    default: op
+  chunkland.debug.m0test:
     default: op
