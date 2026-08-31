@@ -36,12 +36,26 @@ jobs:
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
+      # AceLib is compileOnly/testImplementation and resolved only via flatDir at
+      # $ACE_OUTPUT_DIR (see settings.gradle.kts). On a clean runner the cache is
+      # empty, so we must build the pinned AceLib 1.2.0 from source before any
+      # Gradle compile/test. The same pinned output is reused for build/test and
+      # both reproducibility jar builds; no Maven fallback or embedded jar.
+      - name: Build AceLib 1.2.0 from pinned source
+        env:
+          ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-acelib
+        run: bash scripts/build-acelib.sh
+
       - name: Build and test with Gradle wrapper
+        env:
+          ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-acelib
         run: ./gradlew clean build --no-daemon
 
       # Reproducibility gate: build the archives twice from a clean state and require
       # byte-identical jars (main + sources) so local and CI outputs stay consistent.
       - name: Verify reproducible jar builds
+        env:
+          ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-acelib
         run: |
           set -euo pipefail
           ./gradlew clean jar --no-daemon
