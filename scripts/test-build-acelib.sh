@@ -40,6 +40,31 @@ check() {
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# contains_forbidden FILE PATTERN
+#   在 FILE 中尋找符合 PATTERN（awk ERE）的「可執行」選項列。
+#   前置：跳過註解行（以 # 開頭，允許前導空白）。
+#   前置：合併以反斜線結尾的續行（shell line continuation），
+#         使 `--dependency-verification \` 下一行 `off` 不會被拆成兩行而漏報。
+#   使用單一 awk 程序讀入整檔後正規化，避免 `grep -v | grep -q` pipeline
+#   在 `pipefail` 下因上游 SIGPIPE（grep -q 提前退出）而誤判為未命中。
+#   回傳：0=找到（forbidden），1=未找到。
+contains_forbidden() {
+  local file="$1" pattern="$2"
+  awk -v pat="$pattern" '
+    /^[[:space:]]*#/ { next }
+    {
+      buf = $0
+      while (buf ~ /\\$/) {
+        sub(/\\$/, "", buf)
+        if ((getline ln) <= 0) break
+        buf = buf ln
+      }
+      if (buf ~ pat) { found=1; exit }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$file"
+}
+
 # ---------------------------------------------------------------------------
 # 契約：來源固定與安全約束未被放寬（防止 verification 被全域關閉）
 # ---------------------------------------------------------------------------
@@ -51,11 +76,38 @@ grep -q 'ACE_EXPECTED_SHA256_DEFAULT="da9f196b47c2b28c6db443d102236b27c1a1bbdf7d
 grep -q 'OUT_NAME="AceLib-${ACE_VERSION}.jar"' "$COMMON" ; check "OUT_NAME 固定" 0 $?
 grep -q 'verify_acelib_jar' "$BUILD" ; check "build-acelib 仍呼叫 verify_acelib_jar" 0 $?
 grep -q 'ACE_EXPECTED_SHA256' "$BUILD" ; check "build-acelib 仍核對 checksum" 0 $?
-# 未使用全域 lenient / off / mavenLocal 繞過 verification（忽略註解行，避免誤判）
-if grep -v '^[[:space:]]*#' "$BUILD" | grep -q -- '--dependency-verification.*off'; then check "未使用 --dependency-verification off 繞過" 1 0; else check "未使用 --dependency-verification off 繞過" 0 0; fi
-if grep -v '^[[:space:]]*#' "$BUILD" | grep -q 'lenient'; then check "未使用 lenient 繞過" 1 0; else check "未使用 lenient 繞過" 0 0; fi
-if grep -v '^[[:space:]]*#' "$BUILD" | grep -q 'mavenLocal()'; then check "未使用 mavenLocal() 繞過" 1 0; else check "未使用 mavenLocal() 繞過" 0 0; fi
-if grep -v '^[[:space:]]*#' "$COMMON" | grep -q 'mavenLocal()'; then check "common 未使用 mavenLocal()" 1 0; else check "common 未使用 mavenLocal()" 0 0; fi
+# 未使用全域 lenient / off / mavenLocal 繞過 verification
+# 以 contains_forbidden 做正規化比對（跳過註解、合併續行、單一程序），
+# 避免 multiline `--dependency-verification \` 下一行 `off` 漏報，
+# 也避免 `grep -v | grep -q` 在 pipefail 下因 SIGPIPE 誤判。
+if contains_forbidden "$BUILD" '--dependency-verification.*off'; then check "未使用 --dependency-verification off 繞過" 1 0; else check "未使用 --dependency-verification off 繞過" 0 0; fi
+if contains_forbidden "$BUILD" 'lenient'; then check "未使用 lenient 繞過" 1 0; else check "未使用 lenient 繞過" 0 0; fi
+if contains_forbidden "$BUILD" 'mavenLocal\(\)'; then check "未使用 mavenLocal() 繞過" 1 0; else check "未使用 mavenLocal() 繞過" 0 0; fi
+if contains_forbidden "$COMMON" 'mavenLocal\(\)'; then check "common 未使用 mavenLocal()" 1 0; else check "common 未使用 mavenLocal()" 0 0; fi
+
+# ---- 合成 forbidden fixture：multiline / 等號 / 註解 不得漏報、不得誤報 ----
+# 以 contains_forbidden 對臨時 fixture 檔做正向（應找到）與負向（不應找到）比對，
+# 證明 parser 能處理 shell line continuation、等號形式，且註解文字不被當成 option。
+FX="$TMP/forbidden-fixture"
+mkdir -p "$FX"
+# 正向：multiline `--dependency-verification \` 下一行 `off`（舊 pipeline 會漏報）
+printf '#!/usr/bin/env bash\n# 註解：--dependency-verification off 只是說明，不應被當成 option\n./gradlew clean jar \\\n  --dependency-verification \\\n  off \\\n  --no-daemon --console=plain\n' > "$FX/multiline-off.sh"
+if contains_forbidden "$FX/multiline-off.sh" '--dependency-verification.*off'; then check "multiline off 應被判定 forbidden" 0 0; else check "multiline off 應被判定 forbidden" 0 1; fi
+# 正向：等號形式
+printf '#!/usr/bin/env bash\n./gradlew clean jar --dependency-verification=off --no-daemon\n' > "$FX/eq-off.sh"
+if contains_forbidden "$FX/eq-off.sh" '--dependency-verification.*off'; then check "等號 off 應被判定 forbidden" 0 0; else check "等號 off 應被判定 forbidden" 0 1; fi
+# 正向：multiline lenient
+printf '#!/usr/bin/env bash\n# 註解 lenient 只是說明\n./gradlew clean jar \\\n  --dependency-verification \\\n  lenient \\\n  --no-daemon\n' > "$FX/multiline-lenient.sh"
+if contains_forbidden "$FX/multiline-lenient.sh" 'lenient'; then check "multiline lenient 應被判定 forbidden" 0 0; else check "multiline lenient 應被判定 forbidden" 0 1; fi
+# 負向：註解內文字不應被當成 option
+printf '#!/usr/bin/env bash\n# build-acelib: --dependency-verification off 與 lenient 只是安全說明\n./gradlew clean jar --no-daemon\n' > "$FX/comment-only.sh"
+if contains_forbidden "$FX/comment-only.sh" '--dependency-verification.*off'; then check "註解 off 不應誤報" 1 0; else check "註解 off 不應誤報" 1 1; fi
+if contains_forbidden "$FX/comment-only.sh" 'lenient'; then check "註解 lenient 不應誤報" 1 0; else check "註解 lenient 不應誤報" 1 1; fi
+if contains_forbidden "$FX/comment-only.sh" 'mavenLocal\(\)'; then check "註解 mavenLocal() 不應誤報" 1 0; else check "註解 mavenLocal() 不應誤報" 1 1; fi
+# 負向：乾淨命令列
+printf '#!/usr/bin/env bash\n./gradlew clean jar --no-daemon --console=plain\n' > "$FX/clean.sh"
+if contains_forbidden "$FX/clean.sh" '--dependency-verification.*off'; then check "乾淨命令列不應誤報 off" 1 0; else check "乾淨命令列不應誤報 off" 1 1; fi
+if contains_forbidden "$FX/clean.sh" 'lenient'; then check "乾淨命令列不應誤報 lenient" 1 0; else check "乾淨命令列不應誤報 lenient" 1 1; fi
 # 建置僅用 clean jar，避免觸發僅測試配置需要的 adventure-bom verification
 grep -q './gradlew clean jar' "$BUILD" ; check "build-acelib 使用 clean jar（避免測試配置 BOM）" 0 $?
 # workflow 仍以 ACE_OUTPUT_DIR 共享且在 compile 前建立 AceLib
@@ -67,8 +119,8 @@ if [[ -f "$WF" ]]; then
   ace_line=$(grep -n 'Build AceLib' "$WF" | head -1 | cut -d: -f1)
   gradle_line=$(grep -n 'Build and test with Gradle' "$WF" | head -1 | cut -d: -f1)
   if [[ -n "$ace_line" && -n "$gradle_line" && "$ace_line" -lt "$gradle_line" ]]; then check "workflow AceLib 建置在 Gradle 編譯前" 0 0; else check "workflow AceLib 建置在 Gradle 編譯前" 0 1; fi
-  if grep -v '^[[:space:]]*#' "$WF" | grep -q -- '--dependency-verification.*off'; then check "workflow 未關閉 verification" 1 0; else check "workflow 未關閉 verification" 0 0; fi
-  if grep -v '^[[:space:]]*#' "$WF" | grep -q 'mavenLocal()'; then check "workflow 未使用 mavenLocal" 1 0; else check "workflow 未使用 mavenLocal" 0 0; fi
+  if contains_forbidden "$WF" '--dependency-verification.*off'; then check "workflow 未關閉 verification" 1 0; else check "workflow 未關閉 verification" 0 0; fi
+  if contains_forbidden "$WF" 'mavenLocal\(\)'; then check "workflow 未使用 mavenLocal" 1 0; else check "workflow 未使用 mavenLocal" 0 0; fi
 else
   check "workflow 檔案存在" 0 1
 fi
@@ -88,9 +140,8 @@ printf 'version: 9.9.9\n' > "$TMP/badver/plugin.yml"
 verify_acelib_jar "$TMP/badver.jar" "" ; check "錯版本應失敗" 1 $?
 
 # 缺 AceLibVersion.class
-printf 'version: %s\n' "$ACE_VERSION" > "$TMP/noclass/plugin.yml" 2>/dev/null || {
-  mkdir -p "$TMP/noclass"; printf 'version: %s\n' "$ACE_VERSION" > "$TMP/noclass/plugin.yml"
-}
+mkdir -p "$TMP/noclass"
+printf 'version: %s\n' "$ACE_VERSION" > "$TMP/noclass/plugin.yml"
 ( cd "$TMP/noclass" && zip -q -r "$TMP/noclass.jar" . )
 verify_acelib_jar "$TMP/noclass.jar" "" ; check "缺 class 應失敗" 1 $?
 
