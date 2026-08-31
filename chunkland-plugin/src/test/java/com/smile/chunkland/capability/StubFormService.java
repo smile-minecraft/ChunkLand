@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
- * Test-only {@link FormService} stand-in. Configurable to return either
+ * {@link FormService} double scoped to tests. Configurable to return either
  * {@link FormSendResult#SENT} or {@link FormSendResult#REJECTED} and to either invoke or skip
  * the response callback. Tracks every call for assertions.
  */
@@ -19,6 +19,7 @@ final class StubFormService implements FormService {
 
     private final AtomicReference<FormSendResult> nextResult = new AtomicReference<>(FormSendResult.SENT);
     private final AtomicLong sendCount = new AtomicLong();
+    private final AtomicLong callbackSendCount = new AtomicLong();
     private final AtomicLong shutdownCount = new AtomicLong();
     private final List<UUID> seenUuids;
     private final List<FormSpec> seenSpecs;
@@ -37,6 +38,13 @@ final class StubFormService implements FormService {
 
     long sendCount() {
         return sendCount.get();
+    }
+
+    /** Number of times the {@code sendForm(UUID, FormSpec, Consumer<FormResponse>)} overload
+     *  was used. Lets tests assert the consumer-overload path was taken instead of the
+     *  no-callback overload. */
+    long callbackSendCount() {
+        return callbackSendCount.get();
     }
 
     long shutdownCount() {
@@ -62,6 +70,7 @@ final class StubFormService implements FormService {
     @Override
     public FormSendResult sendForm(UUID player, FormSpec spec, Consumer<FormResponse> consumer) {
         sendCount.incrementAndGet();
+        callbackSendCount.incrementAndGet();
         seenUuids.add(player);
         seenSpecs.add(spec);
         if (consumer != null) {

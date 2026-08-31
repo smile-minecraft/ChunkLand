@@ -417,7 +417,18 @@ public final class M0CapabilityProbe {
                     sender.sendMessage("m0test form 須由玩家執行。");
                     return true;
                 }
-                sender.sendMessage(formatForm(probe.testForm(p.getUniqueId(), "M0 Form smoke", null)));
+                // Wire the Consumer<FormResponse> overload so a delivered AceLib response reaches
+                // the same CommandSender as a concise stable notice. The callback is best-effort;
+                // formatting / sendMessage failures must not crash the command dispatch.
+                Consumer<FormResponse> sink = response -> {
+                    try {
+                        sender.sendMessage(formatFormResponse(response));
+                    } catch (RuntimeException ignored) {
+                        // callback / formatting / sendMessage failures are absorbed; the initial
+                        // form-prefixed send-result line is the authoritative dispatch output.
+                    }
+                };
+                sender.sendMessage(formatForm(probe.testForm(p.getUniqueId(), "M0 Form smoke", sink)));
             }
             case CANCELALL -> {
                 sender.sendMessage(formatCancelAll(probe.testCancelAll()));
@@ -470,6 +481,21 @@ public final class M0CapabilityProbe {
             + " bedrockPlayer=" + r.bedrockPlayer()
             + " moduleStatus=" + r.moduleStatus()
             + " — " + r.message();
+    }
+
+    /** Render a delivered {@link FormResponse} as a concise, stable notice for the originating
+     *  CommandSender. The format intentionally omits transient {@code FormValue} payload so the
+     *  prefix {@code [form response]} and {@code status=/button=} keys stay stable across
+     *  backends. Null-safe so a misbehaving pipeline cannot crash the dispatch. */
+    private static String formatFormResponse(FormResponse r) {
+        if (r == null) {
+            return "[form response] status=n/a button=n/a";
+        }
+        String button = r.clickedButton().isPresent()
+            ? r.clickedButton().get().toString()
+            : "n/a";
+        return "[form response] status=" + r.status().name()
+            + " button=" + button;
     }
 
     private static String formatCancelAll(CancelAllReport r) {
