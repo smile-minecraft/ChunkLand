@@ -41,6 +41,39 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # ---------------------------------------------------------------------------
+# 契約：來源固定與安全約束未被放寬（防止 verification 被全域關閉）
+# ---------------------------------------------------------------------------
+# 來源仍鎖定 v1.2.0 / commit / checksum
+grep -q 'ACE_TAG="v1.2.0"' "$COMMON" ; check "來源 tag 固定 v1.2.0" 0 $?
+grep -q 'ACE_COMMIT="a2ceb90b18648623b8146ba1e68d9f3f6ec41aeb"' "$COMMON" ; check "來源 commit 固定 a2ceb90" 0 $?
+grep -q 'ACE_EXPECTED_SHA256_DEFAULT="da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278"' "$COMMON" ; check "產物 checksum 固定 da9f196" 0 $?
+# 輸出名稱與驗證函式仍存在
+grep -q 'OUT_NAME="AceLib-${ACE_VERSION}.jar"' "$COMMON" ; check "OUT_NAME 固定" 0 $?
+grep -q 'verify_acelib_jar' "$BUILD" ; check "build-acelib 仍呼叫 verify_acelib_jar" 0 $?
+grep -q 'ACE_EXPECTED_SHA256' "$BUILD" ; check "build-acelib 仍核對 checksum" 0 $?
+# 未使用全域 lenient / off / mavenLocal 繞過 verification（忽略註解行，避免誤判）
+if grep -v '^[[:space:]]*#' "$BUILD" | grep -q -- '--dependency-verification.*off'; then check "未使用 --dependency-verification off 繞過" 1 0; else check "未使用 --dependency-verification off 繞過" 0 0; fi
+if grep -v '^[[:space:]]*#' "$BUILD" | grep -q 'lenient'; then check "未使用 lenient 繞過" 1 0; else check "未使用 lenient 繞過" 0 0; fi
+if grep -v '^[[:space:]]*#' "$BUILD" | grep -q 'mavenLocal()'; then check "未使用 mavenLocal() 繞過" 1 0; else check "未使用 mavenLocal() 繞過" 0 0; fi
+if grep -v '^[[:space:]]*#' "$COMMON" | grep -q 'mavenLocal()'; then check "common 未使用 mavenLocal()" 1 0; else check "common 未使用 mavenLocal()" 0 0; fi
+# 建置僅用 clean jar，避免觸發僅測試配置需要的 adventure-bom verification
+grep -q './gradlew clean jar' "$BUILD" ; check "build-acelib 使用 clean jar（避免測試配置 BOM）" 0 $?
+# workflow 仍以 ACE_OUTPUT_DIR 共享且在 compile 前建立 AceLib
+WF="$SCRIPT_DIR/../.github/workflows/build.yml"
+if [[ -f "$WF" ]]; then
+  grep -q 'ACE_OUTPUT_DIR' "$WF" ; check "workflow 仍使用 ACE_OUTPUT_DIR" 0 $?
+  grep -q 'Build AceLib' "$WF" ; check "workflow 仍有 Build AceLib 步驟" 0 $?
+  # 確保 Build AceLib 在 Build and test 之前
+  ace_line=$(grep -n 'Build AceLib' "$WF" | head -1 | cut -d: -f1)
+  gradle_line=$(grep -n 'Build and test with Gradle' "$WF" | head -1 | cut -d: -f1)
+  if [[ -n "$ace_line" && -n "$gradle_line" && "$ace_line" -lt "$gradle_line" ]]; then check "workflow AceLib 建置在 Gradle 編譯前" 0 0; else check "workflow AceLib 建置在 Gradle 編譯前" 0 1; fi
+  if grep -v '^[[:space:]]*#' "$WF" | grep -q -- '--dependency-verification.*off'; then check "workflow 未關閉 verification" 1 0; else check "workflow 未關閉 verification" 0 0; fi
+  if grep -v '^[[:space:]]*#' "$WF" | grep -q 'mavenLocal()'; then check "workflow 未使用 mavenLocal" 1 0; else check "workflow 未使用 mavenLocal" 0 0; fi
+else
+  check "workflow 檔案存在" 0 1
+fi
+
+# ---------------------------------------------------------------------------
 # 單元：verify_acelib_jar 對錯誤輸入安全失敗（Red 邏輯的核心）
 # ---------------------------------------------------------------------------
 

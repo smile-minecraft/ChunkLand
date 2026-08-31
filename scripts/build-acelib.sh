@@ -63,8 +63,14 @@ fi
 log "來源已鎖定 commit $HEAD_COMMIT"
 
 # ---- 2. 建置（自建 server JAR） ----
-log "gradle clean build"
-( cd "$STAGING_DIR" && ./gradlew clean build --no-daemon --console=plain ) \
+# 僅建置 server JAR（clean jar），不觸發 :check / :test。
+# 上游 AceLib 的 verification-metadata.xml 對 adventure-bom:5.2.0（adventure5ApiConfig
+# 專用測試隔離配置）缺少 module/pom 兩筆 checksum；在乾淨 GRADLE_USER_HOME 下
+# `clean build` 會因 dependency verification 失敗（無法解析 :adventure5ApiConfig），
+# 而 `clean jar` 不解析該配置且產物與 `clean build` 的 jar 位元完全一致
+#（已驗證 SHA da9f196…），故採用最小範圍的 clean jar 以保留來源與產物完整性驗證。
+log "gradle clean jar"
+( cd "$STAGING_DIR" && ./gradlew clean jar --no-daemon --console=plain ) \
   || { echo "build-acelib: 建置失敗" >&2; exit 1; }
 
 JAR_SRC="$STAGING_DIR/build/libs/AceLib-${ACE_VERSION}.jar"
