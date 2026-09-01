@@ -67,6 +67,21 @@ public final class SqliteLandRepository implements LandRepository {
     // ---- internal JDBC on persistence thread ----
 
     private void saveInternal(Connection conn, LandSnapshot land) throws SQLException {
+        // Enforce Server Land non-transferable at persistence boundary: an existing SERVER land
+        // must not be silently re-owned as PLAYER via upsert.
+        try (PreparedStatement check = conn.prepareStatement("SELECT owner_key FROM lands WHERE id = ?")) {
+            check.setBytes(1, UuidBlob.encode(land.id().value()));
+            try (ResultSet rs = check.executeQuery()) {
+                if (rs.next()) {
+                    String existingOwnerKey = rs.getString(1);
+                    boolean existingIsServer = OwnerKey.SERVER_VALUE.equals(existingOwnerKey);
+                    boolean newIsPlayer = land.ownerRef() instanceof OwnerRef.PlayerOwnerRef;
+                    if (existingIsServer && newIsPlayer) {
+                        throw new IllegalStateException("Server Land is not transferable");
+                    }
+                }
+            }
+        }
         String sql = """
                 INSERT INTO lands (id, owner_key, display_name, name_key, world_uuid,
                                    structure_revision, land_policy_revision, created_at, updated_at)

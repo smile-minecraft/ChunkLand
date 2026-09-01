@@ -130,10 +130,11 @@ public final class ConfigService {
                 // advance any epoch counter.
                 return previous;
             }
-            ChunkLandConfig next = previous.withEpochsBumped(loaded.worlds());
+            ChunkLandConfig next = previous.withEpochsBumped(loaded.worlds(), loaded.limits());
             // Replace the parsed typed payload but keep the bumped epochs.
             ChunkLandConfig published = new ChunkLandConfig(
                     loaded.worlds(),
+                    loaded.limits(),
                     next.globalPolicyEpoch(),
                     next.worldPolicyEpochs());
             this.snapshot = published;

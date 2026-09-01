@@ -186,9 +186,15 @@ public record LandSnapshot(
     /**
      * Return a new snapshot with the owner replaced, bumping {@code structureRevision}
      * (owner changes are structural per spec §4). The receiver is never modified.
+     * Server-owned Land is not transferable: a snapshot whose current owner is
+     * {@link OwnerRef.ServerOwnerRef} cannot be changed to a player owner.
      */
     public LandSnapshot withOwner(OwnerRef ownerRef) {
         Objects.requireNonNull(ownerRef, "ownerRef");
+        if (this.ownerRef instanceof OwnerRef.ServerOwnerRef
+                && ownerRef instanceof OwnerRef.PlayerOwnerRef) {
+            throw new IllegalStateException("Server Land is not transferable");
+        }
         return new LandSnapshot(id, displayName, nameKey, ownerRef, worldId, chunks, subLands,
                 Math.addExact(structureRevision, 1), landPolicyRevision, createdAt, updatedAt);
     }

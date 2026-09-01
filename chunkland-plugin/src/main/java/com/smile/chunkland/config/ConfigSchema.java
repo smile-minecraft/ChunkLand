@@ -1,5 +1,7 @@
 package com.smile.chunkland.config;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -56,14 +58,24 @@ public final class ConfigSchema {
         // Reject unknown top-level keys explicitly so future renames become
         // loud failures instead of silent runtime bugs.
         for (String key : root.keySet()) {
-            if (!"worlds".equals(key)) {
+            if (!"worlds".equals(key) && !"limits".equals(key)) {
                 throw new ConfigValidationException(
                         "unknown top-level key '" + key
-                                + "' (only 'worlds' is supported in the current schema)");
+                                + "' (only 'worlds' and 'limits' are supported in the current schema)");
             }
         }
         Map<String, WorldSettings> worlds = parseWorlds(root.get("worlds"), "worlds");
-        return new ChunkLandConfig(worlds, 0L, deriveWorldEpochs(worlds));
+        LimitSettings limits;
+        if (!root.containsKey("limits")) {
+            limits = LimitSettings.defaults();
+        } else {
+            Object rawLimits = root.get("limits");
+            if (rawLimits == null) {
+                throw new ConfigValidationException("limits must not be null");
+            }
+            limits = parseLimits(rawLimits, "limits");
+        }
+        return new ChunkLandConfig(worlds, limits, 0L, deriveWorldEpochs(worlds));
     }
 
     /** Build the worldPolicyEpochs map (every known world starts at 0). */
@@ -117,6 +129,95 @@ public final class ConfigSchema {
             result.put(worldName, new WorldSettings(claimEnabled));
         }
         return result;
+    }
+
+    private static LimitSettings parseLimits(Object raw, String path) {
+        if (raw == null) {
+            throw new ConfigValidationException(path + " must not be null");
+        }
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping, got " + raw.getClass().getSimpleName());
+        }
+        Map<String, Object> map = castStringKeyMap(rawMap, path);
+        // Reject unknown keys under limits.
+        for (String key : map.keySet()) {
+            if (!key.equals("max-lands-per-player")
+                    && !key.equals("max-total-chunks-per-player")
+                    && !key.equals("max-chunks-per-land")
+                    && !key.equals("max-sublands-per-land")) {
+                throw new ConfigValidationException(
+                        path + " has unknown key '" + key + "'");
+            }
+        }
+        LimitSettings defaults = LimitSettings.defaults();
+        int maxLands = parseLimitField(map, "max-lands-per-player",
+                path + ".max-lands-per-player", defaults.maxLandsPerPlayer());
+        int maxChunksPerPlayer = parseLimitField(map, "max-total-chunks-per-player",
+                path + ".max-total-chunks-per-player", defaults.maxTotalChunksPerPlayer());
+        int maxChunksPerLand = parseLimitField(map, "max-chunks-per-land",
+                path + ".max-chunks-per-land", defaults.maxChunksPerLand());
+        int maxSublands = parseLimitField(map, "max-sublands-per-land",
+                path + ".max-sublands-per-land", defaults.maxSublandsPerLand());
+        return new LimitSettings(maxLands, maxChunksPerPlayer, maxChunksPerLand, maxSublands);
+    }
+
+    private static int parseLimitField(Map<String, Object> map, String key, String path, int defaultValue) {
+        if (!map.containsKey(key)) {
+            return defaultValue;
+        }
+        Object raw = map.get(key);
+        if (raw == null) {
+            throw new ConfigValidationException(path + " must not be null");
+        }
+        return parseIntLimit(raw, path);
+    }
+
+    private static int parseIntLimit(Object raw, String path) {
+        if (raw instanceof Double || raw instanceof Float) {
+            throw new ConfigValidationException(
+                    path + " must be an integer (no floating point), got " + raw);
+        }
+        if (raw instanceof BigInteger bi) {
+            if (bi.signum() < 0) {
+                throw new ConfigValidationException(path + " must be >= 0, got " + bi);
+            }
+            if (bi.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
+                throw new ConfigValidationException(path + " out of range (> Integer.MAX_VALUE): " + bi);
+            }
+            return bi.intValue();
+        }
+        if (raw instanceof BigDecimal bd) {
+            BigInteger bi;
+            try {
+                bi = bd.toBigIntegerExact();
+            } catch (ArithmeticException e) {
+                throw new ConfigValidationException(path + " must be an integer, got " + raw);
+            }
+            if (bi.signum() < 0) {
+                throw new ConfigValidationException(path + " must be >= 0, got " + bi);
+            }
+            if (bi.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
+                throw new ConfigValidationException(path + " out of range (> Integer.MAX_VALUE): " + bi);
+            }
+            return bi.intValue();
+        }
+        if (raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long) {
+            long lv = ((Number) raw).longValue();
+            if (lv < 0) {
+                throw new ConfigValidationException(path + " must be >= 0, got " + lv);
+            }
+            if (lv > Integer.MAX_VALUE) {
+                throw new ConfigValidationException(path + " out of range (> Integer.MAX_VALUE): " + lv);
+            }
+            return (int) lv;
+        }
+        if (raw instanceof Number) {
+            throw new ConfigValidationException(
+                    path + " must be an integer, got " + raw.getClass().getSimpleName() + " value '" + raw + "'");
+        }
+        throw new ConfigValidationException(
+                path + " must be an integer, got " + raw.getClass().getSimpleName() + " value '" + raw + "'");
     }
 
     private static boolean parseClaimEnabled(Object raw, String path) {

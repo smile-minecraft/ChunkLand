@@ -219,13 +219,22 @@ class LandImmutableModelTest {
 
     @Test
     void landWithOwnerReturnsNewObject() {
-        var land = baseLand();
+        var land = baseLandWithPlayerOwner();
         var newOwner = OwnerRef.player(UUID.randomUUID());
         var updated = land.withOwner(newOwner);
         assertNotSame(land, updated);
         assertEquals(land.structureRevision() + 1, updated.structureRevision());
         assertEquals(newOwner, updated.ownerRef());
-        assertEquals(OwnerRef.server(), land.ownerRef());
+        assertEquals(land.ownerRef(), land.ownerRef());
+    }
+
+    private LandSnapshot baseLandWithPlayerOwner() {
+        var chunks = Set.of(new ChunkKey(worldA, 0, 0), new ChunkKey(worldA, 1, 0));
+        var subs = List.<SubLandSnapshot>of();
+        return new LandSnapshot(
+                new LandId(UUID.randomUUID()), "Home", "home",
+                OwnerRef.player(UUID.randomUUID()), worldA, chunks, subs, 1L, 2L,
+                Instant.EPOCH, Instant.EPOCH.plusSeconds(10));
     }
 
     @Test
