@@ -147,7 +147,7 @@ class ChunkLandReadApiStructureTest {
                 com.smile.chunkland.api.land.LandId.class,
                 com.smile.chunkland.runtime.index.LandRegistry.class);
         assertNotNull(depthMethod, "ProtectionDepthLookup must have snapshot param");
-        // Verify ChunkLandReadApi passes that snapshot through
+        // Assert ChunkLandReadApi passes that snapshot through
         Path p = apiDir().resolve("ChunkLandReadApi.java");
         if (!Files.exists(p)) p = findProjectRoot().resolve("chunkland-plugin/src/main/java/com/smile/chunkland/runtime/api/ChunkLandReadApi.java");
         String content = Files.readString(p);

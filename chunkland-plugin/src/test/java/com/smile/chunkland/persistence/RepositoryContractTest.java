@@ -55,7 +55,7 @@ class RepositoryContractTest {
             OwnerRef owner = OwnerRef.player(UUID.randomUUID());
             LandSnapshot orig = land(world, lid, owner);
             repo.save(orig).toCompletableFuture().join();
-            // verify BLOB length 16 via direct SQL on persistence thread
+            // assert BLOB length 16 via direct SQL on persistence thread
             byte[] storedWorld = store.execute(conn -> {
                 try (PreparedStatement ps = conn.prepareStatement("SELECT world_uuid FROM lands WHERE id = ?")) {
                     ps.setBytes(1, UuidBlob.encode(lid.value()));
@@ -125,7 +125,7 @@ class RepositoryContractTest {
             ChunkKey ck = new ChunkKey(world, 5, -3);
             UUID lot = UUID.randomUUID();
             chunkRepo.addChunk(lid, ck, 40, lot, 1000L).toCompletableFuture().join();
-            // verify stored BLOB length and thread
+            // assert stored BLOB length and thread
             String threadName = chunkRepo.listByLand(lid).thenApply(v -> Thread.currentThread().getName()).toCompletableFuture().join();
             // CompletableFuture callbacks run on calling thread, but internal work was on persistence thread – check via store execute direct rejection
             assertThrows(DirectSqlAccessException.class, () -> store.executeDirect(c -> 1));
@@ -164,7 +164,7 @@ class RepositoryContractTest {
             Optional<SubLandSnapshot> found = subRepo.findById(sid).toCompletableFuture().join();
             assertTrue(found.isPresent());
             assertEquals(c, found.get().cuboid());
-            // verify BLOB storage
+            // assert BLOB storage
             byte[] widBlob = store.execute(conn -> {
                 try (PreparedStatement ps = conn.prepareStatement("SELECT world_uuid FROM sublands WHERE id = ?")) {
                     ps.setBytes(1, UuidBlob.encode(sid.value()));
@@ -198,7 +198,7 @@ class RepositoryContractTest {
             Optional<AuditEntry> after = auditRepo.findById(aid).toCompletableFuture().join();
             assertTrue(after.isPresent());
             assertEquals(lid, after.get().landId());
-            // verify foreign key not cascading: count
+            // assert foreign key not cascading: count
             int count = store.execute(conn -> {
                 try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM audit_log WHERE id=" + aid)) { rs.next(); return rs.getInt(1); }
             });
