@@ -3,10 +3,16 @@ package com.smile.chunkland.persistence;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.api.land.LandSnapshot;
+import com.smile.chunkland.api.land.OwnerRef;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
@@ -17,6 +23,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,7 +37,7 @@ class SchemaMigrationTest {
     @Test
     void migratesFromV0ToV1OnOpen() {
         try (PersistenceStore store = PersistenceStore.open(databasePath())) {
-            assertEquals(1, store.schemaVersion());
+            assertEquals(SchemaMigrator.LATEST_VERSION, store.schemaVersion());
             assertTrue(landChunksExists(store));
         }
     }
@@ -152,7 +160,7 @@ class SchemaMigrationTest {
         }
 
         try (PersistenceStore second = PersistenceStore.open(path)) {
-            assertEquals(1, second.schemaVersion());
+            assertEquals(SchemaMigrator.LATEST_VERSION, second.schemaVersion());
             assertEquals(1, countLandChunks(second));
             assertEquals("PLAYER:" + playerId, ownerKeyFor(second, "9,10"));
         }
@@ -354,6 +362,400 @@ class SchemaMigrationTest {
                             + "id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)");
             assertThrows(SQLException.class, () -> SchemaVersion.readCurrent(connection));
         }
+    }
+
+    // --- Blocker 4: v1 -> v2 must backfill legacy land_chunks rows ---
+
+    @Test
+    void v1ToV2BackfillsLegacyRowsIntoReadableLands() throws SQLException {
+        Path path = databasePath();
+        UUID playerId = UUID.randomUUID();
+        UUID uuidWorld = UUID.randomUUID();
+        seedV1Database(
+                path,
+                new LegacyChunkRow(1L, "world", "1,2", "PLAYER:" + playerId, playerId, 1000L),
+                new LegacyChunkRow(2L, "world", "3,4", "SERVER", null, 2000L),
+                new LegacyChunkRow(3L, uuidWorld.toString(), "-5,6", "PLAYER:" + playerId, playerId, 3000L));
+
+        try (PersistenceStore store = PersistenceStore.open(path)) {
+            assertEquals(SchemaMigrator.LATEST_VERSION, store.schemaVersion());
+
+            SqliteChunkRepository chunkRepo = new SqliteChunkRepository(store);
+            SqliteLandRepository landRepo = new SqliteLandRepository(store);
+
+            // deterministic synthetic lands; legacy id 1 -> landA, 2 -> landB, 3 -> landC
+            LandId landA = legacySyntheticLandId(1L);
+            LandId landB = legacySyntheticLandId(2L);
+            LandId landC = legacySyntheticLandId(3L);
+
+            // findLandByChunk round-trips through world_uuid/chunk_x/chunk_z
+            UUID legacyWorldUuid = legacyWorldUuid("world");
+            Optional<LandId> foundA = chunkRepo.findLandByChunk(new ChunkKey(legacyWorldUuid, 1, 2))
+                    .toCompletableFuture().join();
+            assertTrue(foundA.isPresent(), "legacy world 'world' + chunk '1,2' must be findable");
+            assertEquals(landA, foundA.get());
+
+            Optional<LandId> foundB = chunkRepo.findLandByChunk(new ChunkKey(legacyWorldUuid, 3, 4))
+                    .toCompletableFuture().join();
+            assertTrue(foundB.isPresent(), "legacy world 'world' + chunk '3,4' must be findable");
+            assertEquals(landB, foundB.get());
+
+            // UUID-shaped legacy world strings are preserved verbatim, including negative chunk coords
+            Optional<LandId> foundC = chunkRepo.findLandByChunk(new ChunkKey(uuidWorld, -5, 6))
+                    .toCompletableFuture().join();
+            assertTrue(foundC.isPresent(), "UUID-string legacy world + chunk '-5,6' must be findable");
+            assertEquals(landC, foundC.get());
+
+            // listByLand returns each legacy chunk by its synthetic land id
+            List<ChunkKey> listedA = chunkRepo.listByLand(landA).toCompletableFuture().join();
+            assertEquals(List.of(new ChunkKey(legacyWorldUuid, 1, 2)), listedA);
+
+            List<ChunkKey> listedB = chunkRepo.listByLand(landB).toCompletableFuture().join();
+            assertEquals(List.of(new ChunkKey(legacyWorldUuid, 3, 4)), listedB);
+
+            List<ChunkKey> listedC = chunkRepo.listByLand(landC).toCompletableFuture().join();
+            assertEquals(List.of(new ChunkKey(uuidWorld, -5, 6)), listedC);
+
+            // SqliteLandRepository.findById returns a fully readable LandSnapshot
+            Optional<LandSnapshot> byIdA = landRepo.findById(landA).toCompletableFuture().join();
+            assertTrue(byIdA.isPresent());
+            LandSnapshot snapA = byIdA.get();
+            assertEquals(landA, snapA.id());
+            assertEquals(OwnerRef.player(playerId), snapA.ownerRef());
+            assertEquals(legacyWorldUuid, snapA.worldId());
+            assertEquals(List.of(new ChunkKey(legacyWorldUuid, 1, 2)), List.copyOf(snapA.chunks()));
+            assertEquals(0L, snapA.structureRevision());
+            assertEquals(0L, snapA.landPolicyRevision());
+
+            Optional<LandSnapshot> byIdB = landRepo.findById(landB).toCompletableFuture().join();
+            assertTrue(byIdB.isPresent());
+            assertEquals(OwnerRef.server(), byIdB.get().ownerRef());
+            assertEquals(legacyWorldUuid, byIdB.get().worldId());
+
+            Optional<LandSnapshot> byIdC = landRepo.findById(landC).toCompletableFuture().join();
+            assertTrue(byIdC.isPresent());
+            assertEquals(uuidWorld, byIdC.get().worldId());
+
+            // legacy land_chunks columns world/chunk/owner_key/owner_uuid/claimed_at preserved
+            assertEquals("world", readLegacyChunkWorld(store, 1L));
+            assertEquals("1,2", readLegacyChunkChunk(store, 1L));
+            assertEquals("PLAYER:" + playerId, readLegacyChunkOwnerKey(store, 1L));
+            assertEquals(1000L, readLegacyChunkClaimedAt(store, 1L));
+        }
+    }
+
+    @Test
+    void v1ToV2BackfillIsDeterministicAcrossRestart() throws SQLException {
+        Path path = databasePath();
+        UUID playerId = UUID.randomUUID();
+        seedV1Database(
+                path,
+                new LegacyChunkRow(7L, "world", "11,12", "PLAYER:" + playerId, playerId, 4000L));
+
+        LandId firstSynthetic;
+        try (PersistenceStore first = PersistenceStore.open(path)) {
+            SqliteLandRepository landRepo = new SqliteLandRepository(first);
+            firstSynthetic = legacySyntheticLandId(7L);
+            assertTrue(landRepo.findById(firstSynthetic).toCompletableFuture().join().isPresent());
+        }
+        try (PersistenceStore second = PersistenceStore.open(path)) {
+            SqliteLandRepository landRepo = new SqliteLandRepository(second);
+            Optional<LandSnapshot> again = landRepo.findById(firstSynthetic).toCompletableFuture().join();
+            assertTrue(again.isPresent());
+            assertEquals(firstSynthetic, again.get().id());
+        }
+    }
+
+    @Test
+    void v1ToV2BackfillRejectsMalformedChunkText() throws SQLException {
+        Path path = databasePath();
+        UUID playerId = UUID.randomUUID();
+        seedV1Database(
+                path,
+                new LegacyChunkRow(1L, "world", "not-a-chunk", "PLAYER:" + playerId, playerId, 1000L));
+
+        assertThrows(PersistenceException.class, () -> PersistenceStore.open(path));
+
+        // rollback must leave version, schema, and legacy rows untouched: the v2
+        // ALTER TABLE additions are gone, so the v1 land_chunks schema is what
+        // we observe.
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + path);
+                Statement statement = connection.createStatement()) {
+            assertEquals(1, readVersion(statement));
+            assertEquals(1, countTable(statement, "land_chunks"));
+            try (ResultSet rs = statement.executeQuery(
+                    "SELECT COUNT(*) FROM land_chunks")) {
+                rs.next();
+                assertEquals(1, rs.getInt(1), "legacy land_chunks row must survive rollback");
+            }
+            assertEquals(0, countTable(statement, "lands"));
+            assertEquals(0, countTable(statement, "sublands"));
+            assertEquals(0, countTable(statement, "subject_groups"));
+            assertEquals(0, countTable(statement, "permission_profiles"));
+            assertEquals(0, countTable(statement, "audit_log"));
+            assertEquals(0, countTable(statement, "operation_ledger"));
+        }
+    }
+
+    @Test
+    void v1ToV2BackfillRejectsMalformedOwnerKey() throws SQLException {
+        Path path = databasePath();
+        seedV1Database(
+                path,
+                new LegacyChunkRow(1L, "world", "1,2", "GUILD:rogue", null, 1000L));
+
+        assertThrows(PersistenceException.class, () -> PersistenceStore.open(path));
+
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + path);
+                Statement statement = connection.createStatement()) {
+            assertEquals(1, readVersion(statement));
+            assertEquals(1, countTable(statement, "land_chunks"));
+            assertEquals(0, countTable(statement, "lands"));
+            assertEquals(0, countTable(statement, "sublands"));
+            try (ResultSet rs = statement.executeQuery(
+                    "SELECT COUNT(*) FROM land_chunks WHERE owner_key = 'GUILD:rogue'")) {
+                rs.next();
+                assertEquals(1, rs.getInt(1), "the malformed legacy row must survive rollback");
+            }
+        }
+    }
+
+    @Test
+    void v1ToV2MidBackfillFailureRollsBackSchemaAndData() throws SQLException {
+        // A mid-backfill failure (e.g. malformed chunk on the 2nd legacy row) must
+        // roll back the entire migration transaction: version stays at 1, the v2
+        // tables are absent, and legacy rows are unchanged.
+        Path path = temporaryDirectory.resolve("mid-backfill.db");
+        UUID playerId = UUID.randomUUID();
+        seedV1Database(
+                path,
+                new LegacyChunkRow(1L, "world", "1,2", "PLAYER:" + playerId, playerId, 1000L),
+                new LegacyChunkRow(2L, "world", "garbage", "SERVER", null, 2000L));
+
+        assertThrows(PersistenceException.class, () -> PersistenceStore.open(path));
+
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + path);
+                Statement statement = connection.createStatement()) {
+            assertEquals(1, readVersion(statement));
+            assertEquals(1, countTable(statement, "land_chunks"));
+            assertEquals(0, countTable(statement, "lands"));
+            assertEquals(0, countTable(statement, "sublands"));
+            assertEquals(0, countTable(statement, "subject_groups"));
+            assertEquals(0, countTable(statement, "permission_profiles"));
+            assertEquals(0, countTable(statement, "audit_log"));
+            assertEquals(0, countTable(statement, "operation_ledger"));
+            try (ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM land_chunks")) {
+                rs.next();
+                assertEquals(2, rs.getInt(1), "both legacy rows must survive rollback");
+            }
+        }
+    }
+
+    // --- Follow-up regression: legacy text normalization must not silently collide ---
+
+    @Test
+    void v1ToV2BackfillRejectsCanonicalCoordinateCollision() throws SQLException {
+        // Two legacy rows pass the v1 UNIQUE(world, chunk) check because their raw
+        // text differs, but they map to the same canonical (world_uuid, chunk_x,
+        // chunk_z). The migration must fail closed: keeping one row and silently
+        // losing the other would violate the no-loss upgrade contract because the
+        // v2 repositories only read back one land per coordinate.
+        Path path = databasePath();
+        UUID playerId = UUID.randomUUID();
+        UUID uuidWorld = UUID.randomUUID();
+        seedV1Database(
+                path,
+                new LegacyChunkRow(1L, uuidWorld.toString(), "1,2", "PLAYER:" + playerId, playerId, 1000L),
+                new LegacyChunkRow(2L, uuidWorld.toString(), "01,2", "SERVER", null, 2000L));
+
+        PersistenceException thrown = assertThrows(
+                PersistenceException.class, () -> PersistenceStore.open(path));
+        Throwable cause = thrown.getCause();
+        assertNotNull(cause);
+        assertTrue(
+                cause.getMessage().contains("collision"),
+                "cause must describe the coordinate collision, got: " + cause.getMessage());
+
+        // rollback must leave schema version, legacy rows, and v2 tables untouched
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + path);
+                Statement statement = connection.createStatement()) {
+            assertEquals(1, readVersion(statement));
+            assertEquals(1, countTable(statement, "land_chunks"));
+            assertEquals(0, countTable(statement, "lands"));
+            assertEquals(0, countTable(statement, "sublands"));
+            assertEquals(0, countTable(statement, "subject_groups"));
+            assertEquals(0, countTable(statement, "permission_profiles"));
+            assertEquals(0, countTable(statement, "audit_log"));
+            assertEquals(0, countTable(statement, "operation_ledger"));
+            try (ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM land_chunks")) {
+                rs.next();
+                assertEquals(2, rs.getInt(1), "both legacy rows must survive rollback");
+            }
+        }
+    }
+
+    @Test
+    void v1ToV2BackfillDistinguishesCanonicalAndNonCanonicalUuidLikeWorldText() throws SQLException {
+        // A non-canonical UUID-shaped legacy world ("1-1-1-1-1") and its canonical
+        // equivalent ("00000001-0001-0001-0001-000000000001") must map to different
+        // canonical world_uuids, otherwise the legacy row whose world was the
+        // non-canonical form would alias the canonical row and become unreadable.
+        // Both rows use distinct chunks so the backfill can complete.
+        Path path = databasePath();
+        UUID playerId = UUID.randomUUID();
+        UUID canonicalWorld = UUID.fromString("00000001-0001-0001-0001-000000000001");
+        seedV1Database(
+                path,
+                new LegacyChunkRow(
+                        1L, "00000001-0001-0001-0001-000000000001", "1,2",
+                        "PLAYER:" + playerId, playerId, 1000L),
+                new LegacyChunkRow(
+                        2L, "1-1-1-1-1", "3,4", "SERVER", null, 2000L));
+
+        try (PersistenceStore store = PersistenceStore.open(path)) {
+            SqliteChunkRepository chunkRepo = new SqliteChunkRepository(store);
+            SqliteLandRepository landRepo = new SqliteLandRepository(store);
+
+            // canonical UUID text is preserved verbatim
+            Optional<LandId> foundCanonical = chunkRepo.findLandByChunk(new ChunkKey(canonicalWorld, 1, 2))
+                    .toCompletableFuture().join();
+            assertTrue(foundCanonical.isPresent(), "canonical UUID world text must be findable");
+            assertEquals(legacySyntheticLandId(1L), foundCanonical.get());
+
+            // non-canonical UUID-shaped text becomes a distinct namespaced UUID
+            UUID nonCanonicalWorld = legacyWorldUuid("1-1-1-1-1");
+            assertNotEquals(
+                    canonicalWorld, nonCanonicalWorld,
+                    "non-canonical UUID-like text must not alias the canonical UUID it parses to");
+            Optional<LandId> foundNonCanonical = chunkRepo.findLandByChunk(new ChunkKey(nonCanonicalWorld, 3, 4))
+                    .toCompletableFuture().join();
+            assertTrue(foundNonCanonical.isPresent(), "non-canonical UUID-shaped text must be readable on its own mapping");
+            assertEquals(legacySyntheticLandId(2L), foundNonCanonical.get());
+
+            // the natural-key lookup on each row's coordinate returns only that row's land
+            Optional<LandSnapshot> snapCanonical = landRepo.findById(legacySyntheticLandId(1L))
+                    .toCompletableFuture().join();
+            assertTrue(snapCanonical.isPresent());
+            assertEquals(canonicalWorld, snapCanonical.get().worldId());
+
+            Optional<LandSnapshot> snapNonCanonical = landRepo.findById(legacySyntheticLandId(2L))
+                    .toCompletableFuture().join();
+            assertTrue(snapNonCanonical.isPresent());
+            assertEquals(nonCanonicalWorld, snapNonCanonical.get().worldId());
+        }
+    }
+
+    private void seedV1Database(Path path, LegacyChunkRow... rows) throws SQLException {
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + path);
+                Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    "CREATE TABLE schema_version ("
+                            + "id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)");
+            statement.executeUpdate("INSERT INTO schema_version (id, version) VALUES (1, 1)");
+            statement.executeUpdate(
+                    "CREATE TABLE land_chunks ("
+                            + "id INTEGER PRIMARY KEY,"
+                            + "world TEXT NOT NULL,"
+                            + "chunk TEXT NOT NULL,"
+                            + "owner_key TEXT NOT NULL,"
+                            + "owner_uuid BLOB(16),"
+                            + "claimed_at INTEGER NOT NULL,"
+                            + "UNIQUE (world, chunk))");
+            for (LegacyChunkRow row : rows) {
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "INSERT INTO land_chunks (id, world, chunk, owner_key, owner_uuid, claimed_at) "
+                                + "VALUES (?, ?, ?, ?, ?, ?)")) {
+                    ps.setLong(1, row.id());
+                    ps.setString(2, row.world);
+                    ps.setString(3, row.chunk);
+                    ps.setString(4, row.ownerKey);
+                    if (row.ownerUuid == null) {
+                        ps.setBytes(5, null);
+                    } else {
+                        ps.setBytes(5, UuidBlob.encode(row.ownerUuid));
+                    }
+                    ps.setLong(6, row.claimedAt);
+                    ps.executeUpdate();
+                }
+            }
+        }
+    }
+
+    private static LandId legacySyntheticLandId(long legacyId) {
+        byte[] bytes = ("chunkland-legacy-land:" + legacyId).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return new LandId(UUID.nameUUIDFromBytes(bytes));
+    }
+
+    private static UUID legacyWorldUuid(String legacyWorld) {
+        // Mirrors SchemaMigrator.legacyWorldUuid: only the canonical 8-4-4-4-12
+        // UUID text is preserved; non-canonical UUID-like text and arbitrary
+        // names map through a fixed namespace so two distinct legacy rows cannot
+        // alias one another.
+        try {
+            UUID parsed = UUID.fromString(legacyWorld);
+            if (parsed.toString().equalsIgnoreCase(legacyWorld)) {
+                return parsed;
+            }
+        } catch (IllegalArgumentException notCanonicalUuid) {
+            // fall through to namespace fallback
+        }
+        byte[] bytes = ("chunkland-legacy-world:" + legacyWorld).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return UUID.nameUUIDFromBytes(bytes);
+    }
+
+    private static String readLegacyChunkWorld(PersistenceStore store, long id) {
+        return store.execute(connection -> {
+            try (PreparedStatement ps = connection.prepareStatement(
+                    "SELECT world FROM land_chunks WHERE id = ?")) {
+                ps.setLong(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+    }
+
+    private static String readLegacyChunkChunk(PersistenceStore store, long id) {
+        return store.execute(connection -> {
+            try (PreparedStatement ps = connection.prepareStatement(
+                    "SELECT chunk FROM land_chunks WHERE id = ?")) {
+                ps.setLong(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+    }
+
+    private static String readLegacyChunkOwnerKey(PersistenceStore store, long id) {
+        return store.execute(connection -> {
+            try (PreparedStatement ps = connection.prepareStatement(
+                    "SELECT owner_key FROM land_chunks WHERE id = ?")) {
+                ps.setLong(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+    }
+
+    private static long readLegacyChunkClaimedAt(PersistenceStore store, long id) {
+        return store.execute(connection -> {
+            try (PreparedStatement ps = connection.prepareStatement(
+                    "SELECT claimed_at FROM land_chunks WHERE id = ?")) {
+                ps.setLong(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
+    private record LegacyChunkRow(long id, String world, String chunk, String ownerKey, UUID ownerUuid, long claimedAt) {
     }
 
     private Path databasePath() {

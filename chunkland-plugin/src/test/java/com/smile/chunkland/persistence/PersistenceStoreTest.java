@@ -42,7 +42,7 @@ class PersistenceStoreTest {
         try (PersistenceStore store = PersistenceStore.open(databasePath())) {
             assertEquals("wal", store.journalMode());
             assertEquals("wal", store.journalModeAsync().toCompletableFuture().join());
-            assertEquals(1, store.schemaVersion());
+            assertEquals(SchemaMigrator.LATEST_VERSION, store.schemaVersion());
             assertEquals(
                     1,
                     store.execute(this::schemaVersionTableCount),
