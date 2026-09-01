@@ -73,7 +73,7 @@ public record LandSnapshot(
         // empty chunk set), so only its chunks — when present — are world-checked.
         // This is the single enforcement point: add/replace mutations rebuild via
         // this constructor, so they are re-validated automatically. Cuboid
-        // containment / 3D overlap is owned by the downstream M1-06 layer.
+        // containment / 3D overlap is owned by the downstream geometry validation layer.
         for (SubLandSnapshot subLand : subLands) {
             Objects.requireNonNull(subLand, "subLands must not contain null");
             if (!id.equals(subLand.parentLandId())) {
