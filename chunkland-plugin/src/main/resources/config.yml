@@ -21,6 +21,10 @@
 # `worldPolicyEpoch` by 1, so any permission cache or selection session keyed
 # on those epochs becomes stale automatically (企劃書 §33.1).
 
+messages:
+  default-locale: en_US
+  cooldown-seconds: 2
+
 limits:
   max-lands-per-player: 5
   max-total-chunks-per-player: 256

@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import org.yaml.snakeyaml.Yaml;
@@ -58,10 +59,10 @@ public final class ConfigSchema {
         // Reject unknown top-level keys explicitly so future renames become
         // loud failures instead of silent runtime bugs.
         for (String key : root.keySet()) {
-            if (!"worlds".equals(key) && !"limits".equals(key)) {
+            if (!"worlds".equals(key) && !"limits".equals(key) && !"messages".equals(key)) {
                 throw new ConfigValidationException(
                         "unknown top-level key '" + key
-                                + "' (only 'worlds' and 'limits' are supported in the current schema)");
+                                + "' (only 'worlds', 'limits' and 'messages' are supported in the current schema)");
             }
         }
         Map<String, WorldSettings> worlds = parseWorlds(root.get("worlds"), "worlds");
@@ -75,7 +76,17 @@ public final class ConfigSchema {
             }
             limits = parseLimits(rawLimits, "limits");
         }
-        return new ChunkLandConfig(worlds, limits, 0L, deriveWorldEpochs(worlds));
+        MessageSettings messages;
+        if (!root.containsKey("messages")) {
+            messages = MessageSettings.defaults();
+        } else {
+            Object rawMessages = root.get("messages");
+            if (rawMessages == null) {
+                throw new ConfigValidationException("messages must not be null");
+            }
+            messages = parseMessages(rawMessages, "messages");
+        }
+        return new ChunkLandConfig(worlds, limits, messages, 0L, deriveWorldEpochs(worlds));
     }
 
     /** Build the worldPolicyEpochs map (every known world starts at 0). */
@@ -171,6 +182,46 @@ public final class ConfigSchema {
             throw new ConfigValidationException(path + " must not be null");
         }
         return parseIntLimit(raw, path);
+    }
+
+    private static MessageSettings parseMessages(Object raw, String path) {
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping, got " + raw.getClass().getSimpleName());
+        }
+        Map<String, Object> map = castStringKeyMap(rawMap, path);
+        for (String key : map.keySet()) {
+            if (!"default-locale".equals(key) && !"cooldown-seconds".equals(key)) {
+                throw new ConfigValidationException(path + " has unknown key '" + key + "'");
+            }
+        }
+        // default-locale
+        Locale defaultLocale;
+        if (!map.containsKey("default-locale")) {
+            defaultLocale = MessageSettings.defaults().defaultLocale();
+        } else {
+            Object rawLocale = map.get("default-locale");
+            if (rawLocale == null) {
+                throw new ConfigValidationException(path + ".default-locale must not be null");
+            }
+            if (!(rawLocale instanceof String s)) {
+                throw new ConfigValidationException(
+                        path + ".default-locale must be a string, got " + rawLocale.getClass().getSimpleName());
+            }
+            defaultLocale = MessageSettings.parseLocaleTag(s, path + ".default-locale");
+        }
+        // cooldown-seconds
+        int cooldown;
+        if (!map.containsKey("cooldown-seconds")) {
+            cooldown = MessageSettings.defaults().cooldownSeconds();
+        } else {
+            Object rawCooldown = map.get("cooldown-seconds");
+            if (rawCooldown == null) {
+                throw new ConfigValidationException(path + ".cooldown-seconds must not be null");
+            }
+            cooldown = parseIntLimit(rawCooldown, path + ".cooldown-seconds");
+        }
+        return new MessageSettings(defaultLocale, cooldown);
     }
 
     private static int parseIntLimit(Object raw, String path) {

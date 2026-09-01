@@ -9,3 +9,20 @@ message:
       open_url: 'Open URL: <payload>'
       copy_to_clipboard: 'Copy to clipboard: <payload>'
       unknown: 'Action: <payload>'
+land:
+  claim:
+    confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <revision>'><green>[Confirm]</green></click></hover>"
+    success: "<green>Land <land_name> claimed: <chunk_count> chunks for <price> (minY <min_y>).</green>"
+    expanded: "<green>Land <land_name> expanded by <added_count> chunks (now <chunk_count>) for <price>.</green>"
+  rename:
+    success: "<green>Land renamed to <new_name> (was <old_name>).</green>"
+  delete:
+    success: "<green>Land <land_name> deleted. Refunded <refund> for <chunk_count> chunks.</green>"
+protection:
+  rejection:
+    denied: "<red>Action <action> denied in <land_name> — owner <owner>. <reason></red>"
+    limit: "<red>Limit reached: <current>/<max> <limit_type>.</red>"
+    cooldown: "<yellow>Please wait <remaining>s before next action.</yellow>"
+    economy: "<red>Payment failed: price <price> — <reason>.</red>"
+  allow:
+    silent: "<gray>Allowed.</gray>"

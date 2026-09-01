@@ -9,3 +9,20 @@ message:
       open_url: '開啟網址：<payload>'
       copy_to_clipboard: '複製到剪貼簿：<payload>'
       unknown: '未知動作：<payload>'
+land:
+  claim:
+    confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <revision>'><green>[確認]</green></click></hover>"
+    success: "<green>領地 <land_name> 已建立：<chunk_count> 個區塊，花費 <price>（最低高度 <min_y>）。</green>"
+    expanded: "<green>領地 <land_name> 已擴張 <added_count> 個區塊（現為 <chunk_count>），花費 <price>。</green>"
+  rename:
+    success: "<green>領地已重新命名為 <new_name>（原名 <old_name>）。</green>"
+  delete:
+    success: "<green>領地 <land_name> 已刪除。已退費 <refund>，共 <chunk_count> 個區塊。</green>"
+protection:
+  rejection:
+    denied: "<red>在 <land_name> 中動作 <action> 被拒絕 — 擁有者 <owner>。原因：<reason></red>"
+    limit: "<red>已達上限：<current>/<max> <limit_type>。</red>"
+    cooldown: "<yellow>請等待 <remaining> 秒後再試。</yellow>"
+    economy: "<red>付款失敗：需付 <price> — <reason>。</red>"
+  allow:
+    silent: "<gray>已允許。</gray>"
