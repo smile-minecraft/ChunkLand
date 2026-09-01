@@ -1,0 +1,31 @@
+# ChunkLand configuration.
+#
+# Scope decision (CL-M2-01): this milestone delivers the config *framework*
+# — atomic load + validation, fail-fast on unknown keys, and the reload epoch
+# contract — plus the top-level `worlds` section. The spec (企劃書) does not
+# define a single consolidated config block; each feature section owns its own
+# keys. Later tasks therefore add their own typed top-level section as they
+# land:
+#   limits            -> CL-M2-16 / CL-M2-06
+#   economy           -> CL-M2-08 / CL-M2-20
+#   vertical-mode     -> CL-M3-01
+#   permission-cache  -> CL-M4-04   (max-entries: 100000, expire-after-access: 10m)
+#   particle          -> CL-M2-15
+#   audit             -> CL-M3-12 / CL-M4-10   (retention-days)
+#   messages          -> CL-M2-02
+# Until a section is added, its top-level key is rejected on load so a typo or
+# a premature copy-paste is a loud failure rather than a silently ignored line.
+#
+# Reload uses ChunkLand's own reload API (Bukkit /reload is NOT supported).
+# A successful reload bumps `globalPolicyEpoch` and every known
+# `worldPolicyEpoch` by 1, so any permission cache or selection session keyed
+# on those epochs becomes stale automatically (企劃書 §33.1).
+
+worlds:
+  # Worlds not listed here follow the `claim-enabled: true` default.
+  world:
+    claim-enabled: true
+  world_nether:
+    claim-enabled: false
+  world_the_end:
+    claim-enabled: false

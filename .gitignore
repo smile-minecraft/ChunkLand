@@ -5,5 +5,19 @@ docs/
 # OpenCode 工作狀態（計畫、任務登記、專案記憶）
 .opencode/
 
+# Gradle / Java 編譯輸出（多模組 build、bin 與 Gradle 本機快取）
+**/build/
+**/bin/
+.gradle/
+
+# IDE metadata（Eclipse / VSCode 本機設定）
+.project
+.classpath
+.settings/
+.vscode/
+
+# Playwright 本機狀態
+.playwright-mcp/
+
 # macOS
 .DS_Store

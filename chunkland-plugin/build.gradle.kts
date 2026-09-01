@@ -5,6 +5,9 @@ plugins {
 dependencies {
     implementation(project(":chunkland-api"))
     implementation(libs.sqlite.jdbc)
+    // ConfigService loads config.yml at runtime; snakeyaml is therefore a
+    // production dependency (not test-only).
+    implementation(libs.snakeyaml)
     // Compile-only: provided by the server at runtime (Paper / Folia).
     compileOnly(libs.paper.api)
     // Compile-only: AceLib is a server-provided plugin (depend: [AceLib] in plugin.yml).
@@ -16,7 +19,6 @@ dependencies {
     // affect the plugin jar (only main sources are packaged).
     testImplementation(libs.paper.api)
     testImplementation("com.smile.acelib:AceLib:1.2.0")
-    testImplementation(libs.snakeyaml)
 }
 
 // Expand plugin.yml placeholders (e.g. version) from the project model so the

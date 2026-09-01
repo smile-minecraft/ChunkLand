@@ -4,6 +4,8 @@ import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
 import com.smile.chunkland.capability.Capabilities;
 import com.smile.chunkland.capability.M0CapabilityProbe;
+import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.message.M0MessageProbe;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -27,6 +29,12 @@ import org.bukkit.plugin.java.JavaPlugin;
  * <p>Both probes must be fail-closed (their {@code tryBuild} returns empty when the API
  * is missing or not ready), so this class never NPEs on a missing AceLib facade.</p>
  *
+ * <p>The config-system wiring owns a {@link ConfigService} that holds the parsed
+ * {@code config.yml} snapshot. Reload is exposed as a programmatic API on this class
+ * so a future command-tree task can wire a {@code /land reload} subcommand without
+ * touching the rest of the lifecycle. The Bukkit {@code /reload} command is
+ * intentionally NOT supported.</p>
+ *
  * <p>The {@code chunkland} command does NOT carry a top-level Bukkit {@code permission}
  * entry (see {@code plugin.yml}); instead each subcommand is gated explicitly here:</p>
  * <ul>
@@ -48,6 +56,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<M0MessageProbe> messagePipeline = Optional.empty();
     private Optional<M0CapabilityProbe> capabilityProbe = Optional.empty();
     private Optional<Capabilities> capabilities = Optional.empty();
+    private Optional<ConfigService> configService = Optional.empty();
 
     public ChunkLandPlugin() {
     }
@@ -60,6 +69,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return bridge;
     }
 
+    /**
+     * @return the live config service, or empty when bootstrap failed (the failure
+     *         is logged in {@link #onEnable()}). Reload is a programmatic API —
+     *         a future command-tree task will gate it behind a {@code /land reload}
+     *         subcommand; this class intentionally does NOT register one yet.
+     */
+    public Optional<ConfigService> getConfigService() {
+        return configService;
+    }
+
     @Override
     public void onEnable() {
         AceLibLifecycle.enable(
@@ -68,6 +87,23 @@ public final class ChunkLandPlugin extends JavaPlugin {
             getLogger(),
             () -> getServer().getPluginManager().disablePlugin(this)
         );
+        // Config-system wiring: bootstrap the config service from data-folder/config.yml.
+        // On a missing or invalid file we keep the plugin alive with defaults
+        // and log a warning — the admin can fix the file and call reload() later.
+        try {
+            YamlFileConfigLoader loader = new YamlFileConfigLoader(
+                    getDataFolder().toPath().resolve("config.yml"));
+            this.configService = Optional.of(new ConfigService(loader));
+        } catch (RuntimeException ex) {
+            getLogger().warning(
+                    "ChunkLand config bootstrap failed; starting with defaults. "
+                            + "Reason: " + ex.getMessage());
+            // Fall back to a service backed by the embedded default YAML so
+            // downstream readers always see a valid snapshot.
+            this.configService = Optional.of(new ConfigService(
+                    new com.smile.chunkland.config.ResourceConfigLoader(
+                            getClass(), "/config.yml")));
+        }
         // Only build the message probe after a ready AceLib API is held. If AceLib is
         // missing/not-ready, bridge.getApi() is null and tryBuild returns empty (fail-closed,
         // no NPE). The probe command reports "not ready" instead of pretending to send.
@@ -99,6 +135,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         }
         this.capabilities = Optional.empty();
+        // ConfigService is an in-memory holder with no native resources;
+        // dropping the reference is enough. The reload listener list is
+        // package-private and GC'd along with the service.
+        this.configService = Optional.empty();
         bridge.release();
     }
 
@@ -195,3 +235,4 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return false;
     }
 }
+
