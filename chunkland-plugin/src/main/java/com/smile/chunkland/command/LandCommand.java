@@ -76,7 +76,7 @@ public final class LandCommand {
      * @param command  Bukkit command (name must be {@code land})
      * @param label    alias used
      * @param args     subcommand + tail
-     * @param pipeline nullable pipeline (when empty, sink falls back to plain)
+     * @param pipeline nullable pipeline (when null or rendering fails, sink is fail-closed with no output)
      * @return true when the command was recognised as {@code /land}
      */
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args, ChunkLandMessagePipeline pipeline) {
@@ -95,11 +95,21 @@ public final class LandCommand {
         Objects.requireNonNull(sender, "sender");
         ReplySink sink = sinkFactory.apply(sender, pipeline);
         if (args == null || args.length == 0) {
+            String perm = LandPermissions.forSubcommand("help");
+            if (perm != null && !sender.hasPermission(perm)) {
+                sink.reply("command.land.denied", Map.of("permission", perm));
+                return true;
+            }
             sink.reply("command.land.help", Map.of());
             return true;
         }
         String raw = args[0];
         if (raw == null || raw.isBlank()) {
+            String perm = LandPermissions.forSubcommand("help");
+            if (perm != null && !sender.hasPermission(perm)) {
+                sink.reply("command.land.denied", Map.of("permission", perm));
+                return true;
+            }
             sink.reply("command.land.help", Map.of());
             return true;
         }

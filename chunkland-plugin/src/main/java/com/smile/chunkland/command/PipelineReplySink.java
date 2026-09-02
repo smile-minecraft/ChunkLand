@@ -33,24 +33,22 @@ public final class PipelineReplySink implements ReplySink {
     @Override
     public void reply(String messageKey, Map<String, Object> vars, Locale localeOverride) {
         Map<String, Object> safeVars = vars == null ? Map.of() : vars;
-        if (sender instanceof Player player && pipeline != null) {
+        if (pipeline == null) {
+            return;
+        }
+        if (sender instanceof Player player) {
             try {
                 pipeline.sendChat(player, messageKey, safeVars, localeOverride);
-                return;
             } catch (RuntimeException ignored) {
-                // fall through to broadcast-safe path
+                // fail-closed: do not leak raw key and do not retry via broadcast path
             }
+            return;
         }
-        if (pipeline != null) {
-            try {
-                Component rendered = pipeline.renderForBroadcast(messageKey, safeVars, localeOverride);
-                sender.sendMessage(rendered);
-                return;
-            } catch (RuntimeException ignored) {
-                // fall through to plain fallback
-            }
+        try {
+            Component rendered = pipeline.renderForBroadcast(messageKey, safeVars, localeOverride);
+            sender.sendMessage(rendered);
+        } catch (RuntimeException ignored) {
+            // fail-closed: no raw key fallback
         }
-        // Ultimate fallback when pipeline is absent or rendering failed.
-        sender.sendMessage(messageKey);
     }
 }

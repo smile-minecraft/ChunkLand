@@ -119,7 +119,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // AceLibScheduler.create(...) factory and exposes four smoke paths.
         this.capabilityProbe = M0CapabilityProbe.tryBuild(this, bridge.getApi());
         // Land message pipeline for /land ReplySink (same key+vars contract). Fail-closed
-        // when AceLib is not ready; the sink falls back to plain text.
+        // when AceLib is not ready; the sink is fail-closed with no fallback output.
         Locale defaultLocale = configService.map(s -> s.current().messages().defaultLocale()).orElse(Locale.US);
         this.landMessagePipeline = ChunkLandMessagePipeline.tryBuild(this, bridge.getApi(), defaultLocale);
         this.landCommand = new LandCommand(LandCommand.defaultStubHandlers(), null);
@@ -186,6 +186,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     void setLandCommandForTest(LandCommand command) {
         this.landCommand = command;
+    }
+
+    static Command commandForTest(String name) {
+        return new Command(name) {
+            @Override
+            public boolean execute(CommandSender sender, String label, String[] args) {
+                return false;
+            }
+        };
     }
 
     Optional<ChunkLandMessagePipeline> getLandMessagePipeline() {

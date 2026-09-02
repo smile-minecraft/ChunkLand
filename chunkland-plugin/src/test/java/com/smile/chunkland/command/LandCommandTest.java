@@ -399,22 +399,205 @@ class LandCommandTest {
 
     @Test
     void bilingualKeysExistAndStrictValidationPasses() throws Exception {
+        java.util.Set<String> enKeys = commandLandKeys("en_US");
+        java.util.Set<String> zhKeys = commandLandKeys("zh_TW");
+        assertEquals(enKeys, zhKeys, "command.land.* key set must be identical between en_US and zh_TW");
         for (String tag : new String[]{"en_US","zh_TW"}) {
             YamlConfiguration cfg = new YamlConfiguration();
             cfg.load(new File("src/main/resources/lang/"+tag+".yml"));
-            for (String k : new String[]{"command.land.help","command.land.usage","command.land.unknown","command.land.denied","command.land.not_yet"}) {
+            for (String k : enKeys) {
                 String v = cfg.getString(k);
                 assertNotNull(v, tag+" missing "+k);
                 validateStrict(k, v);
             }
         }
-        // ensure same set
-        YamlConfiguration en = new YamlConfiguration(); en.load(new File("src/main/resources/lang/en_US.yml"));
-        YamlConfiguration zh = new YamlConfiguration(); zh.load(new File("src/main/resources/lang/zh_TW.yml"));
-        for (String k : new String[]{"command.land.help","command.land.usage","command.land.unknown","command.land.denied","command.land.not_yet"}) {
-            assertNotNull(en.getString(k));
-            assertNotNull(zh.getString(k));
+        // strict validation already ensures only allowed placeholders survive, so reaching here is the check
+        java.util.Set<String> allowedByReflection = allowedPlaceholders();
+        for (String k : enKeys) {
+            YamlConfiguration cfg = new YamlConfiguration();
+            cfg.load(new File("src/main/resources/lang/en_US.yml"));
+            String tmpl = cfg.getString(k);
+            java.util.Set<String> found = new java.util.HashSet<>();
+            java.util.regex.Matcher mm = java.util.regex.Pattern.compile("<([a-z_]+)>").matcher(tmpl);
+            while (mm.find()) {
+                String ph = mm.group(1);
+                if (allowedByReflection.contains(ph)) found.add(ph);
+            }
+            for (String ph : found) {
+                assertTrue(allowedByReflection.contains(ph), k+" uses placeholder "+ph+" not in allow-list");
+            }
         }
+    }
+
+    private static java.util.Set<String> commandLandKeys(String tag) throws Exception {
+        YamlConfiguration cfg = new YamlConfiguration();
+        cfg.load(new File("src/main/resources/lang/"+tag+".yml"));
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String k : cfg.getKeys(true)) {
+            Object v = cfg.get(k);
+            if (v instanceof String && k.startsWith("command.land.")) out.add(k);
+        }
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.Set<String> allowedPlaceholders() throws Exception {
+        var f = ChunkLandMessagePipeline.class.getDeclaredField("ALLOWED_PLACEHOLDERS");
+        f.setAccessible(true);
+        return (java.util.Set<String>) f.get(null);
+    }
+
+    private static ChunkLandMessagePipeline newPipelineViaReflection(ChunkLandMessagePipeline.PipelineSender sender,
+                                                                     ChunkLandMessagePipeline.MessageParser parser,
+                                                                     ChunkLandMessagePipeline.LangProvider lang,
+                                                                     com.smile.acelib.bedrock.BedrockService bedrock,
+                                                                     Locale locale) throws Exception {
+        var ctor = ChunkLandMessagePipeline.class.getDeclaredConstructor(
+                ChunkLandMessagePipeline.PipelineSender.class,
+                ChunkLandMessagePipeline.MessageParser.class,
+                ChunkLandMessagePipeline.LangProvider.class,
+                com.smile.acelib.bedrock.BedrockService.class,
+                Locale.class);
+        ctor.setAccessible(true);
+        return ctor.newInstance(sender, parser, lang, bedrock, locale);
+    }
+
+    private static ChunkLandMessagePipeline.MessageParser pipelineGetParser(ChunkLandMessagePipeline p) throws Exception {
+        var m = ChunkLandMessagePipeline.class.getDeclaredMethod("parser");
+        m.setAccessible(true); return (ChunkLandMessagePipeline.MessageParser) m.invoke(p);
+    }
+    private static ChunkLandMessagePipeline.LangProvider pipelineGetLang(ChunkLandMessagePipeline p) throws Exception {
+        var m = ChunkLandMessagePipeline.class.getDeclaredMethod("lang");
+        m.setAccessible(true); return (ChunkLandMessagePipeline.LangProvider) m.invoke(p);
+    }
+    private static com.smile.acelib.bedrock.BedrockService pipelineGetBedrock(ChunkLandMessagePipeline p) throws Exception {
+        var m = ChunkLandMessagePipeline.class.getDeclaredMethod("bedrock");
+        m.setAccessible(true); return (com.smile.acelib.bedrock.BedrockService) m.invoke(p);
+    }
+    private static Locale pipelineGetDefaultLocale(ChunkLandMessagePipeline p) throws Exception {
+        var m = ChunkLandMessagePipeline.class.getDeclaredMethod("defaultLocale");
+        m.setAccessible(true); return (Locale) m.invoke(p);
+    }
+
+    // ----- fail-closed ReplySink -----
+    @Test
+    void replySinkNullPipelineIsFailClosedNoRawKey() {
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<Component> comp = new CopyOnWriteArrayList<>();
+        CommandSender console = consoleSender(out, comp);
+        PipelineReplySink sink = new PipelineReplySink(console, null);
+        sink.reply("command.land.help", Map.of());
+        assertTrue(out.isEmpty(), "null pipeline must not send raw key");
+        assertTrue(comp.isEmpty());
+    }
+
+    @Test
+    void replySinkPlayerFailureDoesNotFallbackToBroadcast() throws Exception {
+        CountingSender cs = new CountingSender();
+        ChunkLandMessagePipeline pipeline = buildPipeline(false, cs);
+        // wrap with throwing sendChat via reflection
+        ChunkLandMessagePipeline throwing = newPipelineViaReflection(
+                new ChunkLandMessagePipeline.PipelineSender() {
+                    public void sendChat(Player p, Component m){ throw new RuntimeException("chat fail"); }
+                    public void sendChatWithFallback(Player p, Component m, Locale l){ throw new RuntimeException("fallback fail"); }
+                    public void sendActionBar(Player p, Component m){}
+                    public void sendActionBarWithFallback(Player p, Component m, Locale l){}
+                    public void sendTitle(Player p, Component t, Component s){}
+                    public void sendTitleWithFallback(Player p, Component t, Component s, Locale l){}
+                    public void broadcastWithFallback(Component m, Locale l){ cs.broadcastCalls++; }
+                },
+                pipelineGetParser(pipeline), pipelineGetLang(pipeline), pipelineGetBedrock(pipeline), pipelineGetDefaultLocale(pipeline));
+        UUID id = UUID.randomUUID();
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<Component> comp = new CopyOnWriteArrayList<>();
+        Player player = playerWithPerms(id, Locale.US, Map.of(), out, comp);
+        PipelineReplySink sink = new PipelineReplySink(player, throwing);
+        sink.reply("command.land.help", Map.of());
+        assertTrue(out.isEmpty(), "player failure must not fallback to raw key");
+        assertTrue(comp.isEmpty(), "player failure must not fallback to broadcast component");
+        assertEquals(0, cs.broadcastCalls, "must not call broadcast fallback on player failure");
+        assertEquals(0, cs.chatCalls);
+    }
+
+    @Test
+    void replySinkBedrockFallbackFailureIsFailClosed() throws Exception {
+        CountingSender throwingCS = new CountingSender() {
+            @Override public void sendChatWithFallback(Player p, Component m, Locale l) {
+                super.sendChatWithFallback(p, m, l);
+                throw new RuntimeException("bedrock fallback fail");
+            }
+        };
+        ChunkLandMessagePipeline base = buildPipeline(true, new CountingSender());
+        assertTrue(pipelineGetBedrock(base).isBedrockPlayer(UUID.randomUUID()), "base must be bedrock seam");
+        ChunkLandMessagePipeline pipeline = newPipelineViaReflection(
+                throwingCS,
+                pipelineGetParser(base), pipelineGetLang(base), pipelineGetBedrock(base), pipelineGetDefaultLocale(base));
+        UUID id = UUID.randomUUID();
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<Component> comp = new CopyOnWriteArrayList<>();
+        Player player = playerWithPerms(id, Locale.US, Map.of(), out, comp);
+        PipelineReplySink sink = new PipelineReplySink(player, pipeline);
+        sink.reply("command.land.help", Map.of());
+        assertEquals(1, throwingCS.chatFallbackCalls, "must trigger sendChatWithFallback exactly once");
+        assertEquals(0, throwingCS.chatCalls, "must not call non-fallback sendChat");
+        assertEquals(0, throwingCS.broadcastCalls, "must not fallback to broadcast on bedrock failure");
+        assertTrue(out.isEmpty(), "bedrock failure must not leak raw key");
+        assertTrue(comp.isEmpty(), "bedrock failure must not send Component/console output");
+        for (String s : out) assertFalse(s.contains("command.land.help"));
+    }
+
+    @Test
+    void replySinkRenderFailureIsFailClosed() throws Exception {
+        ChunkLandMessagePipeline pipeline = buildPipeline(false, new CountingSender());
+        ChunkLandMessagePipeline throwingRender = newPipelineViaReflection(
+                new ChunkLandMessagePipeline.PipelineSender(){
+                    public void sendChat(Player p, Component m){}
+                    public void sendChatWithFallback(Player p, Component m, Locale l){}
+                    public void sendActionBar(Player p, Component m){}
+                    public void sendActionBarWithFallback(Player p, Component m, Locale l){}
+                    public void sendTitle(Player p, Component t, Component s){}
+                    public void sendTitleWithFallback(Player p, Component t, Component s, Locale l){}
+                    public void broadcastWithFallback(Component m, Locale l){}
+                },
+                (tpl, vars) -> { throw new RuntimeException("parse fail"); },
+                pipelineGetLang(pipeline), pipelineGetBedrock(pipeline), pipelineGetDefaultLocale(pipeline));
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<Component> comp = new CopyOnWriteArrayList<>();
+        CommandSender console = consoleSender(out, comp);
+        PipelineReplySink sink = new PipelineReplySink(console, throwingRender);
+        sink.reply("command.land.help", Map.of());
+        assertTrue(out.isEmpty(), "render failure must not send raw key");
+        assertTrue(comp.isEmpty());
+    }
+
+    @Test
+    void rootEmptyArgsPermissionGate() {
+        List<String> keys = new ArrayList<>();
+        Map<String, Object> varsCap = new HashMap<>();
+        LandCommand cmd = new LandCommand(LandCommand.defaultStubHandlers(), (s,p) -> new ReplySink(){
+            public void reply(String k, Map<String,Object> v){ keys.add(k); varsCap.putAll(v); }
+            public void reply(String k, Map<String,Object> v, Locale l){ keys.add(k); varsCap.putAll(v); }
+        });
+        // denied
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CommandSender denied = permFilteredSender(Map.of(LandPermissions.HELP, false), out);
+        assertTrue(cmd.dispatch(denied, new String[]{}, null));
+        assertTrue(keys.contains("command.land.denied"), "empty args without perm must deny");
+        assertEquals(LandPermissions.HELP, varsCap.get("permission"));
+        // blank arg also denied
+        keys.clear(); varsCap.clear();
+        assertTrue(cmd.dispatch(denied, new String[]{""}, null));
+        assertTrue(keys.contains("command.land.denied"));
+        assertTrue(cmd.dispatch(denied, new String[]{"   "}, null));
+        assertTrue(keys.contains("command.land.denied"));
+        // allowed
+        keys.clear(); varsCap.clear();
+        CommandSender allowed = permFilteredSender(Map.of(LandPermissions.HELP, true), out);
+        assertTrue(cmd.dispatch(allowed, new String[]{}, null));
+        assertTrue(keys.contains("command.land.help"));
+        keys.clear();
+        assertTrue(cmd.dispatch(allowed, new String[]{"help"}, null));
+        assertTrue(keys.contains("command.land.help"));
     }
 
     @Test
