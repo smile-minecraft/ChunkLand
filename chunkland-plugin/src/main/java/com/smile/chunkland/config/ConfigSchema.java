@@ -24,6 +24,8 @@ import org.yaml.snakeyaml.Yaml;
  * worlds:
  *   &lt;world-name&gt;:
  *     claim-enabled: true|false
+ * selection:
+ *   session-timeout-seconds: 600
  * </pre>
  *
  * <p>Unknown top-level keys are rejected; unknown sub-keys under a world are
@@ -59,10 +61,11 @@ public final class ConfigSchema {
         // Reject unknown top-level keys explicitly so future renames become
         // loud failures instead of silent runtime bugs.
         for (String key : root.keySet()) {
-            if (!"worlds".equals(key) && !"limits".equals(key) && !"messages".equals(key)) {
+            if (!"worlds".equals(key) && !"limits".equals(key) && !"messages".equals(key)
+                    && !"selection".equals(key)) {
                 throw new ConfigValidationException(
                         "unknown top-level key '" + key
-                                + "' (only 'worlds', 'limits' and 'messages' are supported in the current schema)");
+                                + "' (only 'worlds', 'limits', 'messages' and 'selection' are supported in the current schema)");
             }
         }
         Map<String, WorldSettings> worlds = parseWorlds(root.get("worlds"), "worlds");
@@ -86,7 +89,17 @@ public final class ConfigSchema {
             }
             messages = parseMessages(rawMessages, "messages");
         }
-        return new ChunkLandConfig(worlds, limits, messages, 0L, deriveWorldEpochs(worlds));
+        SelectionSettings selection;
+        if (!root.containsKey("selection")) {
+            selection = SelectionSettings.defaults();
+        } else {
+            Object rawSelection = root.get("selection");
+            if (rawSelection == null) {
+                throw new ConfigValidationException("selection must not be null");
+            }
+            selection = parseSelection(rawSelection, "selection");
+        }
+        return new ChunkLandConfig(worlds, limits, messages, selection, 0L, deriveWorldEpochs(worlds));
     }
 
     /** Build the worldPolicyEpochs map (every known world starts at 0). */
@@ -156,7 +169,9 @@ public final class ConfigSchema {
             if (!key.equals("max-lands-per-player")
                     && !key.equals("max-total-chunks-per-player")
                     && !key.equals("max-chunks-per-land")
-                    && !key.equals("max-sublands-per-land")) {
+                    && !key.equals("max-sublands-per-land")
+                    && !key.equals("max-selection-side-length")
+                    && !key.equals("max-selection-chunks")) {
                 throw new ConfigValidationException(
                         path + " has unknown key '" + key + "'");
             }
@@ -170,7 +185,12 @@ public final class ConfigSchema {
                 path + ".max-chunks-per-land", defaults.maxChunksPerLand());
         int maxSublands = parseLimitField(map, "max-sublands-per-land",
                 path + ".max-sublands-per-land", defaults.maxSublandsPerLand());
-        return new LimitSettings(maxLands, maxChunksPerPlayer, maxChunksPerLand, maxSublands);
+        int maxSelectionSide = parseLimitField(map, "max-selection-side-length",
+                path + ".max-selection-side-length", defaults.maxSelectionSideLength());
+        int maxSelectionChunks = parseLimitField(map, "max-selection-chunks",
+                path + ".max-selection-chunks", defaults.maxSelectionChunks());
+        return new LimitSettings(maxLands, maxChunksPerPlayer, maxChunksPerLand, maxSublands,
+                maxSelectionSide, maxSelectionChunks);
     }
 
     private static int parseLimitField(Map<String, Object> map, String key, String path, int defaultValue) {
@@ -222,6 +242,38 @@ public final class ConfigSchema {
             cooldown = parseIntLimit(rawCooldown, path + ".cooldown-seconds");
         }
         return new MessageSettings(defaultLocale, cooldown);
+    }
+
+    private static SelectionSettings parseSelection(Object raw, String path) {
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping, got " + raw.getClass().getSimpleName());
+        }
+        Map<String, Object> map = castStringKeyMap(rawMap, path);
+        for (String key : map.keySet()) {
+            if (!"session-timeout-seconds".equals(key)) {
+                throw new ConfigValidationException(path + " has unknown key '" + key + "'");
+            }
+        }
+        int timeout;
+        if (!map.containsKey("session-timeout-seconds")) {
+            timeout = SelectionSettings.DEFAULT_SESSION_TIMEOUT_SECONDS;
+        } else {
+            Object rawTimeout = map.get("session-timeout-seconds");
+            if (rawTimeout == null) {
+                throw new ConfigValidationException(path + ".session-timeout-seconds must not be null");
+            }
+            timeout = parseIntLimit(rawTimeout, path + ".session-timeout-seconds");
+            if (timeout <= 0) {
+                throw new ConfigValidationException(
+                        path + ".session-timeout-seconds must be > 0, got " + timeout);
+            }
+        }
+        try {
+            return new SelectionSettings(timeout);
+        } catch (IllegalArgumentException ex) {
+            throw new ConfigValidationException(path + ".session-timeout-seconds must be positive");
+        }
     }
 
     private static int parseIntLimit(Object raw, String path) {

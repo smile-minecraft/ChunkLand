@@ -9,8 +9,15 @@ import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
+import com.smile.chunkland.selection.SelectionLifecycleListener;
+import com.smile.chunkland.selection.SelectionNotifier;
+import com.smile.chunkland.selection.SelectionSessionManager;
+import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
+import com.smile.chunkland.selection.SelectionVisualizationTaskController;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandSafetyListener;
+import java.time.Clock;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -69,6 +76,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
     private LandCommand landCommand;
     private WandSafetyListener wandSafetyListener;
+    private SelectionSessionManager selectionSessionManager;
+    private SelectionLifecycleListener selectionLifecycleListener;
 
     public ChunkLandPlugin() {
     }
@@ -119,6 +128,18 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     new com.smile.chunkland.config.ResourceConfigLoader(
                             getClass(), "/config.yml")));
         }
+        ConfigService activeConfig = this.configService.orElseThrow(
+                () -> new IllegalStateException("ChunkLand config service is unavailable"));
+        this.selectionSessionManager = new SelectionSessionManager(
+                new FoliaSelectionTimeoutScheduler(this, uuid -> getServer().getPlayer(uuid)),
+                SelectionVisualizationTaskController.noop(),
+                SelectionNotifier.noop(),
+                Clock.systemUTC()::instant,
+                () -> activeConfig.current().selection().sessionTimeout(),
+                uuid -> Optional.ofNullable(getServer().getWorld(uuid)).map(org.bukkit.World::getName),
+                SelectionStructureRevisionLookup.unavailable());
+        this.selectionLifecycleListener = new SelectionLifecycleListener(selectionSessionManager);
+        this.configService.ifPresent(service -> service.addListener(selectionSessionManager));
         // Only build the message probe after a ready AceLib API is held. If AceLib is
         // missing/not-ready, bridge.getApi() is null and tryBuild returns empty (fail-closed,
         // no NPE). The probe command reports "not ready" instead of pretending to send.
@@ -139,6 +160,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.wandSafetyListener = new WandSafetyListener();
         try {
             registerWandListener(this.wandSafetyListener);
+            registerSelectionListener(this.selectionLifecycleListener);
         } catch (RuntimeException ex) {
             getLogger().warning("ChunkLand wand safety listener registration failed; disabling plugin: " + ex.getMessage());
             boolean disableThrew = false;
@@ -180,7 +202,31 @@ public final class ChunkLandPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 
+    void registerSelectionListener(SelectionLifecycleListener listener) {
+        getServer().getPluginManager().registerEvents(listener, this);
+    }
+
     private void performFullCleanup() {
+        if (selectionSessionManager != null) {
+            try {
+                selectionSessionManager.disable();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (selectionSessionManager != null && configService != null && configService.isPresent()) {
+            try {
+                configService.get().removeListener(selectionSessionManager);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (selectionLifecycleListener != null) {
+            try {
+                HandlerList.unregisterAll(selectionLifecycleListener);
+            } catch (RuntimeException ignored) {
+            }
+            selectionLifecycleListener = null;
+        }
+        selectionSessionManager = null;
         if (wandSafetyListener != null) {
             try {
                 HandlerList.unregisterAll(wandSafetyListener);
@@ -247,6 +293,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     WandSafetyListener getWandSafetyListener() {
         return wandSafetyListener;
+    }
+
+    SelectionSessionManager getSelectionSessionManager() {
+        return selectionSessionManager;
+    }
+
+    SelectionLifecycleListener getSelectionLifecycleListener() {
+        return selectionLifecycleListener;
     }
 
     static Command commandForTest(String name) {
@@ -347,4 +401,3 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return false;
     }
 }
-
