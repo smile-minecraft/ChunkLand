@@ -9,12 +9,17 @@ import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import com.smile.chunkland.wand.WandGiveHandler;
+import com.smile.chunkland.wand.WandSafetyListener;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
@@ -63,6 +68,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<ConfigService> configService = Optional.empty();
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
     private LandCommand landCommand;
+    private WandSafetyListener wandSafetyListener;
 
     public ChunkLandPlugin() {
     }
@@ -87,12 +93,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        AceLibLifecycle.enable(
+        boolean ready = AceLibLifecycle.enable(
             bridge,
             AceLibBridge.fromServicesManager(getServer().getServicesManager()),
             getLogger(),
             () -> getServer().getPluginManager().disablePlugin(this)
         );
+        if (!ready) {
+            return;
+        }
         // Config-system wiring: bootstrap the config service from data-folder/config.yml.
         // On a missing or invalid file we keep the plugin alive with defaults
         // and log a warning — the admin can fix the file and call reload() later.
@@ -122,37 +131,81 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // when AceLib is not ready; the sink is fail-closed with no fallback output.
         Locale defaultLocale = configService.map(s -> s.current().messages().defaultLocale()).orElse(Locale.US);
         this.landMessagePipeline = ChunkLandMessagePipeline.tryBuild(this, bridge.getApi(), defaultLocale);
-        this.landCommand = new LandCommand(LandCommand.defaultStubHandlers(), null);
-        // Capture the underlying capabilities bundle (when built) so onDisable can call
-        // cancelAll() in one place. tryBuild returns Optional<M0CapabilityProbe>; for the
-        // release path we re-derive the bundle by peeking at the probe's stored reference.
+        this.landCommand = new LandCommand(buildLandHandlers(), null);
+        // Capture the underlying capabilities bundle before Wand listener registration can fail,
+        // so registration failure does not leak the M0 SafeScheduler.
         this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
+        // Wand safety listener: native Bukkit listener for selection wand protection
+        this.wandSafetyListener = new WandSafetyListener();
+        try {
+            registerWandListener(this.wandSafetyListener);
+        } catch (RuntimeException ex) {
+            getLogger().warning("ChunkLand wand safety listener registration failed; disabling plugin: " + ex.getMessage());
+            boolean disableThrew = false;
+            RuntimeException disableCause = null;
+            try {
+                getServer().getPluginManager().disablePlugin(this);
+            } catch (RuntimeException disableEx) {
+                disableThrew = true;
+                disableCause = disableEx;
+            }
+            boolean stillEnabled;
+            try {
+                stillEnabled = getServer().getPluginManager().isPluginEnabled(this);
+            } catch (RuntimeException e) {
+                stillEnabled = isEnabled();
+            }
+            // Ensure complete cleanup on every terminal path. Do not clear the listener
+            // before the disable attempt; clean up only after the enabled-state check.
+            // Use the single idempotent helper so message/capability/land/config/bridge
+            // are not leaked when disable is a no-op or throws.
+            performFullCleanup();
+            if (disableThrew) {
+                throw new IllegalStateException("ChunkLand wand safety listener registration failed and self-disable failed", disableCause);
+            }
+            if (stillEnabled) {
+                throw new IllegalStateException("ChunkLand wand safety listener registration failed and plugin remains enabled after self-disable");
+            }
+            return;
+        }
     }
 
-    @Override
-    public void onDisable() {
-        // Idempotent: Bukkit may invoke onDisable more than once (e.g. after a
-        // self-disable during shutdown). Releasing bridge state is always safe.
+    static Map<String, LandCommand.Handler> buildLandHandlers() {
+        Map<String, LandCommand.Handler> base = new HashMap<>(LandCommand.defaultStubHandlers());
+        base.put("wand", new WandGiveHandler());
+        return Map.copyOf(base);
+    }
+
+    void registerWandListener(WandSafetyListener listener) {
+        getServer().getPluginManager().registerEvents(listener, this);
+    }
+
+    private void performFullCleanup() {
+        if (wandSafetyListener != null) {
+            try {
+                HandlerList.unregisterAll(wandSafetyListener);
+            } catch (RuntimeException ignored) {
+            }
+            wandSafetyListener = null;
+        }
         this.messagePipeline = Optional.empty();
         this.capabilityProbe = Optional.empty();
         this.landMessagePipeline = Optional.empty();
         this.landCommand = null;
-        // Cancel the local SafeScheduler BEFORE clearing the bridge state so the
-        // cancelAll() call uses the same scheduler instance the smoke tests dispatched to.
         if (capabilities.isPresent()) {
             try {
                 capabilities.get().release();
             } catch (RuntimeException ignored) {
-                // fail-closed: a release-time failure must not stop onDisable from clearing
-                // the bridge.
             }
         }
         this.capabilities = Optional.empty();
-        // ConfigService is an in-memory holder with no native resources;
-        // dropping the reference is enough. The reload listener list is
-        // package-private and GC'd along with the service.
         this.configService = Optional.empty();
         bridge.release();
+    }
+
+    @Override
+    public void onDisable() {
+        performFullCleanup();
     }
 
     @Override
@@ -186,6 +239,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     void setLandCommandForTest(LandCommand command) {
         this.landCommand = command;
+    }
+
+    void setWandSafetyListenerForTest(WandSafetyListener listener) {
+        this.wandSafetyListener = listener;
+    }
+
+    WandSafetyListener getWandSafetyListener() {
+        return wandSafetyListener;
     }
 
     static Command commandForTest(String name) {

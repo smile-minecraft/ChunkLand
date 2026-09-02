@@ -16,6 +16,11 @@ command:
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
     not_yet: "<yellow>子指令 <subcommand> 尚未實作。</yellow>"
+    wand:
+      given: "<green>已發放選取魔杖。</green>"
+      inventory_full: "<red>背包已滿，無法發放魔杖。請清出空間後重試。</red>"
+      console: "<red>只有玩家可以領取魔杖。</red>"
+      error: "<red>魔杖建立失敗，請稍後再試。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <revision>'><green>[確認]</green></click></hover>"

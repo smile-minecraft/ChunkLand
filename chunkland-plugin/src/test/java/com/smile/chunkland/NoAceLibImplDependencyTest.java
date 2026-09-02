@@ -118,6 +118,12 @@ class NoAceLibImplDependencyTest {
                 || ref.equals("com.smile.acelib.config.LangManager")
                 || ref.equals("com.smile.acelib.bedrock.BedrockService")
                 || ref.equals("com.smile.acelib.bedrock.BedrockPlayerInfo")
+                || ref.equals("com.smile.acelib.item.AceItemFactory")
+                || ref.equals("com.smile.acelib.item.AceItemFactory$ItemSpec")
+                || ref.equals("com.smile.acelib.item.AceItemFactory$ItemSpecBuilder")
+                || ref.equals("com.smile.acelib.item.AceItemFactory.ItemSpec")
+                || ref.equals("com.smile.acelib.item.AceItemFactory.ItemSpecBuilder")
+                || ref.equals("com.smile.acelib.item.ItemIdentity")
                 // M0-07 capability smoke: only the public AceLib surface is allowed here.
                 || ref.equals("com.smile.acelib.platform.Platform")
                 || ref.startsWith("com.smile.acelib.platform.Platform$")
@@ -249,6 +255,40 @@ class NoAceLibImplDependencyTest {
             + "import com.smile.acelib.bedrock.BedrockPlayerInfo;\n"
             + "class Y { BedrockPlayerInfo p; }\n";
         assertNull(findForbiddenReference(src), "the public BedrockPlayerInfo value type must be allowed");
+    }
+
+    @Test
+    void allowedAceItemFactoryReferenceIsOk() {
+        String src = "package x;\n"
+            + "import com.smile.acelib.item.AceItemFactory;\n"
+            + "class Y { AceItemFactory f; AceItemFactory.ItemSpec s; AceItemFactory.ItemSpecBuilder b; }\n";
+        assertNull(findForbiddenReference(src), "the public AceItemFactory and nested ItemSpec/Builder must be allowed");
+    }
+
+    @Test
+    void allowedAceItemFactoryFullyQualifiedNestedIsOk() {
+        String src = "package x;\nclass Y { com.smile.acelib.item.AceItemFactory$ItemSpec s; com.smile.acelib.item.AceItemFactory$ItemSpecBuilder b; }\n";
+        assertNull(findForbiddenReference(src), "fully qualified AceItemFactory nested public types must be allowed");
+    }
+
+    @Test
+    void forbiddenAceItemFactoryUnknownNestedIsRejected() {
+        String src = "package x;\nclass Y { com.smile.acelib.item.AceItemFactory$Unknown u; }\n";
+        assertEquals("com.smile.acelib.item.AceItemFactory$Unknown", findForbiddenReference(src));
+    }
+
+    @Test
+    void allowedItemIdentityReferenceIsOk() {
+        String src = "package x;\n"
+            + "import com.smile.acelib.item.ItemIdentity;\n"
+            + "class Y { ItemIdentity id; }\n";
+        assertNull(findForbiddenReference(src), "the public ItemIdentity value type must be allowed");
+    }
+
+    @Test
+    void forbiddenItemPackageImplIsRejected() {
+        String src = "package x;\nclass Y { com.smile.acelib.item.ItemMigration m; }\n";
+        assertEquals("com.smile.acelib.item.ItemMigration", findForbiddenReference(src));
     }
 
     @Test
