@@ -9,6 +9,13 @@ message:
       open_url: 'Open URL: <payload>'
       copy_to_clipboard: 'Copy to clipboard: <payload>'
       unknown: 'Action: <payload>'
+command:
+  land:
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|ban|unban|expand|rename|delete]</gray>"
+    usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
+    unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
+    denied: "<red>Missing permission <permission>.</red>"
+    not_yet: "<yellow>Subcommand <subcommand> is not yet implemented.</yellow>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <revision>'><green>[Confirm]</green></click></hover>"

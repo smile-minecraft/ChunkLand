@@ -4,9 +4,13 @@ import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
 import com.smile.chunkland.capability.Capabilities;
 import com.smile.chunkland.capability.M0CapabilityProbe;
+import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.YamlFileConfigLoader;
+import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.function.Supplier;
 import org.bukkit.command.Command;
@@ -57,6 +61,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<M0CapabilityProbe> capabilityProbe = Optional.empty();
     private Optional<Capabilities> capabilities = Optional.empty();
     private Optional<ConfigService> configService = Optional.empty();
+    private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
+    private LandCommand landCommand;
 
     public ChunkLandPlugin() {
     }
@@ -112,6 +118,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // the API is not ready. The probe owns a SafeScheduler created via the public
         // AceLibScheduler.create(...) factory and exposes four smoke paths.
         this.capabilityProbe = M0CapabilityProbe.tryBuild(this, bridge.getApi());
+        // Land message pipeline for /land ReplySink (same key+vars contract). Fail-closed
+        // when AceLib is not ready; the sink falls back to plain text.
+        Locale defaultLocale = configService.map(s -> s.current().messages().defaultLocale()).orElse(Locale.US);
+        this.landMessagePipeline = ChunkLandMessagePipeline.tryBuild(this, bridge.getApi(), defaultLocale);
+        this.landCommand = new LandCommand(LandCommand.defaultStubHandlers(), null);
         // Capture the underlying capabilities bundle (when built) so onDisable can call
         // cancelAll() in one place. tryBuild returns Optional<M0CapabilityProbe>; for the
         // release path we re-derive the bundle by peeking at the probe's stored reference.
@@ -124,6 +135,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // self-disable during shutdown). Releasing bridge state is always safe.
         this.messagePipeline = Optional.empty();
         this.capabilityProbe = Optional.empty();
+        this.landMessagePipeline = Optional.empty();
+        this.landCommand = null;
         // Cancel the local SafeScheduler BEFORE clearing the bridge state so the
         // cancelAll() call uses the same scheduler instance the smoke tests dispatched to.
         if (capabilities.isPresent()) {
@@ -144,10 +157,39 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!command.getName().equalsIgnoreCase("chunkland")) {
-            return false;
+        if (command.getName().equalsIgnoreCase("chunkland")) {
+            return dispatch(sender, args, () -> this.messagePipeline, () -> this.capabilityProbe);
         }
-        return dispatch(sender, args, () -> this.messagePipeline, () -> this.capabilityProbe);
+        if (command.getName().equalsIgnoreCase("land")) {
+            LandCommand cmd = this.landCommand;
+            if (cmd == null) {
+                cmd = new LandCommand(LandCommand.defaultStubHandlers(), null);
+            }
+            ChunkLandMessagePipeline pipeline = this.landMessagePipeline.orElse(null);
+            return cmd.dispatch(sender, args, pipeline);
+        }
+        return false;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (command.getName().equalsIgnoreCase("land")) {
+            return LandCommand.tabComplete(sender, args);
+        }
+        return super.onTabComplete(sender, command, alias, args);
+    }
+
+    // Visible for tests: inject a custom land pipeline / command
+    void setLandMessagePipelineForTest(ChunkLandMessagePipeline pipeline) {
+        this.landMessagePipeline = Optional.ofNullable(pipeline);
+    }
+
+    void setLandCommandForTest(LandCommand command) {
+        this.landCommand = command;
+    }
+
+    Optional<ChunkLandMessagePipeline> getLandMessagePipeline() {
+        return landMessagePipeline;
     }
 
     /**

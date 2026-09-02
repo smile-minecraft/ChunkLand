@@ -8,10 +8,35 @@ commands:
   chunkland:
     description: ChunkLand debug commands (M0 message + capability smoke probes)
     usage: /chunkland m0message [locale] | /chunkland m0test [scheduler|gui|form|cancelall]
+  land:
+    description: ChunkLand land management commands
+    usage: /land <help|confirm|wand|claim|trust|untrust|ban|unban|expand|rename|delete>
 permissions:
   chunkland.admin.serverland:
     default: op
   chunkland.debug.m0message:
     default: op
   chunkland.debug.m0test:
+    default: op
+  chunkland.command.land.help:
+    default: op
+  chunkland.command.land.confirm:
+    default: op
+  chunkland.command.land.wand:
+    default: op
+  chunkland.command.land.claim:
+    default: op
+  chunkland.command.land.trust:
+    default: op
+  chunkland.command.land.untrust:
+    default: op
+  chunkland.command.land.ban:
+    default: op
+  chunkland.command.land.unban:
+    default: op
+  chunkland.command.land.expand:
+    default: op
+  chunkland.command.land.rename:
+    default: op
+  chunkland.command.land.delete:
     default: op

@@ -105,7 +105,8 @@ public class ChunkLandMessagePipeline {
     static final Set<String> ALLOWED_PLACEHOLDERS = Set.of(
         "value", "payload", "land_name", "chunk_count", "price", "conflict_count",
         "min_y", "revision", "added_count", "new_name", "old_name", "refund",
-        "action", "owner", "reason", "limit_type", "current", "max", "remaining"
+        "action", "owner", "reason", "limit_type", "current", "max", "remaining",
+        "subcommand", "permission"
     );
 
     private static final MiniMessage STRICT_MINIMESSAGE = MiniMessage.builder().strict(true).build();

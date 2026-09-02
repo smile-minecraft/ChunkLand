@@ -9,6 +9,13 @@ message:
       open_url: '開啟網址：<payload>'
       copy_to_clipboard: '複製到剪貼簿：<payload>'
       unknown: '未知動作：<payload>'
+command:
+  land:
+    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|ban|unban|expand|rename|delete]</gray>"
+    usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
+    unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
+    denied: "<red>缺少權限 <permission>。</red>"
+    not_yet: "<yellow>子指令 <subcommand> 尚未實作。</yellow>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <revision>'><green>[確認]</green></click></hover>"
