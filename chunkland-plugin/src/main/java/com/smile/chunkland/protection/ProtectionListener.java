@@ -29,7 +29,9 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketEvent;
+import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
@@ -324,8 +326,19 @@ public final class ProtectionListener implements Listener {
         }
     }
 
+    // PlayerBucketEvent itself has no handler list, so Bukkit cannot register
+    // it: fill and empty are separate concrete events sharing one check.
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onBucketUse(PlayerBucketEvent event) {
+    public void onBucketFill(PlayerBucketFillEvent event) {
+        handleBucketUse(event);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBucketEmpty(PlayerBucketEmptyEvent event) {
+        handleBucketUse(event);
+    }
+
+    private void handleBucketUse(PlayerBucketEvent event) {
         try {
             Player player = event.getPlayer();
             Block block = event.getBlockClicked();

@@ -41,6 +41,7 @@ import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
+import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.Inventory;
@@ -167,12 +168,8 @@ class ProtectionP0SubsetListenerTest {
         return event;
     }
 
-    private static PlayerBucketEmptyEvent bucketEvent(Player player, Block clicked) throws Exception {
-        var unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
-        unsafeField.setAccessible(true);
-        sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
-        PlayerBucketEmptyEvent event =
-                (PlayerBucketEmptyEvent) unsafe.allocateInstance(PlayerBucketEmptyEvent.class);
+    private static void fillBucketFields(org.bukkit.event.player.PlayerBucketEvent event,
+                                         Player player, Block clicked) throws Exception {
         Field playerField = PlayerEvent.class.getDeclaredField("player");
         playerField.setAccessible(true);
         playerField.set(event, player);
@@ -184,6 +181,25 @@ class ProtectionP0SubsetListenerTest {
                 org.bukkit.event.player.PlayerBucketEvent.class.getDeclaredField("blockClicked");
         clickedField.setAccessible(true);
         clickedField.set(event, clicked);
+    }
+
+    private static PlayerBucketEmptyEvent bucketEvent(Player player, Block clicked) throws Exception {
+        var unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+        unsafeField.setAccessible(true);
+        sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
+        PlayerBucketEmptyEvent event =
+                (PlayerBucketEmptyEvent) unsafe.allocateInstance(PlayerBucketEmptyEvent.class);
+        fillBucketFields(event, player, clicked);
+        return event;
+    }
+
+    private static PlayerBucketFillEvent fillEvent(Player player, Block clicked) throws Exception {
+        var unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+        unsafeField.setAccessible(true);
+        sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
+        PlayerBucketFillEvent event =
+                (PlayerBucketFillEvent) unsafe.allocateInstance(PlayerBucketFillEvent.class);
+        fillBucketFields(event, player, clicked);
         return event;
     }
 
@@ -420,15 +436,23 @@ class ProtectionP0SubsetListenerTest {
 
         ProtectionListener denying = new ProtectionListener(
                 engineFor(fx.store(), ProtectionActionType.BUCKET_USE, PermissionState.DENY, null));
-        PlayerBucketEmptyEvent denied = bucketEvent(player, clicked);
-        denying.onBucketUse(denied);
-        assertTrue(denied.isCancelled());
+        PlayerBucketEmptyEvent deniedEmpty = bucketEvent(player, clicked);
+        denying.onBucketEmpty(deniedEmpty);
+        assertTrue(deniedEmpty.isCancelled(), "empty DENY must cancel");
+
+        PlayerBucketFillEvent deniedFill = fillEvent(player, clicked);
+        denying.onBucketFill(deniedFill);
+        assertTrue(deniedFill.isCancelled(), "fill DENY must cancel");
 
         ProtectionListener allowing = new ProtectionListener(
                 engineFor(fx.store(), ProtectionActionType.BUCKET_USE, PermissionState.ALLOW, null));
-        PlayerBucketEmptyEvent allowed = bucketEvent(player, clicked);
-        allowing.onBucketUse(allowed);
-        assertFalse(allowed.isCancelled());
+        PlayerBucketEmptyEvent allowedEmpty = bucketEvent(player, clicked);
+        allowing.onBucketEmpty(allowedEmpty);
+        assertFalse(allowedEmpty.isCancelled(), "empty ALLOW must pass");
+
+        PlayerBucketFillEvent allowedFill = fillEvent(player, clicked);
+        allowing.onBucketFill(allowedFill);
+        assertFalse(allowedFill.isCancelled(), "fill ALLOW must pass");
     }
 
     @Test

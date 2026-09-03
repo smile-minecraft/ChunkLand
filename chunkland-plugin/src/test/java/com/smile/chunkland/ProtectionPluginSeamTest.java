@@ -173,8 +173,10 @@ class ProtectionPluginSeamTest {
                 org.bukkit.event.block.BlockPlaceEvent.class);
         assertHighestIgnoreCancelled("onPlayerInteract",
                 org.bukkit.event.player.PlayerInteractEvent.class);
-        assertHighestIgnoreCancelled("onBucketUse",
-                org.bukkit.event.player.PlayerBucketEvent.class);
+        assertHighestIgnoreCancelled("onBucketFill",
+                org.bukkit.event.player.PlayerBucketFillEvent.class);
+        assertHighestIgnoreCancelled("onBucketEmpty",
+                org.bukkit.event.player.PlayerBucketEmptyEvent.class);
         assertHighestIgnoreCancelled("onPistonExtend",
                 org.bukkit.event.block.BlockPistonExtendEvent.class);
         assertHighestIgnoreCancelled("onPistonRetract",
