@@ -111,6 +111,16 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         table.put(ProtectionActionType.MOB_GRIEFING, LandRuleType.MOB_GRIEFING);
         table.put(ProtectionActionType.HOSTILE_MOB_SPAWN, LandRuleType.HOSTILE_MOB_SPAWN);
         table.put(ProtectionActionType.PASSIVE_MOB_SPAWN, LandRuleType.PASSIVE_MOB_SPAWN);
+        // Cross-boundary actions reuse their source rule; no new rule type.
+        // A dispenser is an ownerless mechanic whose cross-boundary effect is
+        // grief-like, so it reads MOB_GRIEFING (the closest existing rule).
+        table.put(ProtectionActionType.BLOCK_MOVE_IN, LandRuleType.PISTON);
+        table.put(ProtectionActionType.BLOCK_MOVE_OUT, LandRuleType.PISTON);
+        table.put(ProtectionActionType.FLUID_ENTER, LandRuleType.FLUID_FLOW);
+        table.put(ProtectionActionType.FLUID_EXIT, LandRuleType.FLUID_FLOW);
+        table.put(ProtectionActionType.ITEM_TRANSFER_IN, LandRuleType.HOPPER_TRANSFER);
+        table.put(ProtectionActionType.ITEM_TRANSFER_OUT, LandRuleType.HOPPER_TRANSFER);
+        table.put(ProtectionActionType.DISPENSER_CROSS_BOUNDARY, LandRuleType.MOB_GRIEFING);
         return Collections.unmodifiableMap(table);
     }
 }

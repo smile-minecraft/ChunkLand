@@ -29,6 +29,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockBurnEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
@@ -578,6 +579,48 @@ public final class ProtectionListener implements Listener {
             } catch (RuntimeException ignored) {
             }
         }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onDispenserDispense(BlockDispenseEvent event) {
+        try {
+            Block source = event.getBlock();
+            var velocity = event.getVelocity();
+            if (source == null || source.getWorld() == null || velocity == null) {
+                event.setCancelled(true);
+                return;
+            }
+            // The ejected item starts at the dispenser and travels along the
+            // velocity: the adjacent block in that direction is where a
+            // crossing first lands. Far-flying projectiles that land several
+            // chunks away are outside this check by design; judging the
+            // eventual landing position is left to a future milestone.
+            int[] target = dispenseTarget(source.getX(), source.getZ(),
+                    velocity.getX(), velocity.getZ());
+            if (CrossBoundaryDecider.crossDenied(engine, source.getWorld().getUID(),
+                    source.getX(), source.getZ(), target[0], target[1],
+                    ProtectionActionType.DISPENSER_CROSS_BOUNDARY,
+                    ProtectionActionType.DISPENSER_CROSS_BOUNDARY)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    /**
+     * Adjacent landing block for a dispense: one step from the source along
+     * the sign of the velocity's chunk-plane components. A zero component
+     * stays on the source axis, so a straight-down shot targets the block
+     * below in the same chunk.
+     *
+     * @return two-element array {@code [x, z]}
+     */
+    static int[] dispenseTarget(int srcX, int srcZ, double velX, double velZ) {
+        return new int[]{srcX + (int) Math.signum(velX), srcZ + (int) Math.signum(velZ)};
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)

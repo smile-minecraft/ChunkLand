@@ -51,6 +51,15 @@ public final class ProtectionEngine {
     }
 
     /**
+     * Returns the current memory-only land index snapshot backing decisions.
+     * Each call observes one volatile publish; the registry itself is
+     * immutable, so a returned snapshot is always self-consistent.
+     */
+    public LandRegistry snapshot() {
+        return registrySupplier.get();
+    }
+
+    /**
      * Skeleton context provider for startup wiring: it grants nothing, so the
      * resolver falls through every layer to its implicit {@code DENY} inside
      * a land. Later milestones replace it with a provider fed by real
@@ -101,6 +110,24 @@ public final class ProtectionEngine {
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(action, "action");
         LandRegistry snapshot = takeSnapshot(action);
+        if (snapshot == null) {
+            return failClosed(action, "snapshot unavailable");
+        }
+        return decideAtOnSnapshot(actor, worldId, chunkX, chunkZ, action, snapshot);
+    }
+
+    /**
+     * Decides for a chunk position against a caller-supplied snapshot, never
+     * touching the registry supplier. Callers that already hold the snapshot
+     * they classified with (for example cross-boundary checks) use this so
+     * classification and decision can never mix index versions. The snapshot
+     * is memory-only; a {@code null} snapshot still fails closed.
+     */
+    public PermissionDecision decideAtOnSnapshot(UUID actor, UUID worldId, int chunkX, int chunkZ,
+                                                 ProtectionActionType action, LandRegistry snapshot) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(action, "action");
         if (snapshot == null) {
             return failClosed(action, "snapshot unavailable");
         }

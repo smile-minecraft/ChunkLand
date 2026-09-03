@@ -194,6 +194,60 @@ class ProtectionPluginSeamTest {
     }
 
     @Test
+    void listenerDeclaresDispenserHandler() throws Exception {
+        assertHighestIgnoreCancelled("onDispenserDispense",
+                org.bukkit.event.block.BlockDispenseEvent.class);
+    }
+
+    @Test
+    void formalWiringCancelsDispenserCrossingIntoLand() {
+        UUID worldId = UUID.randomUUID();
+        LandId landId = new LandId(UUID.randomUUID());
+        UUID owner = UUID.randomUUID();
+        LandRegistryStore store = new LandRegistryStore();
+        store.publish(LandRegistry.from(List.of(landOwnedBy(worldId, landId, owner, 0, 0))));
+        org.bukkit.World world = (org.bukkit.World) java.lang.reflect.Proxy.newProxyInstance(
+                org.bukkit.World.class.getClassLoader(),
+                new Class[]{org.bukkit.World.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getUID" -> worldId;
+                    case "getName" -> "world";
+                    case "equals" -> proxy == args[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "toString" -> "FakeWorld";
+                    default -> {
+                        Class<?> rt = method.getReturnType();
+                        if (rt == boolean.class) yield false;
+                        if (rt == int.class) yield 0;
+                        if (rt == long.class) yield 0L;
+                        yield null;
+                    }
+                });
+        ProtectionEngine engine = ChunkLandPlugin.buildProtectionEngine(store);
+        ProtectionListener listener = new ProtectionListener(engine);
+
+        // Dispenser in the wild firing into the published land: the default
+        // wiring has no rule source, so the grief-like rule denies.
+        org.bukkit.block.Block source =
+                blockAt(world, 16, 64, 5, org.bukkit.Material.DISPENSER);
+        org.bukkit.event.block.BlockDispenseEvent crossing =
+                new org.bukkit.event.block.BlockDispenseEvent(source, null,
+                        new org.bukkit.util.Vector(-1, 0, 0));
+        listener.onDispenserDispense(crossing);
+        assertTrue(crossing.isCancelled(),
+                "wild -> published land dispense must cancel through formal wiring");
+
+        // Wild -> wild follows vanilla and never consults the rules.
+        org.bukkit.block.Block wildSource =
+                blockAt(world, 900, 64, 900, org.bukkit.Material.DISPENSER);
+        org.bukkit.event.block.BlockDispenseEvent wild =
+                new org.bukkit.event.block.BlockDispenseEvent(wildSource, null,
+                        new org.bukkit.util.Vector(1, 0, 0));
+        listener.onDispenserDispense(wild);
+        assertFalse(wild.isCancelled(),
+                "wild -> wild dispense must pass through formal wiring");
+    }
+    @Test
     void pluginDeclaresProtectionWiring() throws Exception {
         assertNotNull(ChunkLandPlugin.class.getDeclaredField("protectionStore"));
         assertNotNull(ChunkLandPlugin.class.getDeclaredField("protectionEngine"));
