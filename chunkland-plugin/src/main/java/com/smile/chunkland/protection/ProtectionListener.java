@@ -5,6 +5,7 @@ import com.smile.chunkland.api.permission.PermissionDecision;
 import com.smile.chunkland.api.permission.DecisionSource;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.message.rejection.RejectionNotifier;
+import com.smile.chunkland.runtime.index.LandRegistry;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -21,7 +22,10 @@ import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Hanging;
 import org.bukkit.entity.ItemFrame;
+import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
 import org.bukkit.entity.Vehicle;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -36,10 +40,13 @@ import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.entity.CreatureSpawnEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityInteractEvent;
+import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.hanging.HangingBreakByEntityEvent;
 import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
@@ -55,6 +62,8 @@ import org.bukkit.event.vehicle.VehicleDamageEvent;
 import org.bukkit.event.vehicle.VehicleEnterEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.projectiles.BlockProjectileSource;
+import org.bukkit.projectiles.ProjectileSource;
 
 /**
  * Native Bukkit enforcement skeleton for the protection engine.
@@ -88,7 +97,25 @@ import org.bukkit.inventory.InventoryHolder;
  * {@code VEHICLE_USE} (entering and player damage); item frames as
  * {@code ITEM_FRAME}, armor stands as {@code ARMOR_STAND}, and other
  * hangings as {@code HANGING_ENTITY}. Non-player actors on those paths stay
- * vanilla here; later milestones own them.
+ * vanilla here; later milestones own them. Any other right-clicked entity
+ * decides as {@code ENTITY_INTERACT}.
+ *
+ * <p>Redstone parts (wire, repeaters, comparators, daylight detectors,
+ * tripwire hooks, target blocks, and every pressure plate) decide as
+ * {@code REDSTONE_USE}: right-clicks at the block, steps onto plates by foot
+ * ({@code PHYSICAL}) or by mob. Natural mob spawns decide as
+ * {@code HOSTILE_MOB_SPAWN} for monsters and {@code PASSIVE_MOB_SPAWN} for
+ * everything else; spawner blocks, eggs, breeding, and commands stay
+ * vanilla. Mobs changing blocks (endermen, ravagers) decide as
+ * {@code MOB_GRIEFING} under the fixed environmental actor.
+ *
+ * <p>A projectile landing far from its shooter decides as
+ * {@code DISPENSER_CROSS_BOUNDARY} from the shooter position to the landing
+ * block or entity: only genuine boundary involvement intervenes, so
+ * same-land and wilderness landings stay vanilla, and a shooter that is
+ * gone cannot prove a crossing. Landing and classification share one index
+ * snapshot, use only coordinates already on the event, and never load a
+ * chunk.
  */
 public final class ProtectionListener implements Listener {
 
@@ -214,6 +241,32 @@ public final class ProtectionListener implements Listener {
             Material.STONE_BUTTON,
             Material.POLISHED_BLACKSTONE_BUTTON);
 
+    private static final Set<Material> PLATE_TYPES = EnumSet.of(
+            Material.OAK_PRESSURE_PLATE,
+            Material.SPRUCE_PRESSURE_PLATE,
+            Material.BIRCH_PRESSURE_PLATE,
+            Material.JUNGLE_PRESSURE_PLATE,
+            Material.ACACIA_PRESSURE_PLATE,
+            Material.DARK_OAK_PRESSURE_PLATE,
+            Material.MANGROVE_PRESSURE_PLATE,
+            Material.CHERRY_PRESSURE_PLATE,
+            Material.BAMBOO_PRESSURE_PLATE,
+            Material.CRIMSON_PRESSURE_PLATE,
+            Material.WARPED_PRESSURE_PLATE,
+            Material.PALE_OAK_PRESSURE_PLATE,
+            Material.STONE_PRESSURE_PLATE,
+            Material.POLISHED_BLACKSTONE_PRESSURE_PLATE,
+            Material.LIGHT_WEIGHTED_PRESSURE_PLATE,
+            Material.HEAVY_WEIGHTED_PRESSURE_PLATE);
+
+    private static final Set<Material> REDSTONE_TYPES = EnumSet.of(
+            Material.REDSTONE_WIRE,
+            Material.REPEATER,
+            Material.COMPARATOR,
+            Material.DAYLIGHT_DETECTOR,
+            Material.TRIPWIRE_HOOK,
+            Material.TARGET);
+
     private final ProtectionEngine engine;
     private final RejectionNotifier rejectionNotifier;
     private final EntryProtectionAdapter entryAdapter;
@@ -293,6 +346,9 @@ public final class ProtectionListener implements Listener {
         }
         if (type == Material.LEVER) {
             return ProtectionActionType.LEVER_USE;
+        }
+        if (PLATE_TYPES.contains(type) || REDSTONE_TYPES.contains(type)) {
+            return ProtectionActionType.REDSTONE_USE;
         }
         return null;
     }
@@ -390,21 +446,39 @@ public final class ProtectionListener implements Listener {
     public void onPlayerInteract(PlayerInteractEvent event) {
         try {
             if (event.getAction() == Action.PHYSICAL) {
-                Block soil = event.getClickedBlock();
-                if (soil == null || soil.getType() != Material.FARMLAND) {
+                Block floor = event.getClickedBlock();
+                if (floor == null) {
                     return;
                 }
-                Player player = event.getPlayer();
-                if (player == null || soil.getWorld() == null) {
+                if (floor.getType() == Material.FARMLAND) {
+                    Player player = event.getPlayer();
+                    if (player == null || floor.getWorld() == null) {
+                        event.setCancelled(true);
+                        return;
+                    }
+                    var trampleDecision = decideAtBlock(player.getUniqueId(), floor,
+                            ProtectionActionType.FARMLAND_TRAMPLE);
+                    if (trampleDecision.outcome() == PermissionState.DENY) {
+                        event.setCancelled(true);
+                        notifyRejection(player, ProtectionActionType.FARMLAND_TRAMPLE,
+                                trampleDecision);
+                    }
+                    return;
+                }
+                if (!PLATE_TYPES.contains(floor.getType())) {
+                    return;
+                }
+                Player stepper = event.getPlayer();
+                if (stepper == null || floor.getWorld() == null) {
                     event.setCancelled(true);
                     return;
                 }
-                var trampleDecision = decideAtBlock(player.getUniqueId(), soil,
-                        ProtectionActionType.FARMLAND_TRAMPLE);
-                if (trampleDecision.outcome() == PermissionState.DENY) {
+                var plateDecision = decideAtBlock(stepper.getUniqueId(), floor,
+                        ProtectionActionType.REDSTONE_USE);
+                if (plateDecision.outcome() == PermissionState.DENY) {
                     event.setCancelled(true);
-                    notifyRejection(player, ProtectionActionType.FARMLAND_TRAMPLE,
-                            trampleDecision);
+                    notifyRejection(stepper, ProtectionActionType.REDSTONE_USE,
+                            plateDecision);
                 }
                 return;
             }
@@ -827,7 +901,7 @@ public final class ProtectionListener implements Listener {
             } else if (clicked instanceof ArmorStand) {
                 action = ProtectionActionType.ARMOR_STAND;
             } else {
-                return;
+                action = ProtectionActionType.ENTITY_INTERACT;
             }
             Player player = event.getPlayer();
             if (player == null || clicked.getLocation() == null
@@ -936,7 +1010,7 @@ public final class ProtectionListener implements Listener {
     public void onEntityInteract(EntityInteractEvent event) {
         try {
             Block block = event.getBlock();
-            if (block == null || block.getType() != Material.FARMLAND) {
+            if (block == null) {
                 return;
             }
             Entity entity = event.getEntity();
@@ -944,8 +1018,15 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtBlock(entity.getUniqueId(), block,
-                    ProtectionActionType.FARMLAND_TRAMPLE)) {
+            ProtectionActionType action;
+            if (block.getType() == Material.FARMLAND) {
+                action = ProtectionActionType.FARMLAND_TRAMPLE;
+            } else if (PLATE_TYPES.contains(block.getType())) {
+                action = ProtectionActionType.REDSTONE_USE;
+            } else {
+                return;
+            }
+            if (deniedAtBlock(entity.getUniqueId(), block, action)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {
@@ -1004,6 +1085,195 @@ public final class ProtectionListener implements Listener {
             } catch (RuntimeException ignored) {
             }
         }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEntityChangeBlock(EntityChangeBlockEvent event) {
+        try {
+            Entity entity = event.getEntity();
+            Block block = event.getBlock();
+            if (entity == null || block == null || block.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtBlock(ENVIRONMENT_ACTOR, block, ProtectionActionType.MOB_GRIEFING)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onCreatureSpawn(CreatureSpawnEvent event) {
+        try {
+            // Only natural spawns are ruled: spawner blocks, eggs, breeding,
+            // and commands stay vanilla even when the spawn rules deny.
+            if (event.getSpawnReason() != CreatureSpawnEvent.SpawnReason.NATURAL) {
+                return;
+            }
+            LivingEntity entity = event.getEntity();
+            if (entity == null || entity.getLocation() == null
+                    || entity.getLocation().getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            ProtectionActionType action = (entity instanceof Monster)
+                    ? ProtectionActionType.HOSTILE_MOB_SPAWN
+                    : ProtectionActionType.PASSIVE_MOB_SPAWN;
+            if (deniedAtLocation(ENVIRONMENT_ACTOR, entity.getLocation(), action)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onProjectileHit(ProjectileHitEvent event) {
+        try {
+            Projectile projectile = event.getEntity();
+            Block hitBlock = event.getHitBlock();
+            Entity hitEntity = event.getHitEntity();
+            Location landing;
+            if (hitBlock != null) {
+                landing = hitBlock.getLocation();
+            } else if (hitEntity != null) {
+                landing = hitEntity.getLocation();
+            } else if (projectile != null) {
+                landing = projectile.getLocation();
+            } else {
+                landing = null;
+            }
+            if (projectile == null || landing == null || landing.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            int[] source = projectileSourceBlock(projectile);
+            if (source == null) {
+                // The shooter is gone or untracked: a crossing cannot be
+                // proven, so the landing stays vanilla by design.
+                return;
+            }
+            UUID worldId = landing.getWorld().getUID();
+            LandRegistry snapshot;
+            try {
+                snapshot = engine.snapshot();
+            } catch (RuntimeException ex) {
+                event.setCancelled(true);
+                return;
+            }
+            if (snapshot == null) {
+                event.setCancelled(true);
+                return;
+            }
+            var relation = CrossBoundaryDecider.relation(snapshot, worldId,
+                    source[0] >> 4, source[1] >> 4,
+                    landing.getBlockX() >> 4, landing.getBlockZ() >> 4);
+            // Only genuine boundary involvement intervenes: a landing inside
+            // the shooter's own land (or fully in the wild) is not a crossing.
+            if (relation == CrossBoundaryDecider.Relation.WILDERNESS
+                    || relation == CrossBoundaryDecider.Relation.SAME_LAND) {
+                return;
+            }
+            if (landingDeniedOnSnapshot(snapshot, worldId, relation,
+                    source[0], source[1], landing.getBlockX(), landing.getBlockZ())) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    /**
+     * Block-plane origin of a projectile: the shooting player or mob at its
+     * current position, or the dispensing block. {@code null} when the
+     * shooter is gone or untracked. Coordinates only, so no chunk loads.
+     *
+     * @return two-element array {@code [x, z]}
+     */
+    static int[] projectileSourceBlock(Projectile projectile) {
+        ProjectileSource shooter;
+        try {
+            shooter = projectile.getShooter();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+        if (shooter instanceof Player player) {
+            Location at = safeLocation(player);
+            if (at == null) {
+                return null;
+            }
+            return new int[]{at.getBlockX(), at.getBlockZ()};
+        }
+        if (shooter instanceof BlockProjectileSource dispenser) {
+            Block block;
+            try {
+                block = dispenser.getBlock();
+            } catch (RuntimeException ex) {
+                return null;
+            }
+            if (block == null) {
+                return null;
+            }
+            return new int[]{block.getX(), block.getZ()};
+        }
+        if (shooter instanceof Entity mob) {
+            Location at = safeLocation(mob);
+            if (at == null) {
+                return null;
+            }
+            return new int[]{at.getBlockX(), at.getBlockZ()};
+        }
+        return null;
+    }
+
+    private static Location safeLocation(Entity entity) {
+        try {
+            return entity.getLocation();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Either-end deny for a projectile landing on the one snapshot the
+     * crossing was classified with, so a concurrent publish landing
+     * mid-flight cannot mix versions. The wilderness side is always allow
+     * (the engine short-circuits where no land owns the chunk), so only the
+     * deciding ends are consulted.
+     */
+    private boolean landingDeniedOnSnapshot(LandRegistry snapshot, UUID worldId,
+                                            CrossBoundaryDecider.Relation relation,
+                                            int srcBlockX, int srcBlockZ,
+                                            int dstBlockX, int dstBlockZ) {
+        return switch (relation) {
+            case WILDERNESS, SAME_LAND -> false;
+            case WILD_TO_LAND -> landingDeniedAt(snapshot, worldId,
+                    dstBlockX, dstBlockZ, ProtectionActionType.DISPENSER_CROSS_BOUNDARY);
+            case LAND_TO_WILD -> landingDeniedAt(snapshot, worldId,
+                    srcBlockX, srcBlockZ, ProtectionActionType.DISPENSER_CROSS_BOUNDARY);
+            case CROSS_LAND -> landingDeniedAt(snapshot, worldId,
+                    srcBlockX, srcBlockZ, ProtectionActionType.DISPENSER_CROSS_BOUNDARY)
+                    || landingDeniedAt(snapshot, worldId,
+                            dstBlockX, dstBlockZ, ProtectionActionType.DISPENSER_CROSS_BOUNDARY);
+        };
+    }
+
+    private boolean landingDeniedAt(LandRegistry snapshot, UUID worldId,
+                                    int blockX, int blockZ, ProtectionActionType action) {
+        return engine.decideAtOnSnapshot(ProtectionListener.ENVIRONMENT_ACTOR,
+                worldId, blockX >> 4, blockZ >> 4, action, snapshot).outcome()
+                == PermissionState.DENY;
     }
 
     private boolean deniedAtBlock(UUID actor, Block block, ProtectionActionType action) {

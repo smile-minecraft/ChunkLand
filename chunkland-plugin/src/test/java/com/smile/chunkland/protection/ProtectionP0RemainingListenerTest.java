@@ -698,11 +698,14 @@ class ProtectionP0RemainingListenerTest {
         AtomicReference<ProtectionActionType> seen = new AtomicReference<>();
         ProtectionListener listener = new ProtectionListener(
                 engineFor(fx.store(), ProtectionActionType.FARMLAND_TRAMPLE, PermissionState.DENY, seen));
-        PlayerInteractEvent plate = new PlayerInteractEvent(
+        // Tripwire string is PHYSICAL-capable but not protected: pressure
+        // plates now decide as REDSTONE_USE (P1 list), so the vanilla probe
+        // uses tripwire instead.
+        PlayerInteractEvent tripwire = new PlayerInteractEvent(
                 playerProxy(UUID.randomUUID(), fx.world()), Action.PHYSICAL, null,
-                blockProxy(fx.world(), 5, 64, 5, Material.STONE_PRESSURE_PLATE), BlockFace.UP);
-        listener.onPlayerInteract(plate);
-        assertFalse(plate.isCancelled(), "pressure plates stay vanilla");
+                blockProxy(fx.world(), 5, 64, 5, Material.TRIPWIRE), BlockFace.UP);
+        listener.onPlayerInteract(tripwire);
+        assertFalse(tripwire.isCancelled(), "tripwire stays vanilla");
         assertNull(seen.get(), "non-farmland PHYSICAL must not consult the engine");
     }
 
