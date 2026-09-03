@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -294,6 +295,68 @@ class SelectionSessionLifecycleTest {
         assertEquals(Set.of(new ChunkKey(WORLD, 4, 5)), after.selectedChunks());
         assertEquals(2, fixture.scheduler.scheduleCount());
         assertEquals(1, fixture.scheduler.cancelCount());
+    }
+
+    @Test
+    void staleStructureLookupCannotCleanNewerSession() throws Exception {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            CountDownLatch lookupEntered = new CountDownLatch(1);
+            CountDownLatch releaseLookup = new CountDownLatch(1);
+            AtomicBoolean firstLookup = new AtomicBoolean(true);
+            Fixture fixture = new Fixture(landId -> {
+                if (firstLookup.compareAndSet(true, false)) {
+                    lookupEntered.countDown();
+                    try {
+                        if (!releaseLookup.await(1, TimeUnit.SECONDS)) {
+                            throw new AssertionError("timed out waiting to release structure lookup");
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(ex);
+                    }
+                    return OptionalLong.of(2);
+                }
+                return OptionalLong.of(1);
+            });
+            SelectionSession initial = fixture.manager.start(fixture.session(1));
+            AtomicReference<Throwable> staleFailure = new AtomicReference<>();
+            Thread staleUpdate = new Thread(() -> {
+                try {
+                    fixture.manager.updateSelection(PLAYER, initial,
+                            new SelectionUpdate(initial.pointA(), initial.pointB(),
+                                    Set.of(new ChunkKey(WORLD, 4, 5)), Map.of()));
+                } catch (Throwable failure) {
+                    staleFailure.set(failure);
+                }
+            }, "stale-structure-update-" + attempt);
+            staleUpdate.start();
+            try {
+                assertTrue(lookupEntered.await(1, TimeUnit.SECONDS));
+
+                SelectionSession newer = fixture.manager.sessionFor(PLAYER).orElseThrow();
+                SelectionSession updated = fixture.manager.updateSelection(PLAYER, newer,
+                        new SelectionUpdate(newer.pointA(), newer.pointB(),
+                                Set.of(new ChunkKey(WORLD, 6, 7)), Map.of())).orElseThrow();
+                assertEquals(1, updated.selectionRevision());
+
+                releaseLookup.countDown();
+                staleUpdate.join(1_000);
+                assertFalse(staleUpdate.isAlive());
+                if (staleFailure.get() != null) {
+                    throw new AssertionError("stale structure update failed", staleFailure.get());
+                }
+
+                assertEquals(updated, fixture.manager.sessionFor(PLAYER).orElseThrow());
+                assertEquals(1, fixture.manager.sessionFor(PLAYER).orElseThrow().selectionRevision());
+                assertEquals(1, fixture.scheduler.activeCount());
+                assertEquals(0, fixture.visualization.stopCount());
+                assertTrue(fixture.notifier.notifications.isEmpty());
+            } finally {
+                releaseLookup.countDown();
+                staleUpdate.join(1_000);
+                assertFalse(staleUpdate.isAlive());
+            }
+        }
     }
 
     @Test

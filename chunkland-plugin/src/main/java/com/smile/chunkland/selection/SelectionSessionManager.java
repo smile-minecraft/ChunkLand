@@ -222,6 +222,12 @@ public final class SelectionSessionManager implements ConfigReloadListener {
         if (!structureIsCurrent(entry, currentStructure)) {
             CleanupPlan invalidation;
             synchronized (monitor) {
+                // Re-check identity after the lock-free structure lookup: a concurrent successful
+                // update may have already mutated entry.session, so the stale lookup result must
+                // not invalidate the newer selection the player is actively editing.
+                if (disabled || sessions.get(playerId) != entry || entry.cleaning || entry.session != expectedSession) {
+                    return Optional.empty();
+                }
                 invalidation = beginCleanup(entry, SelectionEndReason.LAND_STRUCTURE_CHANGED);
             }
             if (invalidation != null) {
