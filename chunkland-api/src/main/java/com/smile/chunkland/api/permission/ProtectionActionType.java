@@ -29,6 +29,7 @@ public enum ProtectionActionType {
     ITEM_FRAME(DecisionSource.SUBJECT_PERMISSION),
     ARMOR_STAND(DecisionSource.SUBJECT_PERMISSION),
     HANGING_ENTITY(DecisionSource.SUBJECT_PERMISSION),
+    FARMLAND_TRAMPLE(DecisionSource.SUBJECT_PERMISSION),
 
     // --- LAND_RULE (spec §51-1.2) ---
     PLAYER_DAMAGE_PLAYER(DecisionSource.LAND_RULE),

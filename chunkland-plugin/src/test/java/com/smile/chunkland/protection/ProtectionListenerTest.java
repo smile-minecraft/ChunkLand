@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Cow;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
@@ -117,6 +118,28 @@ class ProtectionListenerTest {
                         case "equals": return proxy == args[0];
                         case "hashCode": return System.identityHashCode(proxy);
                         case "toString": return "FakeCow";
+                        default:
+                            Class<?> rt = method.getReturnType();
+                            if (rt == boolean.class) return false;
+                            if (rt == int.class) return 0;
+                            if (rt == double.class) return 0d;
+                            return null;
+                    }
+                });
+    }
+
+    private static ArmorStand armorStandProxy(World world, int x, int y, int z) {
+        Location loc = new Location(world, x, y, z);
+        return (ArmorStand) Proxy.newProxyInstance(ArmorStand.class.getClassLoader(),
+                new Class[]{ArmorStand.class},
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "getUniqueId": return UUID.randomUUID();
+                        case "getWorld": return world;
+                        case "getLocation": return loc;
+                        case "equals": return proxy == args[0];
+                        case "hashCode": return System.identityHashCode(proxy);
+                        case "toString": return "FakeArmorStand";
                         default:
                             Class<?> rt = method.getReturnType();
                             if (rt == boolean.class) return false;
@@ -337,5 +360,53 @@ class ProtectionListenerTest {
         EntityDamageByEntityEvent event = damageEvent(damager, animal);
         listener.onEntityDamage(event);
         assertTrue(event.isCancelled(), "subject DENY on ENTITY_DAMAGE must cancel");
+    }
+
+    @Test
+    void armorStandAttackRoutesToArmorStandAction() throws Exception {
+        UUID worldId = UUID.randomUUID();
+        LandId landId = new LandId(UUID.randomUUID());
+        LandRegistryStore store = new LandRegistryStore();
+        store.publish(LandRegistry.from(List.of(landAt(worldId, landId, 0, 0))));
+        World world = worldProxy(worldId);
+        AtomicReference<ProtectionActionType> seen = new AtomicReference<>();
+        // ARMOR_STAND DENY while ENTITY_DAMAGE ALLOW: only the right route cancels.
+        ProtectionEngine engine = new ProtectionEngine(store::snapshot, (actor, id, action, snapshot) -> {
+            seen.set(action);
+            PermissionState subject = action == ProtectionActionType.ARMOR_STAND
+                    ? PermissionState.DENY : PermissionState.ALLOW;
+            return new PermissionContext(action, false, List.of(), subject, PermissionState.INHERIT);
+        });
+        ProtectionListener listener = new ProtectionListener(engine);
+        Player damager = playerProxy(UUID.randomUUID(), world, 2, 64, 2);
+        ArmorStand stand = armorStandProxy(world, 2, 64, 2);
+        EntityDamageByEntityEvent event = damageEvent(damager, stand);
+        listener.onEntityDamage(event);
+        assertEquals(ProtectionActionType.ARMOR_STAND, seen.get(),
+                "player harming an armor stand must route to ARMOR_STAND, not ENTITY_DAMAGE");
+        assertTrue(event.isCancelled(), "ARMOR_STAND DENY must cancel even when ENTITY_DAMAGE is ALLOW");
+    }
+
+    @Test
+    void armorStandAttackAllowPassesAndWildernessPasses() throws Exception {
+        UUID worldId = UUID.randomUUID();
+        LandId landId = new LandId(UUID.randomUUID());
+        LandRegistryStore store = new LandRegistryStore();
+        store.publish(LandRegistry.from(List.of(landAt(worldId, landId, 0, 0))));
+        World world = worldProxy(worldId);
+        ProtectionListener allowing = new ProtectionListener(
+                engineWithSubjectDefault(store, PermissionState.ALLOW, null));
+        Player damager = playerProxy(UUID.randomUUID(), world, 2, 64, 2);
+        EntityDamageByEntityEvent allowed = damageEvent(damager, armorStandProxy(world, 2, 64, 2));
+        allowing.onEntityDamage(allowed);
+        assertFalse(allowed.isCancelled(), "ARMOR_STAND ALLOW must not cancel");
+
+        ProtectionListener denying = new ProtectionListener(
+                engineWithSubjectDefault(store, PermissionState.DENY, null));
+        Player farDamager = playerProxy(UUID.randomUUID(), world, 645, 64, 645);
+        EntityDamageByEntityEvent outside =
+                damageEvent(farDamager, armorStandProxy(world, 645, 64, 645));
+        denying.onEntityDamage(outside);
+        assertFalse(outside.isCancelled(), "armor stand damage in wilderness must follow vanilla");
     }
 }

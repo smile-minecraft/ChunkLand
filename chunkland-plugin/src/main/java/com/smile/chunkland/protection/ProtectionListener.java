@@ -13,26 +13,41 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Hanging;
+import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Vehicle;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntityInteractEvent;
+import org.bukkit.event.hanging.HangingBreakByEntityEvent;
+import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.player.PlayerArmorStandManipulateEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerBucketEvent;
 import org.bukkit.event.player.PlayerBucketFillEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.vehicle.VehicleDamageEvent;
+import org.bukkit.event.vehicle.VehicleEnterEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 
@@ -53,9 +68,19 @@ import org.bukkit.inventory.InventoryHolder;
  * kind: storage blocks to {@code CONTAINER_OPEN}, crafting and processing
  * blocks to {@code WORKSTATION_USE}, doors, trapdoors, and fence gates to
  * {@code DOOR_USE}, buttons to {@code BUTTON_USE}, and levers to
- * {@code LEVER_USE}. Anything else stays vanilla. World mechanics without a
- * player actor (pistons, fluids, hoppers, explosions) decide under a fixed
+ * {@code LEVER_USE}. Anything else stays vanilla. Stepping onto farmland
+ * ({@code PHYSICAL} on soil, by foot or by mob) decides as
+ * {@code FARMLAND_TRAMPLE}. World mechanics without a player actor (pistons,
+ * fluids, hoppers, explosions, fire) decide under a fixed
  * environmental actor, which can never match a land owner.
+ *
+ * <p>Movement into a land decides as {@code ENTRY} at the destination, but
+ * only when the chunk changes: walking inside one chunk never consults the
+ * engine. Teleports always check the destination. Vehicles decide as
+ * {@code VEHICLE_USE} (entering and player damage); item frames as
+ * {@code ITEM_FRAME}, armor stands as {@code ARMOR_STAND}, and other
+ * hangings as {@code HANGING_ENTITY}. Non-player actors on those paths stay
+ * vanilla here; later milestones own them.
  */
 public final class ProtectionListener implements Listener {
 
@@ -255,9 +280,14 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            ProtectionActionType action = (victim instanceof Player)
-                    ? ProtectionActionType.PLAYER_DAMAGE_PLAYER
-                    : ProtectionActionType.ENTITY_DAMAGE;
+            ProtectionActionType action;
+            if (victim instanceof ArmorStand) {
+                action = ProtectionActionType.ARMOR_STAND;
+            } else if (victim instanceof Player) {
+                action = ProtectionActionType.PLAYER_DAMAGE_PLAYER;
+            } else {
+                action = ProtectionActionType.ENTITY_DAMAGE;
+            }
             var location = victim.getLocation();
             var decision = engine.decideAt(
                     damager.getUniqueId(),
@@ -299,6 +329,22 @@ public final class ProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerInteract(PlayerInteractEvent event) {
         try {
+            if (event.getAction() == Action.PHYSICAL) {
+                Block soil = event.getClickedBlock();
+                if (soil == null || soil.getType() != Material.FARMLAND) {
+                    return;
+                }
+                Player player = event.getPlayer();
+                if (player == null || soil.getWorld() == null) {
+                    event.setCancelled(true);
+                    return;
+                }
+                if (deniedAtBlock(player.getUniqueId(), soil,
+                        ProtectionActionType.FARMLAND_TRAMPLE)) {
+                    event.setCancelled(true);
+                }
+                return;
+            }
             if (event.getAction() != Action.RIGHT_CLICK_BLOCK || !event.hasBlock()) {
                 return;
             }
@@ -529,6 +575,280 @@ public final class ProtectionListener implements Listener {
             }
             if (deniedAtLocation(ENVIRONMENT_ACTOR, victim.getLocation(),
                     ProtectionActionType.EXPLOSION_ENTITY)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerMove(PlayerMoveEvent event) {
+        try {
+            Player player = event.getPlayer();
+            Location from = event.getFrom();
+            Location to = event.getTo();
+            if (player == null || to == null || to.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (from != null && from.getWorld() != null
+                    && from.getWorld().getUID().equals(to.getWorld().getUID())
+                    && (from.getBlockX() >> 4) == (to.getBlockX() >> 4)
+                    && (from.getBlockZ() >> 4) == (to.getBlockZ() >> 4)) {
+                return;
+            }
+            if (deniedAtLocation(player.getUniqueId(), to, ProtectionActionType.ENTRY)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerTeleport(PlayerTeleportEvent event) {
+        try {
+            Player player = event.getPlayer();
+            Location to = event.getTo();
+            if (player == null || to == null || to.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtLocation(player.getUniqueId(), to, ProtectionActionType.ENTRY)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onVehicleEnter(VehicleEnterEvent event) {
+        try {
+            if (!(event.getEntered() instanceof Player player)) {
+                return;
+            }
+            Vehicle vehicle = event.getVehicle();
+            if (vehicle == null || vehicle.getLocation() == null
+                    || vehicle.getLocation().getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtLocation(player.getUniqueId(), vehicle.getLocation(),
+                    ProtectionActionType.VEHICLE_USE)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onVehicleDamage(VehicleDamageEvent event) {
+        try {
+            if (!(event.getAttacker() instanceof Player player)) {
+                return;
+            }
+            Vehicle vehicle = event.getVehicle();
+            if (vehicle == null || vehicle.getLocation() == null
+                    || vehicle.getLocation().getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtLocation(player.getUniqueId(), vehicle.getLocation(),
+                    ProtectionActionType.VEHICLE_USE)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerInteractEntity(PlayerInteractEntityEvent event) {
+        try {
+            Entity clicked = event.getRightClicked();
+            ProtectionActionType action;
+            if (clicked instanceof ItemFrame) {
+                action = ProtectionActionType.ITEM_FRAME;
+            } else if (clicked instanceof ArmorStand) {
+                action = ProtectionActionType.ARMOR_STAND;
+            } else {
+                return;
+            }
+            Player player = event.getPlayer();
+            if (player == null || clicked.getLocation() == null
+                    || clicked.getLocation().getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtLocation(player.getUniqueId(), clicked.getLocation(), action)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onArmorStandManipulate(PlayerArmorStandManipulateEvent event) {
+        try {
+            Player player = event.getPlayer();
+            ArmorStand stand = event.getRightClicked();
+            if (player == null || stand == null || stand.getLocation() == null
+                    || stand.getLocation().getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtLocation(player.getUniqueId(), stand.getLocation(),
+                    ProtectionActionType.ARMOR_STAND)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onHangingPlace(HangingPlaceEvent event) {
+        try {
+            Player player = event.getPlayer();
+            Hanging hanging = event.getEntity();
+            Block support = event.getBlock();
+            Location at = hanging != null ? hanging.getLocation() : null;
+            if (at == null && support != null) {
+                at = support.getLocation();
+            }
+            if (player == null || hanging == null || at == null || at.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            ProtectionActionType action = (hanging instanceof ItemFrame)
+                    ? ProtectionActionType.ITEM_FRAME
+                    : ProtectionActionType.HANGING_ENTITY;
+            if (deniedAtLocation(player.getUniqueId(), at, action)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onHangingBreak(HangingBreakByEntityEvent event) {
+        try {
+            if (!(event.getRemover() instanceof Player player)) {
+                return;
+            }
+            Hanging hanging = event.getEntity();
+            if (hanging == null || hanging.getLocation() == null
+                    || hanging.getLocation().getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            ProtectionActionType action = (hanging instanceof ItemFrame)
+                    ? ProtectionActionType.ITEM_FRAME
+                    : ProtectionActionType.HANGING_ENTITY;
+            if (deniedAtLocation(player.getUniqueId(), hanging.getLocation(), action)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEntityInteract(EntityInteractEvent event) {
+        try {
+            Block block = event.getBlock();
+            if (block == null || block.getType() != Material.FARMLAND) {
+                return;
+            }
+            Entity entity = event.getEntity();
+            if (entity == null || block.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtBlock(entity.getUniqueId(), block,
+                    ProtectionActionType.FARMLAND_TRAMPLE)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onFireSpread(BlockSpreadEvent event) {
+        try {
+            Block target = event.getBlock();
+            Block source = event.getSource();
+            if (target == null || target.getWorld() == null
+                    || source == null || source.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            // BlockSpreadEvent also fires for grass, mushrooms and vines: only flame
+            // spreading (fire block at the source, or fire as the spread result)
+            // belongs to FIRE_SPREAD. Anything else stays vanilla.
+            BlockState newState = event.getNewState();
+            boolean sourceIsFire = source.getType() == Material.FIRE;
+            boolean resultIsFire = newState != null && newState.getType() == Material.FIRE;
+            if (!sourceIsFire && !resultIsFire) {
+                return;
+            }
+            if (deniedAtBlock(ENVIRONMENT_ACTOR, source, ProtectionActionType.FIRE_SPREAD)
+                    || deniedAtBlock(ENVIRONMENT_ACTOR, target, ProtectionActionType.FIRE_SPREAD)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onFireBurn(BlockBurnEvent event) {
+        try {
+            Block block = event.getBlock();
+            if (block == null || block.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            if (deniedAtBlock(ENVIRONMENT_ACTOR, block, ProtectionActionType.FIRE_BURN)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {
