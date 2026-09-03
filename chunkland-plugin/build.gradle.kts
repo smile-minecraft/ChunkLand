@@ -1,3 +1,6 @@
+import org.gradle.api.file.DuplicatesStrategy
+import org.gradle.api.tasks.bundling.Jar
+
 plugins {
     id("java-library")
 }
@@ -19,6 +22,21 @@ dependencies {
     // affect the plugin jar (only main sources are packaged).
     testImplementation(libs.paper.api)
     testImplementation("com.smile.acelib:AceLib:1.2.0")
+}
+
+// Self-contained plugin jar: Paper/Folia loads only this jar (no separate
+// api/sqlite/snakeyaml jars in the server plugins directory), so the runtime
+// dependencies must be embedded. runtimeClasspath carries exactly the
+// implementation set (chunkland-api, sqlite-jdbc, snakeyaml + transitives);
+// compileOnly (paper-api, AceLib) is server-provided and stays out.
+tasks.named<Jar>("jar") {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from({
+        configurations.runtimeClasspath.get().map {
+            if (it.isDirectory) it else zipTree(it)
+        }
+    })
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
 }
 
 // Expand plugin.yml placeholders (e.g. version) from the project model so the
