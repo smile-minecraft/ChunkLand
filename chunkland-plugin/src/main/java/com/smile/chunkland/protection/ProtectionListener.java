@@ -2,6 +2,7 @@ package com.smile.chunkland.protection;
 
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.PermissionDecision;
+import com.smile.chunkland.api.permission.DecisionSource;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.message.rejection.RejectionNotifier;
 import java.util.EnumSet;
@@ -9,6 +10,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.time.Instant;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -78,7 +80,10 @@ import org.bukkit.inventory.InventoryHolder;
  *
  * <p>Movement into a land decides as {@code ENTRY} at the destination, but
  * only when the chunk changes: walking inside one chunk never consults the
- * engine. Teleports always check the destination. Vehicles decide as
+ * engine. Teleports always check the destination, for every teleport cause.
+ * ENTRY denies and banned-inside stops delegate to
+ * {@link EntryProtectionAdapter} for a throttled push-out that never loads a
+ * chunk. Vehicles decide as
  * {@code VEHICLE_USE} (entering and player damage); item frames as
  * {@code ITEM_FRAME}, armor stands as {@code ARMOR_STAND}, and other
  * hangings as {@code HANGING_ENTITY}. Non-player actors on those paths stay
@@ -210,9 +215,10 @@ public final class ProtectionListener implements Listener {
 
     private final ProtectionEngine engine;
     private final RejectionNotifier rejectionNotifier;
+    private final EntryProtectionAdapter entryAdapter;
 
     public ProtectionListener(ProtectionEngine engine) {
-        this(engine, null);
+        this(engine, null, defaultEntryAdapter(engine));
     }
 
     /**
@@ -221,8 +227,43 @@ public final class ProtectionListener implements Listener {
      *         Ownerless mechanics never notify regardless of this seam.
      */
     public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier) {
+        this(engine, rejectionNotifier, defaultEntryAdapter(engine));
+    }
+
+    /**
+     * @param entryAdapter transit semantics for ENTRY denies (teleport
+     *         coverage, throttled push-out, banned-inside stops); {@code null}
+     *         selects the production default (no ban source wired yet, Bukkit
+     *         loaded-check, engine ENTRY-validated targets, direct teleport,
+     *         system clock). The null ban source is a deliberate honest
+     *         downgrade: banned-inside enforcement stays inert until the ban
+     *         storage milestone wires a real query (M3-06 gate).
+     */
+    public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
+                              EntryProtectionAdapter entryAdapter) {
         this.engine = Objects.requireNonNull(engine, "engine");
         this.rejectionNotifier = rejectionNotifier;
+        this.entryAdapter = entryAdapter == null ? defaultEntryAdapter(engine) : entryAdapter;
+    }
+
+    private static EntryProtectionAdapter defaultEntryAdapter(ProtectionEngine engine) {
+        Objects.requireNonNull(engine, "engine");
+        EntryProtectionAdapter.EntryAllowedCheck entryCheck = (playerId, at) -> {
+            try {
+                if (playerId == null || at == null || at.getWorld() == null) {
+                    return false;
+                }
+                return engine.decideAt(playerId, at.getWorld().getUID(),
+                        at.getBlockX() >> 4, at.getBlockZ() >> 4,
+                        EntryProtectionAdapter.entryAction()).outcome() != PermissionState.DENY;
+            } catch (RuntimeException ex) {
+                return false;
+            }
+        };
+        return new EntryProtectionAdapter(Instant::now,
+                EntryProtectionAdapter.DEFAULT_PUSH_OUT_COOLDOWN, null,
+                EntryProtectionAdapter.ChunkLoadedCheck.bukkit(), entryCheck,
+                (player, target) -> player.teleport(target));
     }
 
     /**
@@ -621,6 +662,13 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
+            Location current = from != null ? from : to;
+            if (entryAdapter.isBannedInside(player.getUniqueId(), current)) {
+                event.setCancelled(true);
+                notifyBannedInside(player);
+                entryAdapter.pushOut(player, null);
+                return;
+            }
             if (from != null && from.getWorld() != null
                     && from.getWorld().getUID().equals(to.getWorld().getUID())
                     && (from.getBlockX() >> 4) == (to.getBlockX() >> 4)
@@ -632,6 +680,7 @@ public final class ProtectionListener implements Listener {
             if (entryDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
                 notifyRejection(player, ProtectionActionType.ENTRY, entryDecision);
+                entryAdapter.pushOut(player, from);
             }
         } catch (RuntimeException ex) {
             try {
@@ -645,9 +694,17 @@ public final class ProtectionListener implements Listener {
     public void onPlayerTeleport(PlayerTeleportEvent event) {
         try {
             Player player = event.getPlayer();
+            Location from = event.getFrom();
             Location to = event.getTo();
             if (player == null || to == null || to.getWorld() == null) {
                 event.setCancelled(true);
+                return;
+            }
+            Location current = from != null ? from : to;
+            if (entryAdapter.isBannedInside(player.getUniqueId(), current)) {
+                event.setCancelled(true);
+                notifyBannedInside(player);
+                entryAdapter.pushOut(player, null);
                 return;
             }
             var teleportDecision = decideAtLocation(player.getUniqueId(), to,
@@ -655,6 +712,7 @@ public final class ProtectionListener implements Listener {
             if (teleportDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
                 notifyRejection(player, ProtectionActionType.ENTRY, teleportDecision);
+                entryAdapter.pushOut(player, from);
             }
         } catch (RuntimeException ex) {
             try {
@@ -923,6 +981,26 @@ public final class ProtectionListener implements Listener {
         }
         try {
             notifier.notifyDenied(player, action, decision);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    /**
+     * Messaging-only notice for the banned-inside stop: enforcement comes from
+     * the ban seam, so a synthetic DENY decision is built for the notifier and
+     * never fed back into any decision. Best-effort and fully guarded, like
+     * {@link #notifyRejection}.
+     */
+    private void notifyBannedInside(Player player) {
+        RejectionNotifier notifier = this.rejectionNotifier;
+        if (notifier == null) {
+            return;
+        }
+        try {
+            notifier.notifyDenied(player, ProtectionActionType.ENTRY,
+                    new PermissionDecision(PermissionState.DENY,
+                            DecisionSource.SUBJECT_PERMISSION,
+                            "Banned inside this land: movement denied until pushed out"));
         } catch (RuntimeException ignored) {
         }
     }
