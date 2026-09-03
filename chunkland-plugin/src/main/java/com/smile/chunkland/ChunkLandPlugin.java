@@ -11,7 +11,11 @@ import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
+import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
+import com.smile.chunkland.protection.SubjectPermissionLookup;
+import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
+import com.smile.chunkland.runtime.rule.LandRuleService;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
 import com.smile.chunkland.selection.SelectionLifecycleListener;
 import com.smile.chunkland.selection.SelectionNotifier;
@@ -215,13 +219,28 @@ public final class ChunkLandPlugin extends JavaPlugin {
     /**
      * Builds the protection engine for startup wiring. Construction validates
      * that every action has a decision source, so an incomplete registry
-     * throws here and the caller must refuse to start. The skeleton provider
-     * grants nothing (fail-closed inside lands); later milestones replace it
-     * with a provider fed by real bindings, defaults, and rules.
+     * throws here and the caller must refuse to start. Ownership comes from
+     * the published land snapshot; environment rules resolve through the
+     * built-in {@link LandRuleService#defaults()}, so the owner is bound by
+     * the same rule as anyone else. Subject bindings/defaults still arrive
+     * through the injected lookup: {@code null} there means no grant source
+     * is wired yet and subject layers stay {@code INHERIT} (deny in lands).
      */
     static ProtectionEngine buildProtectionEngine(LandRegistryStore store) {
+        return buildProtectionEngine(store, LandRuleService.defaults(), null);
+    }
+
+    /**
+     * Builds the protection engine with explicit authorisation sources. Rule
+     * lookups stay behind the {@link LandRuleLookup} interface so the rule
+     * implementation can be supplied later without touching this wiring.
+     */
+    static ProtectionEngine buildProtectionEngine(LandRegistryStore store,
+                                                  LandRuleLookup ruleLookup,
+                                                  SubjectPermissionLookup subjectLookup) {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
-        return new ProtectionEngine(active::snapshot, ProtectionEngine.inheritOnlyProvider());
+        return new ProtectionEngine(active::snapshot,
+                new SnapshotPermissionContextProvider(ruleLookup, subjectLookup));
     }
 
     void registerWandListener(WandSafetyListener listener) {
