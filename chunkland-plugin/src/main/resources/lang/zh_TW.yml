@@ -33,6 +33,7 @@ land:
 protection:
   rejection:
     denied: "<red>在 <land_name> 中動作 <action> 被拒絕 — 擁有者 <owner>。原因：<reason></red>"
+    action_denied: "<red>動作 <action> 被拒絕。<reason></red>"
     limit: "<red>已達上限：<current>/<max> <limit_type>。</red>"
     cooldown: "<yellow>請等待 <remaining> 秒後再試。</yellow>"
     economy: "<red>付款失敗：需付 <price> — <reason>。</red>"

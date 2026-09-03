@@ -33,6 +33,7 @@ land:
 protection:
   rejection:
     denied: "<red>Action <action> denied in <land_name> — owner <owner>. <reason></red>"
+    action_denied: "<red>Action <action> denied. <reason></red>"
     limit: "<red>Limit reached: <current>/<max> <limit_type>.</red>"
     cooldown: "<yellow>Please wait <remaining>s before next action.</yellow>"
     economy: "<red>Payment failed: price <price> — <reason>.</red>"

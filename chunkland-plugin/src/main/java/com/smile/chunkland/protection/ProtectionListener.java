@@ -1,7 +1,9 @@
 package com.smile.chunkland.protection;
 
 import com.smile.chunkland.api.permission.PermissionState;
+import com.smile.chunkland.api.permission.PermissionDecision;
 import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.message.rejection.RejectionNotifier;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -207,9 +209,20 @@ public final class ProtectionListener implements Listener {
             Material.POLISHED_BLACKSTONE_BUTTON);
 
     private final ProtectionEngine engine;
+    private final RejectionNotifier rejectionNotifier;
 
     public ProtectionListener(ProtectionEngine engine) {
+        this(engine, null);
+    }
+
+    /**
+     * @param rejectionNotifier throttled deny notices for player-attributed
+     *         paths; {@code null} keeps the listener silent (no message cost).
+     *         Ownerless mechanics never notify regardless of this seam.
+     */
+    public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier) {
         this.engine = Objects.requireNonNull(engine, "engine");
+        this.rejectionNotifier = rejectionNotifier;
     }
 
     /**
@@ -259,6 +272,7 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.BLOCK_BREAK);
             if (decision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.BLOCK_BREAK, decision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -297,6 +311,7 @@ public final class ProtectionListener implements Listener {
                     action);
             if (decision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(damager, action, decision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -315,8 +330,11 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtBlock(player.getUniqueId(), placed, ProtectionActionType.BLOCK_PLACE)) {
+            var placeDecision = decideAtBlock(player.getUniqueId(), placed,
+                    ProtectionActionType.BLOCK_PLACE);
+            if (placeDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.BLOCK_PLACE, placeDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -339,9 +357,12 @@ public final class ProtectionListener implements Listener {
                     event.setCancelled(true);
                     return;
                 }
-                if (deniedAtBlock(player.getUniqueId(), soil,
-                        ProtectionActionType.FARMLAND_TRAMPLE)) {
+                var trampleDecision = decideAtBlock(player.getUniqueId(), soil,
+                        ProtectionActionType.FARMLAND_TRAMPLE);
+                if (trampleDecision.outcome() == PermissionState.DENY) {
                     event.setCancelled(true);
+                    notifyRejection(player, ProtectionActionType.FARMLAND_TRAMPLE,
+                            trampleDecision);
                 }
                 return;
             }
@@ -361,8 +382,10 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtBlock(player.getUniqueId(), clicked, action)) {
+            var interactDecision = decideAtBlock(player.getUniqueId(), clicked, action);
+            if (interactDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, action, interactDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -395,8 +418,11 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtBlock(player.getUniqueId(), block, ProtectionActionType.BUCKET_USE)) {
+            var bucketDecision = decideAtBlock(player.getUniqueId(), block,
+                    ProtectionActionType.BUCKET_USE);
+            if (bucketDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.BUCKET_USE, bucketDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -601,8 +627,11 @@ public final class ProtectionListener implements Listener {
                     && (from.getBlockZ() >> 4) == (to.getBlockZ() >> 4)) {
                 return;
             }
-            if (deniedAtLocation(player.getUniqueId(), to, ProtectionActionType.ENTRY)) {
+            var entryDecision = decideAtLocation(player.getUniqueId(), to,
+                    ProtectionActionType.ENTRY);
+            if (entryDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.ENTRY, entryDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -621,8 +650,11 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtLocation(player.getUniqueId(), to, ProtectionActionType.ENTRY)) {
+            var teleportDecision = decideAtLocation(player.getUniqueId(), to,
+                    ProtectionActionType.ENTRY);
+            if (teleportDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.ENTRY, teleportDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -644,9 +676,11 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtLocation(player.getUniqueId(), vehicle.getLocation(),
-                    ProtectionActionType.VEHICLE_USE)) {
+            var enterDecision = decideAtLocation(player.getUniqueId(), vehicle.getLocation(),
+                    ProtectionActionType.VEHICLE_USE);
+            if (enterDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.VEHICLE_USE, enterDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -668,9 +702,11 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtLocation(player.getUniqueId(), vehicle.getLocation(),
-                    ProtectionActionType.VEHICLE_USE)) {
+            var vehicleDecision = decideAtLocation(player.getUniqueId(), vehicle.getLocation(),
+                    ProtectionActionType.VEHICLE_USE);
+            if (vehicleDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.VEHICLE_USE, vehicleDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -698,8 +734,11 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtLocation(player.getUniqueId(), clicked.getLocation(), action)) {
+            var entityDecision = decideAtLocation(player.getUniqueId(),
+                    clicked.getLocation(), action);
+            if (entityDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, action, entityDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -719,9 +758,11 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtLocation(player.getUniqueId(), stand.getLocation(),
-                    ProtectionActionType.ARMOR_STAND)) {
+            var standDecision = decideAtLocation(player.getUniqueId(), stand.getLocation(),
+                    ProtectionActionType.ARMOR_STAND);
+            if (standDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.ARMOR_STAND, standDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -748,8 +789,10 @@ public final class ProtectionListener implements Listener {
             ProtectionActionType action = (hanging instanceof ItemFrame)
                     ? ProtectionActionType.ITEM_FRAME
                     : ProtectionActionType.HANGING_ENTITY;
-            if (deniedAtLocation(player.getUniqueId(), at, action)) {
+            var hangingDecision = decideAtLocation(player.getUniqueId(), at, action);
+            if (hangingDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, action, hangingDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -774,8 +817,11 @@ public final class ProtectionListener implements Listener {
             ProtectionActionType action = (hanging instanceof ItemFrame)
                     ? ProtectionActionType.ITEM_FRAME
                     : ProtectionActionType.HANGING_ENTITY;
-            if (deniedAtLocation(player.getUniqueId(), hanging.getLocation(), action)) {
+            var breakDecision = decideAtLocation(player.getUniqueId(),
+                    hanging.getLocation(), action);
+            if (breakDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
+                notifyRejection(player, action, breakDecision);
             }
         } catch (RuntimeException ex) {
             try {
@@ -861,6 +907,36 @@ public final class ProtectionListener implements Listener {
 
     private boolean deniedAtBlock(UUID actor, Block block, ProtectionActionType action) {
         return deniedAt(actor, block.getWorld(), block.getX(), block.getZ(), action);
+    }
+
+    /**
+     * Notifies the denied player through the rejection seam. Messaging is
+     * best-effort and fully guarded: it never changes the cancel decision and
+     * never leaks into event dispatch. Only player-attributed DENY branches
+     * call this; ownerless mechanics never do.
+     */
+    private void notifyRejection(Player player, ProtectionActionType action,
+                                 PermissionDecision decision) {
+        RejectionNotifier notifier = this.rejectionNotifier;
+        if (notifier == null) {
+            return;
+        }
+        try {
+            notifier.notifyDenied(player, action, decision);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    private PermissionDecision decideAtBlock(UUID actor, Block block,
+                                             ProtectionActionType action) {
+        return engine.decideAt(actor, block.getWorld().getUID(),
+                block.getX() >> 4, block.getZ() >> 4, action);
+    }
+
+    private PermissionDecision decideAtLocation(UUID actor, Location location,
+                                                ProtectionActionType action) {
+        return engine.decideAt(actor, location.getWorld().getUID(),
+                location.getBlockX() >> 4, location.getBlockZ() >> 4, action);
     }
 
     private boolean deniedAtLocation(UUID actor, Location location, ProtectionActionType action) {
