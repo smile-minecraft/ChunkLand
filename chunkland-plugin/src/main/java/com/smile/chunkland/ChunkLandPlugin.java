@@ -9,6 +9,9 @@ import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import com.smile.chunkland.protection.ProtectionEngine;
+import com.smile.chunkland.protection.ProtectionListener;
+import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
 import com.smile.chunkland.selection.SelectionLifecycleListener;
 import com.smile.chunkland.selection.SelectionNotifier;
@@ -78,6 +81,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private WandSafetyListener wandSafetyListener;
     private SelectionSessionManager selectionSessionManager;
     private SelectionLifecycleListener selectionLifecycleListener;
+    private LandRegistryStore protectionStore;
+    private ProtectionEngine protectionEngine;
+    private ProtectionListener protectionListener;
 
     public ChunkLandPlugin() {
     }
@@ -158,9 +164,17 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
         // Wand safety listener: native Bukkit listener for selection wand protection
         this.wandSafetyListener = new WandSafetyListener();
+        // Protection engine skeleton: validated at construction (incomplete
+        // registry throws and lands in the fail-closed path below); the store
+        // starts empty so every position is wilderness (vanilla) until later
+        // milestones publish real snapshots and a real context provider.
+        this.protectionStore = new LandRegistryStore();
+        this.protectionEngine = buildProtectionEngine(this.protectionStore);
+        this.protectionListener = new ProtectionListener(this.protectionEngine);
         try {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
+            registerProtectionListener(this.protectionListener);
         } catch (RuntimeException ex) {
             getLogger().warning("ChunkLand wand safety listener registration failed; disabling plugin: " + ex.getMessage());
             boolean disableThrew = false;
@@ -198,11 +212,27 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return Map.copyOf(base);
     }
 
+    /**
+     * Builds the protection engine for startup wiring. Construction validates
+     * that every action has a decision source, so an incomplete registry
+     * throws here and the caller must refuse to start. The skeleton provider
+     * grants nothing (fail-closed inside lands); later milestones replace it
+     * with a provider fed by real bindings, defaults, and rules.
+     */
+    static ProtectionEngine buildProtectionEngine(LandRegistryStore store) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        return new ProtectionEngine(active::snapshot, ProtectionEngine.inheritOnlyProvider());
+    }
+
     void registerWandListener(WandSafetyListener listener) {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 
     void registerSelectionListener(SelectionLifecycleListener listener) {
+        getServer().getPluginManager().registerEvents(listener, this);
+    }
+
+    void registerProtectionListener(ProtectionListener listener) {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 
@@ -234,6 +264,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
             wandSafetyListener = null;
         }
+        if (protectionListener != null) {
+            try {
+                HandlerList.unregisterAll(protectionListener);
+            } catch (RuntimeException ignored) {
+            }
+            protectionListener = null;
+        }
+        protectionEngine = null;
+        protectionStore = null;
         this.messagePipeline = Optional.empty();
         this.capabilityProbe = Optional.empty();
         this.landMessagePipeline = Optional.empty();
