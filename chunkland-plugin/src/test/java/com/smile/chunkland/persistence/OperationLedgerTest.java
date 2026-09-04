@@ -228,6 +228,42 @@ class OperationLedgerTest {
     }
 
     @Test
+    void atomicCommitWritesOneAuditRowWithAllChunks() {
+        try (PersistenceStore store = PersistenceStore.open(database())) {
+            UUID operationId = UUID.randomUUID();
+            Instant time = Instant.parse("2026-01-01T00:00:00Z");
+            OperationPayload payload = twoChunkPayload(operationId, time);
+            OperationLedger ledger = chargedLedger(store, payload);
+            ledger.commitClaimAtomically(twoChunkCommit(payload)).toCompletableFuture().join();
+
+            assertEquals("DOMAIN_COMMITTED", state(store, payload.operationId()));
+            assertEquals(1, count(store, "lands"));
+            assertEquals(2, count(store, "land_chunks"));
+            assertEquals(1, count(store, "audit_log"));
+            assertEquals(2, count(store, "audit_chunks"));
+
+            List<ChunkKey> stored = store.execute(connection -> {
+                try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT world_uuid, chunk_x, chunk_z FROM audit_chunks ORDER BY chunk_x, chunk_z")) {
+                    try (var rows = statement.executeQuery()) {
+                        java.util.ArrayList<ChunkKey> out = new java.util.ArrayList<>();
+                        while (rows.next()) {
+                            out.add(new ChunkKey(
+                                    UuidBlob.decode(rows.getBytes(1)), rows.getInt(2), rows.getInt(3)));
+                        }
+                        return List.copyOf(out);
+                    }
+                }
+            });
+            assertEquals(
+                    payload.chunkSet().stream().map(OperationPayload.Chunk::chunk).sorted(
+                            java.util.Comparator.comparingInt(ChunkKey::chunkX)
+                                    .thenComparingInt(ChunkKey::chunkZ)).toList(),
+                    stored);
+        }
+    }
+
+    @Test
     void everyAtomicFailureInjectionRollsBackAllWritesAndLedgerState() {
         for (AtomicCommitStep failureStep : EnumSet.allOf(AtomicCommitStep.class)) {
             try (PersistenceStore store = PersistenceStore.open(database())) {
@@ -448,6 +484,18 @@ class OperationLedgerTest {
         return new ClaimCommit(payload.operationId(), land, payload.chunkSet(), audit);
     }
 
+    private ClaimCommit twoChunkCommit(OperationPayload payload) {
+        List<ChunkKey> keys = payload.chunkSet().stream().map(OperationPayload.Chunk::chunk).toList();
+        LandSnapshot land = new LandSnapshot(payload.targetLandId(), payload.landDisplayName(),
+                LandName.normalize(payload.landDisplayName()), OwnerRef.player(payload.actorUuid()),
+                payload.worldUuid(), new java.util.HashSet<>(keys), List.of(), 0, 0,
+                payload.createdAt(), payload.updatedAt());
+        AuditEntry audit = new AuditEntry(0, payload.updatedAt(), payload.actorUuid(), "LAND_CREATE",
+                payload.targetLandId(), payload.worldUuid(), null, payload.schemaVersion(), null,
+                payload.toJson(), "{}", keys);
+        return new ClaimCommit(payload.operationId(), land, payload.chunkSet(), audit);
+    }
+
     private OperationPayload payload() {
         return payload(UUID.randomUUID(), Instant.parse("2026-01-01T00:00:00Z"));
     }
@@ -465,6 +513,20 @@ class OperationLedgerTest {
                 List.of(new OperationPayload.Chunk(new ChunkKey(world, (int) operationId.getLeastSignificantBits(), -3), 12,
                         UUID.nameUUIDFromBytes((operationId + "-lot").getBytes()), costBasisMinorUnits)),
                 priceMinorUnits, "test-economy", time, displayName);
+    }
+
+    private OperationPayload twoChunkPayload(UUID operationId, Instant time) {
+        UUID actor = UUID.fromString("00000000-0000-0000-0000-000000000011");
+        UUID world = UUID.fromString("00000000-0000-0000-0000-000000000012");
+        String displayName = "Recovered land " + operationId.toString().substring(28);
+        return OperationPayload.claim(operationId, actor, world,
+                new LandId(UUID.nameUUIDFromBytes((operationId + "-land").getBytes())),
+                List.of(
+                        new OperationPayload.Chunk(new ChunkKey(world, 5, -3), 12,
+                                UUID.nameUUIDFromBytes((operationId + "-lot-1").getBytes()), 417L),
+                        new OperationPayload.Chunk(new ChunkKey(world, 6, -3), 12,
+                                UUID.nameUUIDFromBytes((operationId + "-lot-2").getBytes()), 417L)),
+                834L, "test-economy", time, displayName);
     }
 
     private Path database() {

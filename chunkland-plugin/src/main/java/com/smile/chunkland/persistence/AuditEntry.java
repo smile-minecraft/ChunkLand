@@ -39,6 +39,15 @@ public record AuditEntry(
         return Optional.ofNullable(actor);
     }
 
+    /**
+     * Alias matching the {@code metadata_schema_version} column name.
+     * The reader never rejects an entry because of this value; it is
+     * returned as stored so older or newer versions stay readable.
+     */
+    public int metadataSchemaVersion() {
+        return metadataVersion;
+    }
+
     public Optional<LandId> landIdOpt() {
         return Optional.ofNullable(landId);
     }
