@@ -38,6 +38,7 @@ public final class SelectionSessionManager implements ConfigReloadListener {
     private Duration timeout;
     private final SelectionWorldNameResolver worldNameResolver;
     private final SelectionStructureRevisionLookup structureRevisions;
+    private final Map<UUID, Long> nextGenerations = new LinkedHashMap<>();
     private boolean disabled;
 
     public SelectionSessionManager(
@@ -110,12 +111,22 @@ public final class SelectionSessionManager implements ConfigReloadListener {
 
         Entry next;
         Object timeoutToken;
+        SelectionSession stamped;
         synchronized (monitor) {
             ensureEnabled();
             if (cleaningPlayers.contains(session.playerId()) || sessions.containsKey(session.playerId())) {
                 throw new IllegalStateException("selection session is being changed");
             }
-            next = new Entry(session);
+            long generation = nextGenerations.getOrDefault(session.playerId(), 0L);
+            long following;
+            try {
+                following = Math.addExact(generation, 1);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException("sessionGeneration overflow", overflow);
+            }
+            stamped = session.withGeneration(generation);
+            nextGenerations.put(session.playerId(), following);
+            next = new Entry(stamped);
             timeoutToken = next.timeoutToken;
             sessions.put(session.playerId(), next);
         }
@@ -131,7 +142,7 @@ public final class SelectionSessionManager implements ConfigReloadListener {
             }
             throw ex;
         }
-        return session;
+        return stamped;
     }
 
     /** Alias that makes the replacement behavior explicit at call sites. */

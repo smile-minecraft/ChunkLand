@@ -177,7 +177,11 @@ class ClaimReadinessAndPricingGuardTest {
                     actorUuid -> selections.sessionFor(actorUuid)
                             .map(session -> OptionalLongOf(session.selectionRevision()))
                             .orElseGet(java.util.OptionalLong::empty),
-                    chunk -> 64, owner -> quota.chunkCommitted(owner)).validate(request);
+                    actorUuid -> selections.sessionFor(actorUuid)
+                            .map(session -> OptionalLongOf(session.sessionGeneration()))
+                            .orElseGet(java.util.OptionalLong::empty),
+                    chunk -> 64, owner -> quota.chunkCommitted(owner),
+                    ClaimValidator.StructureRevisionSource.none()).validate(request);
             ClaimEconomy counting = new ClaimEconomy() {
                 @Override
                 public CompletionStage<ChargeResult> charge(UUID operationId, ClaimRequest request, Money price) {
@@ -221,8 +225,8 @@ class ClaimReadinessAndPricingGuardTest {
                     Optional.of(new SelectionPoint(world, 0, 64, 0)),
                     Optional.of(new SelectionPoint(world, 16, 64, 16)),
                     0, NOW);
-            selections.start(initial);
-            return selections.updateSelection(actor, initial, new SelectionUpdate(
+            SelectionSession stamped = selections.start(initial);
+            return selections.updateSelection(actor, stamped, new SelectionUpdate(
                             initial.pointA(), initial.pointB(),
                             Set.of(new ChunkKey(world, x, z)), Map.of()))
                     .orElseThrow(() -> new IllegalStateException("selection update must succeed"));

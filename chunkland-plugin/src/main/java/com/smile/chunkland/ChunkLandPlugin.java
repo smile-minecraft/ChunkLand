@@ -13,6 +13,7 @@ import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.ClaimValidator;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
 import com.smile.chunkland.command.ClaimCommandHandler;
+import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.PluginManagementGateResolver;
@@ -120,6 +121,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private WandSafetyListener wandSafetyListener;
     private SelectionSessionManager selectionSessionManager;
     private SelectionLifecycleListener selectionLifecycleListener;
+    private SelectionStructureRevisionLookup selectionStructureRevisions;
     private LandRegistryStore protectionStore;
     private ProtectionEngine protectionEngine;
     private ProtectionListener protectionListener;
@@ -180,6 +182,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
         ConfigService activeConfig = this.configService.orElseThrow(
                 () -> new IllegalStateException("ChunkLand config service is unavailable"));
+        SelectionStructureRevisionLookup structureRevisions =
+                SelectionStructureRevisionLookup.unavailable();
+        this.selectionStructureRevisions = structureRevisions;
         this.selectionSessionManager = new SelectionSessionManager(
                 new FoliaSelectionTimeoutScheduler(this, uuid -> getServer().getPlayer(uuid)),
                 SelectionVisualizationTaskController.noop(),
@@ -187,7 +192,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 Clock.systemUTC()::instant,
                 () -> activeConfig.current().selection().sessionTimeout(),
                 uuid -> Optional.ofNullable(getServer().getWorld(uuid)).map(org.bukkit.World::getName),
-                SelectionStructureRevisionLookup.unavailable());
+                structureRevisions);
         this.selectionLifecycleListener = new SelectionLifecycleListener(selectionSessionManager);
         this.configService.ifPresent(service -> service.addListener(selectionSessionManager));
         // Only build the message probe after a ready AceLib API is held. If AceLib is
@@ -235,7 +240,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // fail-closed on recovery_pending/recovery_failed, so a stale empty
         // runtime can never hide a collision.
         this.landCommand = new LandCommand(
-                buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier()),
+                buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
+                        structureRevisions),
                 null, buildManagementGateResolver(this.protectionStore));
         // Capture the underlying capabilities bundle before Wand listener registration can fail,
         // so registration failure does not leak the M0 SafeScheduler.
@@ -302,10 +308,33 @@ public final class ChunkLandPlugin extends JavaPlugin {
     static Map<String, LandCommand.Handler> buildLandHandlers(
             SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
             Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan) {
+        return buildLandHandlers(selections, runner, recoveryScan,
+                SelectionStructureRevisionLookup.unavailable());
+    }
+
+    /**
+     * Production {@code /land} handlers with an explicit structure revision
+     * source for chat confirmations.
+     *
+     * <p>The same lookup instance should back both the selection manager and
+     * the confirmation handler so the pre-check and the lifecycle
+     * invalidation observe one live value. Until a real source exists the
+     * unavailable seam fails targeted confirmations closed while target-less
+     * claims proceed on the selection token alone.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures) {
         Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers());
         base.put("claim", selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
                 : new ClaimCommandHandler(selections, runner, recoveryScan));
+        SelectionStructureRevisionLookup activeStructures =
+                structures == null ? SelectionStructureRevisionLookup.unavailable() : structures;
+        base.put("confirm", selections == null
+                ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
+                : new ConfirmCommandHandler(selections, runner, recoveryScan, activeStructures));
         return Map.copyOf(base);
     }
 
@@ -351,14 +380,43 @@ public final class ChunkLandPlugin extends JavaPlugin {
             ClaimEconomy economy,
             com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
             Executor asyncExecutor) {
+        return buildClaimSaga(registryStore, selections, quotas, pricing, reservations,
+                ledger, economy, rebuilder, asyncExecutor,
+                SelectionStructureRevisionLookup.unavailable());
+    }
+
+    /**
+     * Assembles the formal claim saga with an explicit structure revision
+     * source for the saga-time confirmation revalidation. Until a real source
+     * exists the unavailable seam fails targeted confirmations closed while
+     * target-less claims proceed on the selection token alone.
+     */
+    static ClaimSaga buildClaimSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures) {
         OwnerQuotaService activeQuotas = Objects.requireNonNull(quotas, "quotas");
+        SelectionStructureRevisionLookup activeStructures = structures == null
+                ? SelectionStructureRevisionLookup.unavailable()
+                : structures;
         ClaimValidator validator = new SnapshotClaimValidator(
                 Objects.requireNonNull(registryStore, "registryStore"),
                 actorUuid -> selections.sessionFor(actorUuid)
                         .map(session -> OptionalLong.of(session.selectionRevision()))
                         .orElseGet(OptionalLong::empty),
+                actorUuid -> selections.sessionFor(actorUuid)
+                        .map(session -> OptionalLong.of(session.sessionGeneration()))
+                        .orElseGet(OptionalLong::empty),
                 chunk -> CLAIM_DEPTH_FALLBACK,
-                activeQuotas::chunkCommitted);
+                activeQuotas::chunkCommitted,
+                targetLandId -> activeStructures.currentRevision(targetLandId));
         return new ClaimSaga(validator, activeQuotas,
                 Objects.requireNonNull(pricing, "pricing"),
                 Objects.requireNonNull(reservations, "reservations"),
@@ -412,7 +470,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
             });
             this.claimSaga = buildClaimSaga(this.protectionStore, selections,
                     this.claimQuotas, claimPricing(), this.claimReservations,
-                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), this.claimExecutor);
+                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), this.claimExecutor,
+                    this.selectionStructureRevisions);
             return this.claimSaga::claim;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand claim flow assembly failed; "
@@ -542,6 +601,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
             selectionLifecycleListener = null;
         }
         selectionSessionManager = null;
+        selectionStructureRevisions = null;
         if (wandSafetyListener != null) {
             try {
                 HandlerList.unregisterAll(wandSafetyListener);

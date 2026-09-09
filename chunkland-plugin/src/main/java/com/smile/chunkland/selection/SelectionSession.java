@@ -18,7 +18,11 @@ import java.util.UUID;
  *
  * <p>The session contains identifiers and value objects only. In particular, it
  * does not retain Bukkit objects, persistence handles, or task handles. The
- * lifecycle manager owns those runtime resources separately.</p>
+ * lifecycle manager owns those runtime resources separately.
+ *
+ * <p>Every replacement session carries a never-reused generation allocated by
+ * the manager, so a numeric selectionRevision that restarts from zero can
+ * never make an old confirmation look fresh.</p>
  */
 public record SelectionSession(
         UUID playerId,
@@ -31,6 +35,7 @@ public record SelectionSession(
         Set<ChunkKey> selectedChunks,
         Map<ChunkKey, PendingChange> pendingChanges,
         long selectionRevision,
+        long sessionGeneration,
         long baseStructureRevision,
         Instant createdAt,
         Instant lastActivity) {
@@ -49,6 +54,9 @@ public record SelectionSession(
         Objects.requireNonNull(lastActivity, "lastActivity");
         if (selectionRevision < 0) {
             throw new IllegalArgumentException("selectionRevision must be non-negative");
+        }
+        if (sessionGeneration < 0) {
+            throw new IllegalArgumentException("sessionGeneration must be non-negative");
         }
         if (baseStructureRevision < 0) {
             throw new IllegalArgumentException("baseStructureRevision must be non-negative");
@@ -84,6 +92,7 @@ public record SelectionSession(
                 Set.of(),
                 Map.of(),
                 0,
+                0,
                 baseStructureRevision,
                 now,
                 now);
@@ -102,6 +111,7 @@ public record SelectionSession(
                 selectedChunks,
                 pendingChanges,
                 selectionRevision,
+                sessionGeneration,
                 baseStructureRevision,
                 createdAt,
                 lastActivity);
@@ -119,9 +129,29 @@ public record SelectionSession(
                 update.selectedChunks(),
                 update.pendingChanges(),
                 nextRevision,
+                sessionGeneration,
                 baseStructureRevision,
                 createdAt,
                 activity);
+    }
+
+    /** Return a copy stamped with the manager-allocated generation. */
+    SelectionSession withGeneration(long generation) {
+        return new SelectionSession(
+                playerId,
+                worldId,
+                mode,
+                targetLandId,
+                targetSubLandId,
+                pointA,
+                pointB,
+                selectedChunks,
+                pendingChanges,
+                selectionRevision,
+                generation,
+                baseStructureRevision,
+                createdAt,
+                lastActivity);
     }
 
     private static <T> Optional<T> requireOptional(Optional<T> value, String name) {

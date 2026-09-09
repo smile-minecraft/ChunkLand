@@ -134,7 +134,8 @@ public final class ClaimCommandHandler implements LandCommand.Handler {
         ClaimRequest request;
         try {
             request = new ClaimRequest(OwnerRef.player(actor), actor, session.worldId(),
-                    chunks, displayName, session.selectionRevision());
+                    chunks, displayName, session.selectionRevision(), session.sessionGeneration(),
+                    structureTokenOf(session), session.targetLandId().orElse(null));
         } catch (RuntimeException invalid) {
             sink.reply("command.land.usage", Map.of());
             return;
@@ -156,6 +157,15 @@ public final class ClaimCommandHandler implements LandCommand.Handler {
 
     private void replyOutcome(ReplySink sink, String displayName, int chunkCount,
             ClaimOutcome outcome, Throwable failure) {
+        replyOutcomeTo(sink, displayName, chunkCount, outcome, failure);
+    }
+
+    /**
+     * Shared terminal reply for claim outcomes, reused by the confirmation
+     * handler so both entries report the saga result with the same keys.
+     */
+    static void replyOutcomeTo(ReplySink sink, String displayName, int chunkCount,
+            ClaimOutcome outcome, Throwable failure) {
         try {
             if (failure != null || outcome == null) {
                 sink.reply("command.land.claim.failed", Map.of("reason", "claim.failed"));
@@ -175,12 +185,24 @@ public final class ClaimCommandHandler implements LandCommand.Handler {
     }
 
     /**
+     * Structure token for the saga-time revalidation: the session base
+     * revision while the session targets an existing land, null for
+     * target-less selections where there is no structure to go stale.
+     */
+    static Long structureTokenOf(SelectionSession session) {
+        if (session.targetLandId().isEmpty()) {
+            return null;
+        }
+        return session.baseStructureRevision();
+    }
+
+    /**
      * Inspect the startup recovery scan without blocking: an unfinished scan
      * blocks with {@code claim.recovery_pending}, an exceptionally completed
      * scan blocks permanently with {@code claim.recovery_failed}, and a
      * successfully completed scan (or no gate) lets the claim through.
      */
-    private static String recoveryBlockReason(Supplier<CompletionStage<?>> recoveryScan) {
+    static String recoveryBlockReason(Supplier<CompletionStage<?>> recoveryScan) {
         if (recoveryScan == null) {
             return null;
         }

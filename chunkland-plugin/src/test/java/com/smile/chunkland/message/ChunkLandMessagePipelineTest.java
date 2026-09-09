@@ -79,8 +79,8 @@ class ChunkLandMessagePipelineTest {
     @Test
     void callerDataNotSharedAcrossPlayers(@TempDir File tempDir) throws Exception {
         ChunkLandMessagePipeline pipeline = buildPipeline(tempDir, Locale.US, false);
-        Component c1 = pipeline.render("land.claim.confirm", Map.of("land_name", "AlphaLandX", "chunk_count", "1", "price", "$10", "conflict_count", "0", "min_y", "59", "revision", "1"), Locale.US, null);
-        Component c2 = pipeline.render("land.claim.confirm", Map.of("land_name", "BetaLandY", "chunk_count", "2", "price", "$20", "conflict_count", "1", "min_y", "10", "revision", "2"), Locale.US, null);
+        Component c1 = pipeline.render("land.claim.confirm", Map.of("land_name", "AlphaLandX", "chunk_count", "1", "price", "$10", "conflict_count", "0", "min_y", "59", "generation", "0", "revision", "1"), Locale.US, null);
+        Component c2 = pipeline.render("land.claim.confirm", Map.of("land_name", "BetaLandY", "chunk_count", "2", "price", "$20", "conflict_count", "1", "min_y", "10", "generation", "1", "revision", "2"), Locale.US, null);
         String s1 = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(c1);
         String s2 = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(c2);
         assertTrue(s1.contains("AlphaLandX"));
@@ -233,7 +233,7 @@ class ChunkLandMessagePipelineTest {
         assertDoesNotThrow(() -> ChunkLandMessagePipeline.validateTemplateStrict("k", "<click:run_command:'/foo'>text</click>"));
         assertDoesNotThrow(() -> ChunkLandMessagePipeline.validateTemplateStrict("k", "<land_name> — <chunk_count> chunks for <price>"));
         assertDoesNotThrow(() -> ChunkLandMessagePipeline.validateTemplateStrict("k", "<value> and <payload> and <min_y>"));
-        assertDoesNotThrow(() -> ChunkLandMessagePipeline.validateTemplateStrict("k", "<click:run_command:'/land confirm <revision>'>text</click>"));
+        assertDoesNotThrow(() -> ChunkLandMessagePipeline.validateTemplateStrict("k", "<click:run_command:'/land confirm <generation> <revision> <land_name>'>text</click>"));
         assertDoesNotThrow(() -> ChunkLandMessagePipeline.validateTemplateStrict("k", "<hover:show_text:'Price <price>'>text</hover>"));
     }
 
@@ -252,6 +252,83 @@ class ChunkLandMessagePipelineTest {
     @Test
     void nestedHoverMismatchedFailClosed() {
         assertThrows(MessageException.class, () -> ChunkLandMessagePipeline.validateTemplateStrict("k", "<hover:show_text:'<red>hi</blue>'>text</hover>"));
+    }
+
+    @Test
+    void confirmClickRendersExecutableCommand(@TempDir File tempDir) throws Exception {
+        for (String localeTag : new String[]{"en_US", "zh_TW"}) {
+            YamlConfiguration cfg = new YamlConfiguration();
+            cfg.load(new File("src/main/resources/lang/" + localeTag + ".yml"));
+            String raw = cfg.getString("land.claim.confirm");
+            assertNotNull(raw, localeTag + " land.claim.confirm");
+            assertDoesNotThrow(() -> ChunkLandMessagePipeline.validateTemplateStrict("land.claim.confirm", raw),
+                    localeTag + " confirm template must pass strict validation");
+        }
+        ChunkLandMessagePipeline pipeline = buildPipeline(tempDir, Locale.US, false);
+        Component rendered = pipeline.render("land.claim.confirm",
+                Map.of("land_name", "Home", "chunk_count", "1", "price", "$10",
+                        "conflict_count", "0", "min_y", "59", "generation", "0", "revision", "7"),
+                Locale.US, null);
+        // Click carrier contract: the parser leaves click arguments literal,
+        // so the pipeline stamps the click with the validated token pair and
+        // land name, producing an executable command for the handler.
+        String click = findClickValue(rendered);
+        assertNotNull(click, "confirm message must keep its run_command click");
+        assertEquals("/land confirm 0 7 Home", click,
+                "click payload must carry the executable generation, revision and land name");
+        assertFalse(click.contains("<"), "click payload must not keep placeholders: " + click);
+        String plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                .serialize(rendered);
+        assertTrue(plain.contains("Home"), "key facts must render in the body text, not only in hover");
+        assertTrue(plain.contains("$10"), "price must render in the body text");
+    }
+
+    @Test
+    void confirmClickWithUnsafeNameFailsClosed(@TempDir File tempDir) throws Exception {
+        ChunkLandMessagePipeline pipeline = buildPipeline(tempDir, Locale.US, false);
+        Map<String, Object> evil = Map.of("land_name", "<red>evil</red>", "chunk_count", "1", "price", "$10",
+                "conflict_count", "0", "min_y", "59", "generation", "0", "revision", "7");
+        Component rendered = pipeline.render("land.claim.confirm", evil, Locale.US, null);
+        String click = findClickValue(rendered);
+        assertNotNull(click);
+        assertEquals("/land confirm 0 7 <red>evil</red>", click,
+                "evil name must ride literally in a single confirm command, never parsed");
+        Map<String, Object> blank = Map.of("land_name", "   ", "chunk_count", "1", "price", "$10",
+                "conflict_count", "0", "min_y", "59", "generation", "0", "revision", "7");
+        assertThrows(MessageException.class,
+                () -> pipeline.render("land.claim.confirm", blank, Locale.US, null),
+                "blank land name must fail closed before any click exists");
+        Map<String, Object> missing = Map.of("land_name", "Home", "chunk_count", "1", "price", "$10",
+                "conflict_count", "0", "min_y", "59", "revision", "7");
+        assertThrows(MessageException.class,
+                () -> pipeline.render("land.claim.confirm", missing, Locale.US, null),
+                "missing generation must fail closed");
+    }
+
+    @Test
+    void confirmKeySharesBedrockFallbackPath(@TempDir File tempDir) throws Exception {
+        CountingSender bedrockSender = new CountingSender();
+        ChunkLandMessagePipeline bedrockPipe = buildPipelineWithSender(tempDir, Locale.US, true, bedrockSender);
+        Player bedrockPlayer = playerWithLocale(UUID.randomUUID(), Locale.US);
+        Map<String, Object> vars = Map.of("land_name", "Home", "chunk_count", "1", "price", "$10",
+                "conflict_count", "0", "min_y", "59", "generation", "0", "revision", "7");
+        bedrockPipe.sendChat(bedrockPlayer, "land.claim.confirm", vars, null);
+        assertEquals(0, bedrockSender.chatCalls, "bedrock path must use the fallback entry point");
+        assertEquals(1, bedrockSender.chatFallbackCalls, "same key+vars must reach bedrock fallback");
+        assertNotNull(bedrockSender.lastFallbackLocale);
+    }
+
+    private static String findClickValue(Component root) {
+        if (root.clickEvent() != null) {
+            return root.clickEvent().value();
+        }
+        for (Component child : root.children()) {
+            String nested = findClickValue(child);
+            if (nested != null) {
+                return nested;
+            }
+        }
+        return null;
     }
 
     @Test

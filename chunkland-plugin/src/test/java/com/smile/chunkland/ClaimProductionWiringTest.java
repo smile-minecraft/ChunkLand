@@ -129,8 +129,8 @@ class ClaimProductionWiringTest {
                     Optional.of(new SelectionPoint(world, 0, 64, 0)),
                     Optional.of(new SelectionPoint(world, 16, 64, 16)),
                     0, NOW);
-            selections.start(initial);
-            SelectionSession live = selections.updateSelection(actor, initial, new SelectionUpdate(
+            SelectionSession stamped = selections.start(initial);
+            SelectionSession live = selections.updateSelection(actor, stamped, new SelectionUpdate(
                             initial.pointA(), initial.pointB(),
                             Set.of(new ChunkKey(world, 3, 4)), Map.of()))
                     .orElseThrow();

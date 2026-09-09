@@ -265,6 +265,7 @@ class SelectionSessionLifecycleTest {
                 chunks,
                 changes,
                 3,
+                0,
                 7,
                 START,
                 START);
@@ -474,10 +475,11 @@ class SelectionSessionLifecycleTest {
 
         SelectionSession replacement = fixture.session(9);
         AtomicReference<Throwable> replacementFailure = new AtomicReference<>();
+        AtomicReference<SelectionSession> startedReplacement = new AtomicReference<>();
         CountDownLatch replacementFinished = new CountDownLatch(1);
         Thread replacementStart = new Thread(() -> {
             try {
-                fixture.manager.start(replacement);
+                startedReplacement.set(fixture.manager.start(replacement));
             } catch (Throwable failure) {
                 replacementFailure.set(failure);
             } finally {
@@ -493,7 +495,7 @@ class SelectionSessionLifecycleTest {
 
         assertTrue(initialFailure.get() instanceof IllegalStateException);
         assertTrue(replacementFailure.get() == null);
-        assertSame(replacement, fixture.manager.sessionFor(PLAYER).orElseThrow());
+        assertSame(startedReplacement.get(), fixture.manager.sessionFor(PLAYER).orElseThrow());
         SelectionTimeoutScheduler.Cancellable replacementHandle = fixture.scheduler.latestHandle();
         assertFalse(replacementHandle.isCancelled());
         assertEquals(1, fixture.visualization.stopCount());
@@ -533,8 +535,9 @@ class SelectionSessionLifecycleTest {
         initialStart.start();
         assertTrue(fixture.scheduler.awaitBlockedSchedule());
 
-        SelectionSession current = fixture.manager.updateSelection(PLAYER, initial,
-                new SelectionUpdate(initial.pointA(), initial.pointB(), Set.of(new ChunkKey(WORLD, 8, 9)), Map.of()))
+        SelectionSession live = fixture.manager.sessionFor(PLAYER).orElseThrow();
+        SelectionSession current = fixture.manager.updateSelection(PLAYER, live,
+                new SelectionUpdate(live.pointA(), live.pointB(), Set.of(new ChunkKey(WORLD, 8, 9)), Map.of()))
                 .orElseThrow();
         SelectionTimeoutScheduler.Cancellable newerHandle = fixture.scheduler.latestHandle();
         assertSame(current, fixture.manager.sessionFor(PLAYER).orElseThrow());
@@ -689,7 +692,8 @@ class SelectionSessionLifecycleTest {
 
         fixture.manager.start(session);
 
-        assertTrue(fixture.manager.updateSelection(PLAYER, session,
+        SelectionSession live = fixture.manager.sessionFor(PLAYER).orElseThrow();
+        assertTrue(fixture.manager.updateSelection(PLAYER, live,
                 new SelectionUpdate(Optional.empty(), Optional.empty(), Set.of(), Map.of())).isPresent());
         assertTrue(fixture.manager.sessionFor(PLAYER).isPresent());
     }
@@ -792,9 +796,9 @@ class SelectionSessionLifecycleTest {
         Fixture fixture = new Fixture();
         SelectionSession session = fixture.session(1).withMode(mode);
 
-        fixture.manager.start(session);
+        SelectionSession stored = fixture.manager.start(session);
 
-        assertSame(session, fixture.manager.sessionFor(PLAYER).orElseThrow());
+        assertSame(stored, fixture.manager.sessionFor(PLAYER).orElseThrow());
         assertEquals(WORLD, fixture.manager.sessionFor(PLAYER).orElseThrow().worldId());
     }
 

@@ -260,6 +260,7 @@ class SelectionEditServiceTest {
                 pending,
                 0,
                 0,
+                0,
                 NOW,
                 NOW);
     }

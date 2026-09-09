@@ -612,10 +612,10 @@ class LandCommandTest {
         YamlConfiguration en = new YamlConfiguration(); en.load(new File("src/main/resources/lang/en_US.yml"));
         String confirm = en.getString("land.claim.confirm");
         assertNotNull(confirm);
-        assertTrue(confirm.contains("/land confirm <revision>"));
+        assertTrue(confirm.contains("/land confirm <generation> <revision>"));
         // dispatch to confirm handler
         AtomicBoolean hit = new AtomicBoolean(false);
-        Map<String, LandCommand.Handler> handlers = Map.of("confirm", (s,a,sink)-> { hit.set(true); assertTrue(a.length>=2); });
+        Map<String, LandCommand.Handler> handlers = Map.of("confirm", (s,a,sink)-> { hit.set(true); assertTrue(a.length>=3); });
         Map<String, Boolean> perms = Map.of(LandPermissions.CONFIRM, true);
         CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
         CommandSender sender = permFilteredSender(perms, out);
@@ -623,7 +623,7 @@ class LandCommandTest {
             public void reply(String k, Map<String,Object> v){}
             public void reply(String k, Map<String,Object> v, Locale l){}
         });
-        assertTrue(cmd.dispatch(sender, new String[]{"confirm","42"}, null));
+        assertTrue(cmd.dispatch(sender, new String[]{"confirm","0","42","Home"}, null));
         assertTrue(hit.get());
     }
 }

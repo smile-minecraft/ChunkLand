@@ -104,7 +104,7 @@ public class ChunkLandMessagePipeline {
     /** Allowed placeholders — must stay in sync with lang resources. */
     static final Set<String> ALLOWED_PLACEHOLDERS = Set.of(
         "value", "payload", "land_name", "chunk_count", "price", "conflict_count",
-        "min_y", "revision", "added_count", "new_name", "old_name", "refund",
+        "min_y", "revision", "generation", "added_count", "new_name", "old_name", "refund",
         "action", "owner", "reason", "limit_type", "current", "max", "remaining",
         "subcommand", "permission"
     );
@@ -438,6 +438,9 @@ public class ChunkLandMessagePipeline {
             if (parsed == null) {
                 throw new MessageException(messageKey, "parser returned null for key: " + messageKey);
             }
+            if (ConfirmClick.isConfirmKey(messageKey)) {
+                parsed = ConfirmClick.rewriteConfirmClick(parsed, vars, messageKey);
+            }
             if (parsed.equals(Component.empty())) {
                 if (!template.isBlank()) {
                     throw new MessageException(messageKey, "parser produced empty component for key: " + messageKey);
@@ -462,6 +465,9 @@ public class ChunkLandMessagePipeline {
             Component parsed = parser.parse(template, vars);
             if (parsed == null) {
                 throw new MessageException(messageKey, "parser returned null for broadcast key: " + messageKey);
+            }
+            if (ConfirmClick.isConfirmKey(messageKey)) {
+                parsed = ConfirmClick.rewriteConfirmClick(parsed, vars, messageKey);
             }
             if (parsed.equals(Component.empty()) && !template.isBlank()) {
                 throw new MessageException(messageKey, "parser produced empty component for broadcast key: " + messageKey);

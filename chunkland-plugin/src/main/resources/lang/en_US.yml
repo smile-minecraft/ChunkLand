@@ -21,6 +21,11 @@ command:
       inventory_full: "<red>Inventory full — cannot give wand. Clear space and try again.</red>"
       console: "<red>Only players can receive the wand.</red>"
       error: "<red>Could not create wand. Please try again later.</red>"
+    confirm:
+      console: "<red>Only players can confirm a claim.</red>"
+      usage: "<yellow>Usage: /land confirm <generation> <revision> <land_name></yellow>"
+      no_selection: "<yellow>No active selection. Select chunks first, then confirm again.</yellow>"
+      stale: "<yellow>That confirmation has expired. Please review the latest details and confirm again.</yellow>"
     claim:
       console: "<red>Only players can claim land.</red>"
       no_selection: "<yellow>No active selection. Select chunks first, then run /land claim with a name.</yellow>"
@@ -29,7 +34,7 @@ command:
       failed: "<red>Claim failed: <reason>.</red>"
 land:
   claim:
-    confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <revision>'><green>[Confirm]</green></click></hover>"
+    confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"
     success: "<green>Land <land_name> claimed: <chunk_count> chunks for <price> (minY <min_y>).</green>"
     expanded: "<green>Land <land_name> expanded by <added_count> chunks (now <chunk_count>) for <price>.</green>"
   rename:
