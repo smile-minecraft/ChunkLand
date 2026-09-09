@@ -21,6 +21,12 @@ command:
       inventory_full: "<red>Inventory full — cannot give wand. Clear space and try again.</red>"
       console: "<red>Only players can receive the wand.</red>"
       error: "<red>Could not create wand. Please try again later.</red>"
+    claim:
+      console: "<red>Only players can claim land.</red>"
+      no_selection: "<yellow>No active selection. Select chunks first, then run /land claim with a name.</yellow>"
+      success: "<green>Land <land_name> claimed: <chunk_count> chunks.</green>"
+      rejected: "<red>Claim rejected: <reason>.</red>"
+      failed: "<red>Claim failed: <reason>.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <revision>'><green>[Confirm]</green></click></hover>"
@@ -39,3 +45,10 @@ protection:
     economy: "<red>Payment failed: price <price> — <reason>.</red>"
   allow:
     silent: "<gray>Allowed.</gray>"
+claim:
+  recovery_pending: "<yellow>Land data is still recovering. Please try again in a moment.</yellow>"
+  recovery_failed: "<red>Land data recovery failed. Please contact an administrator.</red>"
+pricing:
+  unavailable: "<red>Land pricing is currently unavailable. Please try again later.</red>"
+economy:
+  unavailable: "<red>The economy service is currently unavailable. Please try again later.</red>"

@@ -359,11 +359,80 @@ public class ChunkLandMessagePipeline {
 
     // -----------------------------------------------------------------
     // Rendering: template + vars -> Component (per-call, not cached)
+    //
+    // Nested diagnostic reason: when the {@code reason} var holds a known
+    // language key (for example the claim/pricing/economy diagnostics), it
+    // is resolved to that entry's plain sentence before the outer template
+    // renders. Unknown values stay literal so arbitrary input is never
+    // treated as a MiniMessage template.
     // -----------------------------------------------------------------
+
+    /**
+     * Resolve a nested {@code reason} var to display text when it names a
+     * known language entry. Unknown keys return empty so callers keep the
+     * original literal (fail-safe, never parsed as a template).
+     */
+    Optional<String> resolveNestedReasonText(Locale effectiveLocale, String outerKey, Object reasonValue) {
+        if (effectiveLocale == null || reasonValue == null) {
+            return Optional.empty();
+        }
+        if (!(reasonValue instanceof String reasonKey) || reasonKey.isBlank()) {
+            return Optional.empty();
+        }
+        if (reasonKey.equals(outerKey)) {
+            return Optional.empty();
+        }
+        Optional<String> nested = lang.get(effectiveLocale, reasonKey);
+        Locale nestedLocale = effectiveLocale;
+        if (nested.isEmpty() && !effectiveLocale.equals(defaultLocale)) {
+            nested = lang.get(defaultLocale, reasonKey);
+            nestedLocale = defaultLocale;
+        }
+        if (nested.isEmpty()) {
+            return Optional.empty();
+        }
+        String nestedTemplate;
+        try {
+            nestedTemplate = resolveTemplate(reasonKey, nestedLocale);
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+        if (nestedTemplate.contains("<reason>")) {
+            return Optional.empty();
+        }
+        Component nestedComponent;
+        try {
+            nestedComponent = parser.parse(nestedTemplate, Map.of());
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+        if (nestedComponent == null) {
+            return Optional.empty();
+        }
+        String plainReason = PlainTextComponentSerializer.plainText().serialize(nestedComponent);
+        if (plainReason == null || plainReason.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(plainReason);
+    }
+
+    private Map<String, Object> withNestedReason(String messageKey, Map<String, Object> vars, Locale effective) {
+        if (vars == null || vars.isEmpty() || !vars.containsKey("reason")) {
+            return vars;
+        }
+        Optional<String> resolved = resolveNestedReasonText(effective, messageKey, vars.get("reason"));
+        if (resolved.isEmpty()) {
+            return vars;
+        }
+        java.util.HashMap<String, Object> copy = new java.util.HashMap<>(vars);
+        copy.put("reason", resolved.get());
+        return Map.copyOf(copy);
+    }
 
     public Component render(String messageKey, Map<String, Object> vars, Locale localeOverride, Player contextPlayer) {
         Locale effective = resolveLocale(contextPlayer, localeOverride);
         String template = resolveTemplate(messageKey, effective);
+        vars = withNestedReason(messageKey, vars, effective);
         try {
             Component parsed = parser.parse(template, vars);
             if (parsed == null) {
@@ -388,6 +457,7 @@ public class ChunkLandMessagePipeline {
     public Component renderForBroadcast(String messageKey, Map<String, Object> vars, Locale localeOverride) {
         Locale effective = localeOverride != null ? localeOverride : defaultLocale;
         String template = resolveTemplate(messageKey, effective);
+        vars = withNestedReason(messageKey, vars, effective);
         try {
             Component parsed = parser.parse(template, vars);
             if (parsed == null) {

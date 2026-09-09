@@ -166,6 +166,23 @@ public final class ClaimSaga {
         } catch (RuntimeException failure) {
             return completed(ClaimOutcome.failed("pricing.failed"));
         }
+        // Production fail-closed: a player claim must never slip through a
+        // placeholder zero table or a missing Vault provider into a free
+        // land. Server land stays free by design and skips both checks.
+        if (!serverOwned) {
+            boolean available;
+            try {
+                available = economy.isAvailable();
+            } catch (RuntimeException failure) {
+                available = false;
+            }
+            if (!available) {
+                return completed(ClaimOutcome.rejected("economy.unavailable"));
+            }
+            if (price.isZero()) {
+                return completed(ClaimOutcome.rejected("pricing.unavailable"));
+            }
+        }
         final OwnerQuotaService.QuotaReservation landReservation;
         final OwnerQuotaService.QuotaReservation chunkReservation;
         if (serverOwned) {
@@ -609,22 +626,38 @@ public final class ClaimSaga {
 
     private void releasePublishGuards(ClaimAttempt attempt) {
         // Only called after the durable domain commit; moves reserved counts to
-        // committed and releases the logical reservations. Any failure escapes
-        // to the publish guard, which degrades without refund or compensation.
-        completeQuotaOrThrow(attempt);
-        reservations.release(attempt.reservationKeys(), attempt.operationId());
+        // committed and releases the logical reservations. The logical release
+        // runs even when a quota transition fails, so a partial quota failure
+        // can only degrade without leaking the chunk/land locks.
+        try {
+            completeQuotaOrThrow(attempt);
+        } finally {
+            try {
+                reservations.release(attempt.reservationKeys(), attempt.operationId());
+            } catch (RuntimeException ignored) {
+                // Best effort on terminal paths; registry removal is idempotent.
+            }
+        }
     }
 
     private void completeQuotaOrThrow(ClaimAttempt attempt) {
         // Best effort across both reservations, then surface the first failure
-        // so the publish guard degrades instead of silently continuing.
+        // so the publish guard degrades instead of silently continuing. A
+        // reservation that failed to complete is repaired to committed: the
+        // durable domain commit already succeeded, so the counters must match
+        // the durable truth rather than leak a reservation or under-count.
+        // The original failure still propagates, keeping the outcome degraded
+        // and observable (startup recovery advances the row to ACTIVE).
         RuntimeException firstFailure = null;
+        boolean landFailed = false;
+        boolean chunkFailed = false;
         try {
             if (attempt.landReservation() != null) {
                 attempt.landReservation().complete();
             }
         } catch (RuntimeException failure) {
             firstFailure = failure;
+            landFailed = true;
         }
         try {
             if (attempt.chunkReservation() != null) {
@@ -634,8 +667,24 @@ public final class ClaimSaga {
             if (firstFailure == null) {
                 firstFailure = failure;
             }
+            chunkFailed = true;
         }
         if (firstFailure != null) {
+            if (landFailed && attempt.landReservation() != null) {
+                try {
+                    attempt.landReservation().forceComplete();
+                } catch (RuntimeException ignored) {
+                    // Repair overflow stays releasable; the original failure below
+                    // still degrades the outcome for recovery to reconcile.
+                }
+            }
+            if (chunkFailed && attempt.chunkReservation() != null) {
+                try {
+                    attempt.chunkReservation().forceComplete();
+                } catch (RuntimeException ignored) {
+                    // Same as above: never mask the original failure.
+                }
+            }
             throw firstFailure;
         }
     }

@@ -41,4 +41,16 @@ public interface ClaimEconomy {
     default String providerId() {
         return "unknown-economy";
     }
+
+    /**
+     * Whether the backing provider can move money right now.
+     *
+     * <p>The saga checks this before creating any ledger row so a missing
+     * Vault provider fails closed with {@code economy.unavailable} instead
+     * of leaving a {@code FAILED} row or slipping through a zero-price
+     * shortcut. Test doubles stay available unless they opt out.
+     */
+    default boolean isAvailable() {
+        return true;
+    }
 }

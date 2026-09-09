@@ -76,6 +76,15 @@ public final class VaultClaimEconomy implements ClaimEconomy {
         return id != null ? id : "unknown-economy";
     }
 
+    @Override
+    public boolean isAvailable() {
+        try {
+            return bridge.isAvailable();
+        } catch (RuntimeException failure) {
+            return false;
+        }
+    }
+
     /** Owner extraction shared with the charge path: server land never charges. */
     static boolean isServerOwned(OwnerRef owner) {
         return owner instanceof OwnerRef.ServerOwnerRef;

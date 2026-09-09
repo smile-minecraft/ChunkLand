@@ -667,20 +667,22 @@ class ClaimSagaTest {
     // ------------------------------------------------------------------
 
     @Test
-    void zeroPriceClaimNeverSticksInPaymentPendingAndNeverCharges() throws Exception {
+    void zeroPricePlayerClaimFailsClosedWithoutSideEffects() throws Exception {
         UUID world = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
         OwnerRef owner = OwnerRef.player(actor);
         try (Harness h = new Harness(freeTable(), 100, 100)) {
             ClaimOutcome outcome = h.run(claim(owner, actor, world, 1, 2, "Free"));
 
-            assertEquals(ClaimOutcome.Status.SUCCESS, outcome.status());
+            // A placeholder zero table must never create a silent free land:
+            // player claims fail closed before any ledger, charge, or domain row.
+            assertEquals(ClaimOutcome.Status.REJECTED, outcome.status());
+            assertEquals("pricing.unavailable", outcome.diagnosticKey());
             assertTrue(h.economy.charges.isEmpty(), "zero price must not touch Economy");
-            List<LedgerEntry> rows = allLedgers(h.ledger);
-            assertEquals(1, rows.size());
-            assertEquals("ACTIVE", rows.get(0).state());
-            assertEquals(0L, rows.get(0).priceMinorUnits());
-            assertEquals(ClaimSaga.ZERO_VALUE_TRANSACTION_REF, rows.get(0).economyTransactionRef());
+            assertEquals(0, ledgerCount(h.ledger), "zero-price reject must not create a ledger row");
+            assertEquals(0, landCount(h.store));
+            assertEquals(0, h.reservations.size());
+            assertTrue(h.registryStore.snapshot().isEmpty());
         }
     }
 

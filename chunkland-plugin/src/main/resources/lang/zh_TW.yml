@@ -21,6 +21,12 @@ command:
       inventory_full: "<red>背包已滿，無法發放魔杖。請清出空間後重試。</red>"
       console: "<red>只有玩家可以領取魔杖。</red>"
       error: "<red>魔杖建立失敗，請稍後再試。</red>"
+    claim:
+      console: "<red>只有玩家可以圈地。</red>"
+      no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再用名稱執行 /land claim。</yellow>"
+      success: "<green>領地 <land_name> 已建立：共 <chunk_count> 個區塊。</green>"
+      rejected: "<red>圈地被拒絕：<reason>。</red>"
+      failed: "<red>圈地失敗：<reason>。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <revision>'><green>[確認]</green></click></hover>"
@@ -39,3 +45,10 @@ protection:
     economy: "<red>付款失敗：需付 <price> — <reason>。</red>"
   allow:
     silent: "<gray>已允許。</gray>"
+claim:
+  recovery_pending: "<yellow>領地資料仍在復原中，請稍後再試。</yellow>"
+  recovery_failed: "<red>領地資料復原失敗，請聯繫管理員。</red>"
+pricing:
+  unavailable: "<red>圈地計價目前無法使用，請稍後再試。</red>"
+economy:
+  unavailable: "<red>經濟服務目前無法使用，請稍後再試。</red>"

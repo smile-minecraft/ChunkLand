@@ -2,15 +2,31 @@ package com.smile.chunkland;
 
 import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
+import com.smile.chunkland.api.money.Currency;
+import com.smile.chunkland.api.money.Money;
+import com.smile.chunkland.api.money.PricingTable;
+import com.smile.chunkland.api.money.PricingTier;
 import com.smile.chunkland.capability.Capabilities;
 import com.smile.chunkland.capability.M0CapabilityProbe;
+import com.smile.chunkland.claim.ClaimEconomy;
+import com.smile.chunkland.claim.ClaimSaga;
+import com.smile.chunkland.claim.ClaimValidator;
+import com.smile.chunkland.claim.SnapshotClaimValidator;
+import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.YamlFileConfigLoader;
+import com.smile.chunkland.economy.UnavailableVaultBridge;
+import com.smile.chunkland.economy.VaultBridge;
+import com.smile.chunkland.limit.LimitResolver;
+import com.smile.chunkland.limit.OwnerQuotaHydrator;
+import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import com.smile.chunkland.persistence.OperationLedger;
+import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
@@ -18,6 +34,7 @@ import com.smile.chunkland.protection.SubjectPermissionLookup;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
+import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
 import com.smile.chunkland.runtime.rule.LandRuleService;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
 import com.smile.chunkland.selection.SelectionLifecycleListener;
@@ -32,7 +49,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -78,6 +100,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
     /** Permission key for {@code /chunkland m0test}. */
     public static final String PERMISSION_M0_TEST = "chunkland.debug.m0test";
 
+    /**
+     * Persisted protection depth used until per-claim derivation from the
+     * selection plane lands with vertical-mode config. Matches the depth the
+     * claim tests standardise on.
+     */
+    static final int CLAIM_DEPTH_FALLBACK = 64;
+
+    /** Compensation retries shared by live claims and startup recovery. */
+    static final int CLAIM_COMPENSATION_RETRIES = 3;
+
     private final AceLibBridge bridge = new AceLibBridge();
     private Optional<M0MessageProbe> messagePipeline = Optional.empty();
     private Optional<M0CapabilityProbe> capabilityProbe = Optional.empty();
@@ -92,6 +124,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ProtectionEngine protectionEngine;
     private ProtectionListener protectionListener;
     private ClaimStartupBootstrap claimStartup;
+    private ClaimSaga claimSaga;
+    private OwnerQuotaService claimQuotas;
+    private LogicalReservationRegistry claimReservations;
+    private ExecutorService claimExecutor;
 
     public ChunkLandPlugin() {
     }
@@ -174,28 +210,39 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // the same live snapshots the engine enforces.
         this.protectionStore = new LandRegistryStore();
         this.protectionEngine = buildProtectionEngine(this.protectionStore);
+        // Startup claim recovery: open persistence, rebuild durable domain
+        // commits into the shared protection store, and scan without blocking.
+        // A failed bootstrap keeps the empty fail-closed runtime; the scan
+        // itself never refunds and never marks rows active on rebuild failure.
+        // The bridge is resolved explicitly so recovery refunds through a real
+        // provider when one is available; without one it stays fail-safe.
+        try {
+            this.claimStartup = ClaimStartupBootstrap.start(
+                    getDataFolder().toPath().resolve(ClaimStartupBootstrap.DATABASE_FILE_NAME),
+                    this.protectionStore,
+                    getLogger(),
+                    resolveEconomyBridge());
+        } catch (RuntimeException | Error failure) {
+            getLogger().warning("ChunkLand claim recovery bootstrap failed; "
+                    + "runtime stays empty until the next restart: " + failure.getMessage());
+            this.claimStartup = null;
+        }
+        // Formal claim flow: the saga shares the bootstrap ledger, Economy and
+        // rebuilder so live claims and startup recovery converge on one durable
+        // row and one refund cache. When recovery never started, the handler
+        // replies claim.unavailable instead of pretending to run. While the
+        // recovery scan is still in flight (or has failed) the handler stays
+        // fail-closed on recovery_pending/recovery_failed, so a stale empty
+        // runtime can never hide a collision.
         this.landCommand = new LandCommand(
-                buildLandHandlers(), null, buildManagementGateResolver(this.protectionStore));
+                buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier()),
+                null, buildManagementGateResolver(this.protectionStore));
         // Capture the underlying capabilities bundle before Wand listener registration can fail,
         // so registration failure does not leak the M0 SafeScheduler.
         this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
         // Wand safety listener: native Bukkit listener for selection wand protection
         this.wandSafetyListener = new WandSafetyListener();
         this.protectionListener = new ProtectionListener(this.protectionEngine);
-        // Startup claim recovery: open persistence, rebuild durable domain
-        // commits into the shared protection store, and scan without blocking.
-        // A failed bootstrap keeps the empty fail-closed runtime; the scan
-        // itself never refunds and never marks rows active on rebuild failure.
-        try {
-            this.claimStartup = ClaimStartupBootstrap.start(
-                    getDataFolder().toPath().resolve(ClaimStartupBootstrap.DATABASE_FILE_NAME),
-                    this.protectionStore,
-                    getLogger());
-        } catch (RuntimeException | Error failure) {
-            getLogger().warning("ChunkLand claim recovery bootstrap failed; "
-                    + "runtime stays empty until the next restart: " + failure.getMessage());
-            this.claimStartup = null;
-        }
         try {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
@@ -235,6 +282,168 @@ public final class ChunkLandPlugin extends JavaPlugin {
         Map<String, LandCommand.Handler> base = new HashMap<>(LandCommand.defaultStubHandlers());
         base.put("wand", new WandGiveHandler());
         return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers: the base map with {@code claim}
+     * replaced by the formal saga handler.
+     *
+     * <p>A null manager or runner keeps the slot fail-safe: the handler then
+     * replies without touching selection or the saga, so a half-wired server
+     * never pretends a claim ran. The recovery scan gate blocks claims while
+     * the startup scan is still in flight or has failed; a null gate means
+     * no check (test seam).
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner) {
+        return buildLandHandlers(selections, runner, null);
+    }
+
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers());
+        base.put("claim", selections == null
+                ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
+                : new ClaimCommandHandler(selections, runner, recoveryScan));
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Resolves the Economy bridge for claim recovery and live claims.
+     *
+     * <p>No Vault provider hookup exists on the classpath yet, so production
+     * currently resolves to the explicitly unavailable bridge. Player claims
+     * fail closed on {@code economy.unavailable} before any ledger row (the
+     * saga checks availability ahead of all side effects); recovery refunds
+     * through it stay fail-safe with unrefunded rows retryable. When a Vault
+     * hookup lands, it plugs in here and both paths pick it up without
+     * touching the bootstrap or the saga.
+     */
+    private static VaultBridge resolveEconomyBridge() {
+        return new UnavailableVaultBridge();
+    }
+
+    /**
+     * Interim claim pricing: no pricing shape exists in {@code config.yml}
+     * yet, so every claim prices at zero in the bootstrap currency. Player
+     * claims fail closed on {@code pricing.unavailable} before any ledger,
+     * charge, or domain side effect, so the placeholder can never create a
+     * silent free land in production; server land stays free by design.
+     * Introducing real tiers later only replaces this method.
+     */
+    private static PricingTable claimPricing() {
+        Currency currency = ClaimStartupBootstrap.CLAIM_CURRENCY;
+        return PricingTable.of(List.of(PricingTier.of(PricingTier.UNBOUNDED, Money.zero(currency))));
+    }
+
+    /**
+     * Assembles the formal claim saga from its production parts. Package
+     * visible so integration tests drive the same assembly the server uses.
+     */
+    static ClaimSaga buildClaimSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor) {
+        OwnerQuotaService activeQuotas = Objects.requireNonNull(quotas, "quotas");
+        ClaimValidator validator = new SnapshotClaimValidator(
+                Objects.requireNonNull(registryStore, "registryStore"),
+                actorUuid -> selections.sessionFor(actorUuid)
+                        .map(session -> OptionalLong.of(session.selectionRevision()))
+                        .orElseGet(OptionalLong::empty),
+                chunk -> CLAIM_DEPTH_FALLBACK,
+                activeQuotas::chunkCommitted);
+        return new ClaimSaga(validator, activeQuotas,
+                Objects.requireNonNull(pricing, "pricing"),
+                Objects.requireNonNull(reservations, "reservations"),
+                Objects.requireNonNull(ledger, "ledger"),
+                Objects.requireNonNull(economy, "economy"),
+                Objects.requireNonNull(rebuilder, "rebuilder"),
+                Clock.systemUTC(),
+                Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
+                CLAIM_COMPENSATION_RETRIES);
+    }
+
+    /**
+     * Live claim runner sharing the bootstrap ledger, Economy and rebuilder.
+     * Null when recovery never started: the handler then replies
+     * {@code claim.unavailable}. Assembly failure degrades the same way and
+     * is logged, so claiming can never run half-wired.
+     *
+     * <p>The returned runner does not gate on the recovery scan itself: the
+     * scan gate lives in the command handler (see {@link #claimScanSupplier}),
+     * so the saga stays a pure priced execution path shared by tests.
+     */
+    private ClaimCommandHandler.ClaimRunner claimRunner() {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        SelectionSessionManager selections = this.selectionSessionManager;
+        if (bootstrap == null || selections == null) {
+            return null;
+        }
+        try {
+            ConfigService config = this.configService.orElseThrow(
+                    () -> new IllegalStateException("ChunkLand config service is unavailable"));
+            this.claimQuotas = new OwnerQuotaService(new LimitResolver(config.current()));
+            // Restart hydration: the quota service is process-local and starts
+            // from zero, so restore committed counts from the authoritative
+            // durable lands before serving any claim. A failed hydration keeps
+            // claiming unavailable instead of enforcing limits from zero and
+            // letting owners breach them.
+            try {
+                OwnerQuotaHydrator.hydrateBlocking(
+                        this.claimQuotas, new SqliteLandRepository(bootstrap.store()));
+            } catch (RuntimeException | Error failure) {
+                getLogger().warning("ChunkLand quota hydration failed; "
+                        + "/land claim stays unavailable: " + failure.getMessage());
+                this.claimQuotas = null;
+                return null;
+            }
+            this.claimReservations = new LogicalReservationRegistry();
+            this.claimExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, "chunkland-claim");
+                thread.setDaemon(true);
+                return thread;
+            });
+            this.claimSaga = buildClaimSaga(this.protectionStore, selections,
+                    this.claimQuotas, claimPricing(), this.claimReservations,
+                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), this.claimExecutor);
+            return this.claimSaga::claim;
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand claim flow assembly failed; "
+                    + "/land claim stays unavailable: " + failure.getMessage());
+            this.claimSaga = null;
+            this.claimQuotas = null;
+            this.claimReservations = null;
+            if (this.claimExecutor != null) {
+                try {
+                    this.claimExecutor.shutdownNow();
+                } catch (RuntimeException ignored) {
+                }
+                this.claimExecutor = null;
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Recovery-scan gate for the live claim handler: null when recovery never
+     * started (the handler then already replies {@code claim.unavailable} on
+     * the missing runner), otherwise the bootstrap scan future. The handler
+     * inspects it without blocking and stays fail-closed while the scan is
+     * in flight or has failed.
+     */
+    private Supplier<java.util.concurrent.CompletionStage<?>> claimScanSupplier() {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        if (bootstrap == null) {
+            return null;
+        }
+        return bootstrap::scanFuture;
     }
 
     /**
@@ -356,6 +565,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
             claimStartup = null;
         }
+        claimSaga = null;
+        claimQuotas = null;
+        claimReservations = null;
+        if (claimExecutor != null) {
+            try {
+                claimExecutor.shutdownNow();
+            } catch (RuntimeException ignored) {
+            }
+            claimExecutor = null;
+        }
         this.messagePipeline = Optional.empty();
         this.capabilityProbe = Optional.empty();
         this.landMessagePipeline = Optional.empty();
@@ -384,13 +603,18 @@ public final class ChunkLandPlugin extends JavaPlugin {
         if (command.getName().equalsIgnoreCase("land")) {
             LandCommand cmd = this.landCommand;
             if (cmd == null) {
-                // Fail-closed fallback: no cached command, so rebuild the stub
-                // dispatch with a production resolver when the store survived,
-                // otherwise with no resolver (management denies either way).
+                // Fail-closed fallback: no cached command, so rebuild the
+                // production dispatch with a production resolver when the store
+                // survived, otherwise with no resolver (management denies
+                // either way). The claim slot stays fail-safe without a saga.
                 LandRegistryStore store = this.protectionStore;
                 ManagementGateResolver resolver =
                         store == null ? null : buildManagementGateResolver(store);
-                cmd = new LandCommand(LandCommand.defaultStubHandlers(), null, resolver);
+                SelectionSessionManager selections = this.selectionSessionManager;
+                Map<String, LandCommand.Handler> handlers = selections == null
+                        ? LandCommand.defaultStubHandlers()
+                        : buildLandHandlers(selections, null);
+                cmd = new LandCommand(handlers, null, resolver);
             }
             ChunkLandMessagePipeline pipeline = this.landMessagePipeline.orElse(null);
             return cmd.dispatch(sender, args, pipeline);

@@ -225,14 +225,47 @@ public final class OwnerQuotaService {
                 if (state.chunkReserved <= 0) {
                     throw new IllegalStateException("no reservation to complete for " + key);
                 }
-                state.chunkReserved = Math.subtractExact(state.chunkReserved, chunkDelta);
-                state.chunkCommitted = Math.addExact(state.chunkCommitted, chunkDelta);
+                // Compute both results before mutating so a failed transition
+                // (e.g. counter overflow) leaves the counters untouched and the
+                // handle releasable instead of wedging the quota.
+                int committed = Math.addExact(state.chunkCommitted, chunkDelta);
+                int reserved = Math.subtractExact(state.chunkReserved, chunkDelta);
+                state.chunkReserved = reserved;
+                state.chunkCommitted = committed;
             } else {
                 if (state.landReserved <= 0) {
                     throw new IllegalStateException("no reservation to complete for " + key);
                 }
-                state.landReserved = Math.subtractExact(state.landReserved, 1);
-                state.landCommitted = Math.addExact(state.landCommitted, 1);
+                int committed = Math.addExact(state.landCommitted, 1);
+                int reserved = Math.subtractExact(state.landReserved, 1);
+                state.landReserved = reserved;
+                state.landCommitted = committed;
+            }
+        }
+    }
+
+    /**
+     * Repair a reservation whose normal {@code complete()} transition failed
+     * after the durable domain commit already succeeded: consume whatever is
+     * still reserved and move the full delta to committed so the in-memory
+     * counters match the durable truth instead of leaking a reservation.
+     *
+     * <p>The committed total is computed before mutating, so a counter
+     * overflow still throws without touching anything and the handle stays
+     * releasable.
+     */
+    void repairCommit(String key, State state, boolean isChunk, int chunkDelta) {
+        synchronized (state.lock) {
+            if (isChunk) {
+                int committed = Math.addExact(state.chunkCommitted, chunkDelta);
+                int consume = Math.min(Math.max(state.chunkReserved, 0), chunkDelta);
+                state.chunkReserved = Math.subtractExact(state.chunkReserved, consume);
+                state.chunkCommitted = committed;
+            } else {
+                int committed = Math.addExact(state.landCommitted, 1);
+                int consume = Math.min(Math.max(state.landReserved, 0), 1);
+                state.landReserved = Math.subtractExact(state.landReserved, consume);
+                state.landCommitted = committed;
             }
         }
     }
@@ -298,12 +331,22 @@ public final class OwnerQuotaService {
             return r;
         }
 
-        /** Mark the reservation as committed: reserved -> committed. */
+        /**
+         * Mark the reservation as committed: reserved -> committed.
+         *
+         * <p>The terminal flag is set only after the counter transition
+         * succeeds, so a failed transition leaves this handle releasable and
+         * the counters untouched instead of wedging the quota. Still
+         * idempotent: a completed handle ignores further calls.
+         */
         public synchronized void complete() {
             if (done) return;
-            done = true;
-            if (noop) return;
+            if (noop) {
+                done = true;
+                return;
+            }
             service.completeReservation(key, state, isChunk, chunkDelta);
+            done = true;
         }
 
         /** Release the reservation without committing. */
@@ -312,6 +355,24 @@ public final class OwnerQuotaService {
             done = true;
             if (noop) return;
             service.releaseReservation(key, state, isChunk, chunkDelta);
+        }
+
+        /**
+         * Force the reservation to committed after the durable domain commit
+         * already succeeded but the normal {@code complete()} transition
+         * failed: whatever is still reserved is consumed and the full delta
+         * lands on committed, so no reservation leaks and the counters match
+         * the durable truth. Only a counter overflow still throws, leaving
+         * the handle releasable. Idempotent like {@code complete()}.
+         */
+        public synchronized void forceComplete() {
+            if (done) return;
+            if (noop) {
+                done = true;
+                return;
+            }
+            service.repairCommit(key, state, isChunk, chunkDelta);
+            done = true;
         }
 
         @Override

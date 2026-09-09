@@ -6,6 +6,7 @@ import com.smile.chunkland.claim.ClaimRecoveryHandlers;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.claim.VaultClaimEconomy;
 import com.smile.chunkland.economy.UnavailableVaultBridge;
+import com.smile.chunkland.economy.VaultBridge;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.RecoveryResult;
@@ -30,9 +31,12 @@ import java.util.logging.Logger;
  * The store stays empty (wilderness) until the scan publishes; a failed
  * rebuild never marks rows active and never refunds.
  *
- * <p>Economy note: no real Vault resolver is wired yet, so recovery runs on
- * an explicitly unavailable bridge. Charges never happen during recovery and
- * refunds through this bridge fail closed instead of moving money.
+ * <p>Economy note: the bridge is injected by the lifecycle owner so recovery
+ * can refund through a real provider when one is available. A null or
+ * unavailable bridge resolves to the explicitly unavailable bridge: charges
+ * never happen during recovery and refunds through it fail closed instead of
+ * moving money, so unrefunded rows stay retryable instead of misreporting
+ * success.
  *
  * <p>Threading: {@code start} performs the synchronous SQLite bootstrap the
  * store contract requires, then returns immediately; the scan itself runs on
@@ -73,7 +77,9 @@ public final class ClaimStartupBootstrap implements AutoCloseable {
     }
 
     /**
-     * Open persistence and trigger the startup recovery scan.
+     * Open persistence and trigger the startup recovery scan with the default
+     * fail-closed Economy: no Vault provider is resolved yet, so recovery runs
+     * on an explicitly unavailable bridge and unrefunded rows stay retryable.
      *
      * @param databasePath the SQLite file to open (parent directories are created)
      * @param sharedStore the registry store shared with the protection engine
@@ -81,13 +87,35 @@ public final class ClaimStartupBootstrap implements AutoCloseable {
      * @return the running bootstrap, owned by the caller
      */
     public static ClaimStartupBootstrap start(Path databasePath, LandRegistryStore sharedStore, Logger logger) {
+        return start(databasePath, sharedStore, logger, new UnavailableVaultBridge());
+    }
+
+    /**
+     * Open persistence and trigger the startup recovery scan with an explicit
+     * Economy bridge.
+     *
+     * <p>Lifecycle: an available bridge lets {@code CHARGED} and
+     * {@code COMPENSATION_PENDING} rows refund for real; an unavailable bridge
+     * keeps recovery fail-safe — refunds fail closed and rows stay on a
+     * retryable state for a later restart with a live provider instead of
+     * advancing. A null bridge resolves to unavailable.
+     *
+     * @param databasePath the SQLite file to open (parent directories are created)
+     * @param sharedStore the registry store shared with the protection engine
+     * @param logger log sink for scan completion; never null in production
+     * @param bridge Economy provider bridge; null resolves to unavailable
+     * @return the running bootstrap, owned by the caller
+     */
+    public static ClaimStartupBootstrap start(Path databasePath, LandRegistryStore sharedStore, Logger logger,
+            VaultBridge bridge) {
         Objects.requireNonNull(databasePath, "databasePath");
         Objects.requireNonNull(sharedStore, "sharedStore");
+        VaultBridge active = bridge == null ? new UnavailableVaultBridge() : bridge;
         PersistenceStore store = PersistenceStore.open(databasePath);
         boolean started = false;
         try {
             OperationLedger ledger = new OperationLedger(store);
-            ClaimEconomy economy = new VaultClaimEconomy(new UnavailableVaultBridge(), CLAIM_CURRENCY);
+            ClaimEconomy economy = new VaultClaimEconomy(active, CLAIM_CURRENCY);
             RuntimeRegistryRebuilder rebuilder =
                     new RuntimeRegistryRebuilder(new SqliteLandRepository(store), sharedStore);
             CompletionStage<List<RecoveryResult>> scan =
