@@ -88,6 +88,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private LandRegistryStore protectionStore;
     private ProtectionEngine protectionEngine;
     private ProtectionListener protectionListener;
+    private ClaimStartupBootstrap claimStartup;
 
     public ChunkLandPlugin() {
     }
@@ -175,6 +176,20 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.protectionStore = new LandRegistryStore();
         this.protectionEngine = buildProtectionEngine(this.protectionStore);
         this.protectionListener = new ProtectionListener(this.protectionEngine);
+        // Startup claim recovery: open persistence, rebuild durable domain
+        // commits into the shared protection store, and scan without blocking.
+        // A failed bootstrap keeps the empty fail-closed runtime; the scan
+        // itself never refunds and never marks rows active on rebuild failure.
+        try {
+            this.claimStartup = ClaimStartupBootstrap.start(
+                    getDataFolder().toPath().resolve(ClaimStartupBootstrap.DATABASE_FILE_NAME),
+                    this.protectionStore,
+                    getLogger());
+        } catch (RuntimeException | Error failure) {
+            getLogger().warning("ChunkLand claim recovery bootstrap failed; "
+                    + "runtime stays empty until the next restart: " + failure.getMessage());
+            this.claimStartup = null;
+        }
         try {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
@@ -292,6 +307,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
         protectionEngine = null;
         protectionStore = null;
+        if (claimStartup != null) {
+            try {
+                claimStartup.close();
+            } catch (RuntimeException ignored) {
+            }
+            claimStartup = null;
+        }
         this.messagePipeline = Optional.empty();
         this.capabilityProbe = Optional.empty();
         this.landMessagePipeline = Optional.empty();
@@ -359,6 +381,18 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     SelectionLifecycleListener getSelectionLifecycleListener() {
         return selectionLifecycleListener;
+    }
+
+    /**
+     * @return the startup recovery bootstrap owned by this plugin, or null
+     *         when recovery was never started or already cleaned up.
+     */
+    ClaimStartupBootstrap getClaimStartup() {
+        return claimStartup;
+    }
+
+    LandRegistryStore getProtectionStore() {
+        return protectionStore;
     }
 
     static Command commandForTest(String name) {
