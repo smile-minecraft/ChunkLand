@@ -33,6 +33,7 @@ import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
 import com.smile.chunkland.persistence.OperationLedger;
+import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
@@ -43,6 +44,9 @@ import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
 import com.smile.chunkland.runtime.rule.LandRuleService;
+import com.smile.chunkland.runtime.vertical.DepthExtendEventAdapter;
+import com.smile.chunkland.runtime.vertical.DepthExtendService;
+import com.smile.chunkland.runtime.vertical.DepthStore;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
 import com.smile.chunkland.selection.FoliaSelectionParticleSink;
 import com.smile.chunkland.selection.FoliaVisualizationTickScheduler;
@@ -141,6 +145,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private OwnerQuotaService claimQuotas;
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
+    private DepthExtendService depthExtendService;
 
     public ChunkLandPlugin() {
     }
@@ -694,6 +699,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
         protectionEngine = null;
         protectionStore = null;
+        // Depth extends stop before persistence closes: the service first
+        // stops accepting new proposals, flushes every accepted write, and
+        // only then closes the persistence handle, so no accepted extend is
+        // lost on disable. Null when the Folia trigger wiring has not
+        // started the service yet; closing the bootstrap store afterwards is
+        // then a no-op-safe single close.
+        if (depthExtendService != null) {
+            try {
+                depthExtendService.close();
+            } catch (RuntimeException ignored) {
+            }
+            depthExtendService = null;
+        }
         if (claimStartup != null) {
             try {
                 claimStartup.close();
@@ -802,6 +820,40 @@ public final class ChunkLandPlugin extends JavaPlugin {
      */
     ClaimStartupBootstrap getClaimStartup() {
         return claimStartup;
+    }
+
+    /**
+     * Production assembly for the depth-extend service: the trigger adapter
+     * classifies over the immutable snapshot seams, the queue drains on the
+     * owner-provided executor, and disable order is stop accepting, flush the
+     * queue, then close persistence. Package visible so integration tests
+     * drive the same assembly the server uses.
+     */
+    static DepthExtendService buildDepthExtendService(
+            DepthStore depthStore,
+            PersistenceStore persistence,
+            Executor drainExecutor,
+            int capacity,
+            DepthExtendEventAdapter adapter) {
+        return DepthExtendService.start(
+                Objects.requireNonNull(depthStore, "depthStore"),
+                Objects.requireNonNull(drainExecutor, "drainExecutor"),
+                capacity,
+                Objects.requireNonNull(adapter, "adapter"),
+                Objects.requireNonNull(persistence, "persistence"));
+    }
+
+    /**
+     * @return the depth-extend service owned by this plugin, or null when the
+     *         Folia trigger wiring has not started it yet.
+     */
+    DepthExtendService getDepthExtendService() {
+        return depthExtendService;
+    }
+
+    // Visible for tests: inject the production depth-extend service
+    void setDepthExtendServiceForTest(DepthExtendService service) {
+        this.depthExtendService = service;
     }
 
     LandRegistryStore getProtectionStore() {
