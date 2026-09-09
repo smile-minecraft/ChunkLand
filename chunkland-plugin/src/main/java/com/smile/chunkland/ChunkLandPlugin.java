@@ -5,6 +5,8 @@ import com.smile.chunkland.adapter.AceLibLifecycle;
 import com.smile.chunkland.capability.Capabilities;
 import com.smile.chunkland.capability.M0CapabilityProbe;
 import com.smile.chunkland.command.LandCommand;
+import com.smile.chunkland.command.ManagementGateResolver;
+import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
@@ -14,6 +16,7 @@ import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
 import com.smile.chunkland.protection.SubjectPermissionLookup;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
+import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.rule.LandRuleService;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
@@ -163,18 +166,21 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // when AceLib is not ready; the sink is fail-closed with no fallback output.
         Locale defaultLocale = configService.map(s -> s.current().messages().defaultLocale()).orElse(Locale.US);
         this.landMessagePipeline = ChunkLandMessagePipeline.tryBuild(this, bridge.getApi(), defaultLocale);
-        this.landCommand = new LandCommand(buildLandHandlers(), null);
+        // Protection engine skeleton: validated at construction (incomplete
+        // registry throws and lands in the fail-closed path below); the store
+        // starts empty so every position is wilderness (vanilla) until later
+        // milestones publish real snapshots and a real context provider.
+        // Built before the land command so the management gate resolver reads
+        // the same live snapshots the engine enforces.
+        this.protectionStore = new LandRegistryStore();
+        this.protectionEngine = buildProtectionEngine(this.protectionStore);
+        this.landCommand = new LandCommand(
+                buildLandHandlers(), null, buildManagementGateResolver(this.protectionStore));
         // Capture the underlying capabilities bundle before Wand listener registration can fail,
         // so registration failure does not leak the M0 SafeScheduler.
         this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
         // Wand safety listener: native Bukkit listener for selection wand protection
         this.wandSafetyListener = new WandSafetyListener();
-        // Protection engine skeleton: validated at construction (incomplete
-        // registry throws and lands in the fail-closed path below); the store
-        // starts empty so every position is wilderness (vanilla) until later
-        // milestones publish real snapshots and a real context provider.
-        this.protectionStore = new LandRegistryStore();
-        this.protectionEngine = buildProtectionEngine(this.protectionStore);
         this.protectionListener = new ProtectionListener(this.protectionEngine);
         // Startup claim recovery: open persistence, rebuild durable domain
         // commits into the shared protection store, and scan without blocking.
@@ -229,6 +235,42 @@ public final class ChunkLandPlugin extends JavaPlugin {
         Map<String, LandCommand.Handler> base = new HashMap<>(LandCommand.defaultStubHandlers());
         base.put("wand", new WandGiveHandler());
         return Map.copyOf(base);
+    }
+
+    /**
+     * Production management gate resolver for {@code /land}.
+     *
+     * <p>Actor comes from the sender's player UUID, the snapshot from the
+     * shared protection store, the steward flag from the serverland node, and
+     * the context provider from the same rule/grant sources as the engine.
+     * The target land resolves from the sender's current location against the
+     * same immutable snapshot: wilderness, unknown worlds, non-player senders
+     * and unresolvable positions stay unresolved, so management attempts fail
+     * closed. There is no named-land argument yet — management subcommands
+     * always act on the land under the sender. Admin bypass has no dedicated
+     * state yet and resolves to {@code false}.
+     */
+    static ManagementGateResolver buildManagementGateResolver(LandRegistryStore store) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        return new PluginManagementGateResolver(
+                active::snapshot,
+                () -> new SnapshotPermissionContextProvider(LandRuleService.defaults(), null),
+                PluginManagementGateResolver.TargetLandResolver.currentLocation());
+    }
+
+    /**
+     * Production resolver with explicit sources, so tests can inject a
+     * snapshot, provider and target without starting a server.
+     */
+    static ManagementGateResolver buildManagementGateResolver(
+            LandRegistryStore store,
+            java.util.function.Supplier<PermissionContextProvider> providers,
+            PluginManagementGateResolver.TargetLandResolver targets) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        return new PluginManagementGateResolver(
+                active::snapshot,
+                providers == null ? () -> new SnapshotPermissionContextProvider(null, null) : providers,
+                targets);
     }
 
     /**
@@ -342,7 +384,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
         if (command.getName().equalsIgnoreCase("land")) {
             LandCommand cmd = this.landCommand;
             if (cmd == null) {
-                cmd = new LandCommand(LandCommand.defaultStubHandlers(), null);
+                // Fail-closed fallback: no cached command, so rebuild the stub
+                // dispatch with a production resolver when the store survived,
+                // otherwise with no resolver (management denies either way).
+                LandRegistryStore store = this.protectionStore;
+                ManagementGateResolver resolver =
+                        store == null ? null : buildManagementGateResolver(store);
+                cmd = new LandCommand(LandCommand.defaultStubHandlers(), null, resolver);
             }
             ChunkLandMessagePipeline pipeline = this.landMessagePipeline.orElse(null);
             return cmd.dispatch(sender, args, pipeline);

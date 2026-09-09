@@ -314,7 +314,14 @@ class LandCommandTest {
                 public void reply(String k, Map<String,Object> v, Locale l){ keys.add(k); }
             });
             assertTrue(cmdAllow.dispatch(allowed, new String[]{sub}, null));
-            assertTrue(called.get(), sub+" allow must call handler");
+            if (LandCommand.managementActionFor(sub).isPresent()) {
+                // No domain authorizer is wired here, so management subcommands
+                // fail closed even when the Bukkit node passes.
+                assertFalse(called.get(), sub + " without a domain authorizer must fail closed");
+                assertTrue(keys.contains("command.land.denied"), sub + " fail-closed must reply denied");
+            } else {
+                assertTrue(called.get(), sub + " allow must call handler");
+            }
         }
     }
 

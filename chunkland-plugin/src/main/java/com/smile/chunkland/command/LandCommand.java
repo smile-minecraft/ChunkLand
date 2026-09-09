@@ -1,6 +1,9 @@
 package com.smile.chunkland.command;
 
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
+import com.smile.chunkland.protection.ManagementPermissionGate;
+import com.smile.chunkland.api.permission.PermissionState;
+import com.smile.chunkland.api.permission.ProtectionActionType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -23,8 +26,14 @@ import org.bukkit.command.CommandSender;
  * allow/deny without starting a server; production handlers are not-yet stubs
  * that must not call selection, mutation, economy or persistence.</p>
  *
- * <p>No authorization, revision validation, cooldown or Bedrock Form is
- * performed here — that is owned by later milestones.</p>
+ * <p>No revision validation, cooldown or Bedrock Form is performed here —
+ * that is owned by later milestones. Management subcommands additionally pass
+ * the shared domain gate: the resolver supplies the actor, target land,
+ * snapshot, bypass and steward inputs, and this dispatcher always feeds them
+ * through {@link ManagementPermissionGate#check} itself. There is no
+ * allow-predicate seam — an unresolved, missing or throwing resolver fails
+ * closed; full land-context resolution for that gate arrives with the
+ * management flows.</p>
  */
 public final class LandCommand {
 
@@ -39,11 +48,39 @@ public final class LandCommand {
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
+    private final ManagementGateResolver gateResolver;
 
     public LandCommand(Map<String, Handler> handlers,
                        BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory) {
+        this(handlers, sinkFactory, null);
+    }
+
+    /**
+     * Dispatcher with a domain gate resolver for management subcommands.
+     *
+     * <p>The resolver adapts Bukkit state into the shared
+     * {@link ManagementPermissionGate} inputs; the dispatcher itself runs the
+     * gate check, so a resolver can never grant access on its own. A denial
+     * refuses the operation even when the Bukkit command node passed, and the
+     * handler is never invoked. A {@code null}, empty or throwing resolver
+     * fails closed on management subcommands (deny without invoking the
+     * handler); only subcommands without a management action skip the gate.
+     */
+    public LandCommand(Map<String, Handler> handlers,
+                       BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory,
+                       ManagementGateResolver gateResolver) {
         this.handlers = handlers == null ? Map.of() : Map.copyOf(handlers);
         this.sinkFactory = sinkFactory == null ? PipelineReplySink::new : sinkFactory;
+        this.gateResolver = gateResolver;
+    }
+
+    /**
+     * Maps a subcommand to the management action enforced by the shared domain
+     * gate. Subcommands without a management action yield
+     * {@link Optional#empty()} and are never sent to the authorizer.
+     */
+    public static Optional<ProtectionActionType> managementActionFor(String subcommand) {
+        return ManagementPermissionGate.actionForSubcommand(subcommand);
     }
 
     /** Production not-yet handler map. */
@@ -137,6 +174,13 @@ public final class LandCommand {
             sink.reply("command.land.denied", Map.of("permission", perm));
             return true;
         }
+        Optional<ProtectionActionType> managed = managementActionFor(sub);
+        if (managed.isPresent()) {
+            if (!checkManagementGate(sender, managed.get(), args)) {
+                sink.reply("command.land.denied", Map.of("permission", managed.get().name()));
+                return true;
+            }
+        }
         Handler h = handlers.get(sub);
         if (h != null) {
             h.handle(sender, args, sink);
@@ -144,6 +188,40 @@ public final class LandCommand {
             sink.reply("command.land.not_yet", Map.of("subcommand", sub));
         }
         return true;
+    }
+
+    /**
+     * Runs the shared domain gate for one management subcommand. The resolver
+     * only supplies inputs; the ALLOW/DENY verdict always comes from
+     * {@link ManagementPermissionGate#check} here. Any missing, empty or
+     * failing resolution denies without invoking the handler.
+     */
+    private boolean checkManagementGate(CommandSender sender, ProtectionActionType action, String[] args) {
+        if (gateResolver == null) {
+            return false;
+        }
+        Optional<ManagementGateResolver.Request> resolved;
+        try {
+            resolved = gateResolver.resolve(sender, action, args);
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+        if (resolved == null || resolved.isEmpty() || resolved.get() == null) {
+            return false;
+        }
+        ManagementGateResolver.Request request = resolved.get();
+        try {
+            return ManagementPermissionGate.check(
+                    request.actor(),
+                    request.landId(),
+                    action,
+                    request.snapshot(),
+                    request.adminBypass(),
+                    request.serverLandSteward(),
+                    request.provider()).outcome() == PermissionState.ALLOW;
+        } catch (RuntimeException denied) {
+            return false;
+        }
     }
 
     /**

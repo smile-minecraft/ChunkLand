@@ -51,7 +51,16 @@ public enum ProtectionActionType {
     FLUID_EXIT(DecisionSource.LAND_RULE),
     ITEM_TRANSFER_IN(DecisionSource.LAND_RULE),
     ITEM_TRANSFER_OUT(DecisionSource.LAND_RULE),
-    DISPENSER_CROSS_BOUNDARY(DecisionSource.LAND_RULE);
+    DISPENSER_CROSS_BOUNDARY(DecisionSource.LAND_RULE),
+
+    // --- Management (spec §24, all SUBJECT_PERMISSION) ---
+    // Owner Guarantee applies, so the land owner always passes without
+    // Admin Bypass; strangers fail closed unless explicitly authorised.
+    MANAGE_MEMBER(DecisionSource.SUBJECT_PERMISSION),
+    MANAGE_PERMISSION(DecisionSource.SUBJECT_PERMISSION),
+    MANAGE_SUBLAND(DecisionSource.SUBJECT_PERMISSION),
+    EXPAND_LAND(DecisionSource.SUBJECT_PERMISSION),
+    DELETE_LAND(DecisionSource.SUBJECT_PERMISSION);
 
     private final DecisionSource decisionSource;
 

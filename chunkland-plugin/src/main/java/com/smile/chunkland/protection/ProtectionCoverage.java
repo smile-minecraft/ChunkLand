@@ -15,11 +15,14 @@ import java.util.Objects;
  *   <li>{@code P0_ENFORCED}: the 21 actions intercepted before this
  *       milestone (13 in the early skeleton, 8 more for entry, vehicles,
  *       item frames, armor stands, hangings, farmland trampling, and fire).</li>
- *   <li>{@code P1_ENFORCED}: actions with a live listener path, including
- *       paths wired by earlier milestones (explosions, adjacent dispense)
- *       and the five paths added here (redstone use, generic entity
- *       interaction, mob griefing, hostile and passive natural spawns), plus
- *       the projectile-landing extension of the dispense crossing.</li>
+  *   <li>{@code P1_ENFORCED}: actions with a live enforcement path, including
+  *       paths wired by earlier milestones (explosions, adjacent dispense)
+  *       and the five paths added here (redstone use, generic entity
+  *       interaction, mob griefing, hostile and passive natural spawns), plus
+  *       the projectile-landing extension of the dispense crossing, plus the
+  *       five management actions enforced by the shared domain gate (no Bukkit
+  *       block listener; command and future GUI/Form entry points resolve the
+  *       gate before touching the mutation pipeline).</li>
  *   <li>{@code DEFERRED}: directional cross actions with no dedicated Bukkit
  *       event. Their policy is already enforced indirectly: the piston,
  *       fluid, and hopper handlers judge both ends under the matching source
@@ -140,6 +143,19 @@ public final class ProtectionCoverage {
                 "onCreatureSpawn for natural spawns of monsters (P1 list)");
         put(table, ProtectionActionType.PASSIVE_MOB_SPAWN, Tier.P1_ENFORCED,
                 "onCreatureSpawn for natural spawns of non-monsters (P1 list)");
+        // --- P1: management actions enforced by the shared domain gate ---
+        // No Bukkit block listener: command and future GUI/Form entry points
+        // resolve ManagementPermissionGate before touching the mutation pipeline.
+        put(table, ProtectionActionType.MANAGE_MEMBER, Tier.P1_ENFORCED,
+                "ManagementPermissionGate domain gate shared by command/GUI/Form entry points");
+        put(table, ProtectionActionType.MANAGE_PERMISSION, Tier.P1_ENFORCED,
+                "ManagementPermissionGate domain gate shared by command/GUI/Form entry points");
+        put(table, ProtectionActionType.MANAGE_SUBLAND, Tier.P1_ENFORCED,
+                "ManagementPermissionGate domain gate shared by command/GUI/Form entry points");
+        put(table, ProtectionActionType.EXPAND_LAND, Tier.P1_ENFORCED,
+                "ManagementPermissionGate domain gate shared by command/GUI/Form entry points");
+        put(table, ProtectionActionType.DELETE_LAND, Tier.P1_ENFORCED,
+                "ManagementPermissionGate domain gate shared by command/GUI/Form entry points");
         // --- Deferred: directional cross actions without a dedicated event ---
         String indirect = "Deferred: no dedicated Bukkit event; enforced indirectly via ";
         put(table, ProtectionActionType.BLOCK_MOVE_IN, Tier.DEFERRED,
