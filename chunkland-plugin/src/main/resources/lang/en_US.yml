@@ -32,6 +32,17 @@ command:
       success: "<green>Land <land_name> claimed: <chunk_count> chunks.</green>"
       rejected: "<red>Claim rejected: <reason>.</red>"
       failed: "<red>Claim failed: <reason>.</red>"
+    subland:
+      console: "<red>Only players can manage sublands.</red>"
+      usage: "<yellow>Usage: /land subland (create|update|delete) generation revision [name]</yellow>"
+      no_selection: "<yellow>No active selection. Select chunks first, then run /land subland again.</yellow>"
+      created: "<green>Subland created.</green>"
+      updated: "<green>Subland updated.</green>"
+      deleted: "<green>Subland deleted.</green>"
+      stale: "<yellow>That subland confirmation has expired. Please review the latest details and try again.</yellow>"
+      confirm_depth: "<yellow>That subland reaches below the parent protection floor and needs an explicit depth confirmation: <reason>.</yellow>"
+      failed: "<red>Subland operation failed: <reason>.</red>"
+      degraded: "<yellow>Subland saved but the live map is still rebuilding. Please wait a moment and try again: <reason>.</yellow>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

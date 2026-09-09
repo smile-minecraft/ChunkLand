@@ -22,8 +22,10 @@ import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.PluginManagementGateResolver;
+import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.LimitSettings;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.economy.UnavailableVaultBridge;
 import com.smile.chunkland.economy.VaultBridge;
@@ -35,6 +37,7 @@ import com.smile.chunkland.message.M0MessageProbe;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.SqliteLandRepository;
+import com.smile.chunkland.persistence.SubLandAtomicCommit;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
@@ -47,6 +50,7 @@ import com.smile.chunkland.runtime.rule.LandRuleService;
 import com.smile.chunkland.runtime.vertical.DepthExtendEventAdapter;
 import com.smile.chunkland.runtime.vertical.DepthExtendService;
 import com.smile.chunkland.runtime.vertical.DepthStore;
+import com.smile.chunkland.runtime.vertical.VerticalDepths;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
 import com.smile.chunkland.selection.FoliaSelectionParticleSink;
 import com.smile.chunkland.selection.FoliaVisualizationTickScheduler;
@@ -56,6 +60,10 @@ import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
 import com.smile.chunkland.selection.SelectionVisualizationRenderer;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
+import com.smile.chunkland.subland.DepthExtensionPort;
+import com.smile.chunkland.subland.SubLandConfirmService;
+import com.smile.chunkland.subland.SubLandDepthSource;
+import com.smile.chunkland.subland.SubLandMutationRunner;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandSafetyListener;
 import java.time.Clock;
@@ -145,6 +153,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private OwnerQuotaService claimQuotas;
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
+    private SubLandConfirmService subLandConfirm;
+    private SubLandMutationRunner subLandRunner;
     private DepthExtendService depthExtendService;
 
     public ChunkLandPlugin() {
@@ -270,9 +280,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // recovery scan is still in flight (or has failed) the handler stays
         // fail-closed on recovery_pending/recovery_failed, so a stale empty
         // runtime can never hide a collision.
+        // Formal SubLand flow: shares the recovery bootstrap store and the
+        // protection snapshot so chat confirmations, durable commits and the
+        // runtime publish converge on one revision source. Assembly failure
+        // keeps the slot fail-closed instead of running half-wired.
+        SubLandCommandHandler sublandHandler = subLandHandler(activeConfig);
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
-                        structureRevisions),
+                        structureRevisions, sublandHandler),
                 null, buildManagementGateResolver(this.protectionStore));
         // Capture the underlying capabilities bundle before Wand listener registration can fail,
         // so registration failure does not leak the M0 SafeScheduler.
@@ -357,6 +372,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
             Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
             SelectionStructureRevisionLookup structures) {
+        return buildLandHandlers(selections, runner, recoveryScan, structures, null);
+    }
+
+    /**
+     * Production {@code /land} handlers with the SubLand mutation flow wired.
+     *
+     * <p>A null SubLand handler keeps the slot fail-closed: it replies
+     * {@code command.land.subland.failed} with {@code subland.unavailable}
+     * instead of the not-yet stub, so an unwired server never pretends the
+     * flow is coming soon and never runs a half-wired mutation.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland) {
         Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers());
         base.put("claim", selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
@@ -366,7 +397,112 @@ public final class ChunkLandPlugin extends JavaPlugin {
         base.put("confirm", selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
                 : new ConfirmCommandHandler(selections, runner, recoveryScan, activeStructures));
+        base.put("subland", subland == null
+                ? (sender, args, sink) -> sink.reply("command.land.subland.failed", Map.of("reason", "subland.unavailable"))
+                : subland);
         return Map.copyOf(base);
+    }
+
+    /**
+     * Live parent structure-revision source for SubLand confirmations, read
+     * from the shared runtime snapshot. A null store or an unknown land
+     * yields empty, so confirmation fails closed instead of running against
+     * a revision nobody can vouch for.
+     */
+    static SelectionStructureRevisionLookup buildSubLandStructureLookup(LandRegistryStore store) {
+        if (store == null) {
+            return SelectionStructureRevisionLookup.unavailable();
+        }
+        return landId -> {
+            Objects.requireNonNull(landId, "landId");
+            try {
+                com.smile.chunkland.api.land.LandSnapshot snapshot = store.snapshot().land(landId);
+                if (snapshot == null) {
+                    return OptionalLong.empty();
+                }
+                return OptionalLong.of(snapshot.structureRevision());
+            } catch (RuntimeException unresolved) {
+                return OptionalLong.empty();
+            }
+        };
+    }
+
+    /**
+     * Production effective-floor source for SubLand depth checks, resolved
+     * from the runtime's stored per-chunk depths with the legacy fallback for
+     * rows that predate depth persistence. The floor is the highest stored
+     * value across the parent's chunks, so a candidate clears every chunk it
+     * could cover; a null store fails closed by throwing instead of guessing.
+     * Per-footprint floors and world-minimum interpretation arrive with the
+     * vertical follow-up; until then this stays on stored-depth semantics.
+     */
+    static SubLandDepthSource buildSubLandDepthSource(LandRegistryStore store) {
+        if (store == null) {
+            return parent -> {
+                throw new IllegalStateException("subland depth source is unavailable");
+            };
+        }
+        return parent -> {
+            Objects.requireNonNull(parent, "parent");
+            com.smile.chunkland.runtime.index.LandRegistry snapshot = store.snapshot();
+            int floor = CLAIM_DEPTH_FALLBACK;
+            boolean seen = false;
+            for (com.smile.chunkland.api.land.ChunkKey chunk : parent.chunks()) {
+                int stored = snapshot.storedDepth(chunk)
+                        .orElse(VerticalDepths.LEGACY_STORED_FALLBACK_Y);
+                if (!seen || stored > floor) {
+                    floor = stored;
+                    seen = true;
+                }
+            }
+            return floor;
+        };
+    }
+
+    /**
+     * Assembles the formal SubLand mutation runner from its production parts.
+     * Any missing part returns null so the caller keeps {@code /land subland}
+     * fail-closed instead of running half-wired. Depth extension stays
+     * deny-all: explicit depth confirmation arrives with the follow-up queue,
+     * so deep candidates fail closed until then.
+     */
+    static SubLandMutationRunner buildSubLandRunner(
+            PersistenceStore persistence,
+            LandRegistryStore registry,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            LimitSettings limits,
+            Clock clock) {
+        if (persistence == null || registry == null || selections == null
+                || confirm == null || depths == null || limits == null || clock == null) {
+            return null;
+        }
+        return new SubLandMutationRunner(
+                new SqliteLandRepository(persistence),
+                new SubLandAtomicCommit(persistence),
+                registry,
+                selections,
+                confirm,
+                depths,
+                DepthExtensionPort.denyAll(),
+                limits,
+                clock);
+    }
+
+    /**
+     * Assembles the production {@code /land subland} handler. Any missing
+     * part returns null so the handler map keeps the slot fail-closed.
+     */
+    static SubLandCommandHandler buildSubLandHandler(
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandMutationRunner runner,
+            SelectionStructureRevisionLookup structures) {
+        if (selections == null || confirm == null || runner == null || structures == null) {
+            return null;
+        }
+        return new SubLandCommandHandler(selections, confirm, runner, structures);
     }
 
     /**
@@ -517,6 +653,45 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 }
                 this.claimExecutor = null;
             }
+            return null;
+        }
+    }
+
+    /**
+     * Live SubLand handler sharing the recovery bootstrap store and the
+     * protection snapshot. Null when any part is missing or assembly fails:
+     * the handler map then keeps {@code /land subland} fail-closed. Assembly
+     * failure is logged, so a half-wired mutation can never run silently.
+     */
+    private SubLandCommandHandler subLandHandler(ConfigService activeConfig) {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        SelectionSessionManager selections = this.selectionSessionManager;
+        LandRegistryStore registry = this.protectionStore;
+        if (bootstrap == null || selections == null || registry == null || activeConfig == null) {
+            getLogger().warning("ChunkLand subland flow assembly skipped; "
+                    + "/land subland stays fail-closed: missing bootstrap, selections, registry or config");
+            return null;
+        }
+        try {
+            SubLandConfirmService confirm = new SubLandConfirmService();
+            SubLandDepthSource depths = buildSubLandDepthSource(registry);
+            SelectionStructureRevisionLookup lookup = buildSubLandStructureLookup(registry);
+            SubLandMutationRunner runner = buildSubLandRunner(
+                    bootstrap.store(), registry, selections, confirm, depths,
+                    activeConfig.current().limits(), Clock.systemUTC());
+            if (runner == null) {
+                getLogger().warning("ChunkLand subland flow assembly failed; "
+                        + "/land subland stays fail-closed: runner unavailable");
+                return null;
+            }
+            this.subLandConfirm = confirm;
+            this.subLandRunner = runner;
+            return new SubLandCommandHandler(selections, confirm, runner, lookup);
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand subland flow assembly failed; "
+                    + "/land subland stays fail-closed: " + failure.getMessage());
+            this.subLandConfirm = null;
+            this.subLandRunner = null;
             return null;
         }
     }
@@ -722,7 +897,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         claimSaga = null;
         claimQuotas = null;
         claimReservations = null;
-        if (claimExecutor != null) {
+        subLandConfirm = null;
+        subLandRunner = null;        if (claimExecutor != null) {
             try {
                 claimExecutor.shutdownNow();
             } catch (RuntimeException ignored) {

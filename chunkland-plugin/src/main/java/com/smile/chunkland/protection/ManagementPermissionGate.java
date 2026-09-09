@@ -66,6 +66,7 @@ public final class ManagementPermissionGate {
             "untrust", ProtectionActionType.MANAGE_MEMBER,
             "ban", ProtectionActionType.MANAGE_MEMBER,
             "unban", ProtectionActionType.MANAGE_MEMBER,
+            "subland", ProtectionActionType.MANAGE_SUBLAND,
             "expand", ProtectionActionType.EXPAND_LAND,
             "delete", ProtectionActionType.DELETE_LAND);
 

@@ -32,6 +32,17 @@ command:
       success: "<green>領地 <land_name> 已建立：共 <chunk_count> 個區塊。</green>"
       rejected: "<red>圈地被拒絕：<reason>。</red>"
       failed: "<red>圈地失敗：<reason>。</red>"
+    subland:
+      console: "<red>只有玩家可以管理子領地。</red>"
+      usage: "<yellow>用法：/land subland (create|update|delete) generation revision [名稱]</yellow>"
+      no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再重新執行 /land subland。</yellow>"
+      created: "<green>子領地已建立。</green>"
+      updated: "<green>子領地已更新。</green>"
+      deleted: "<green>子領地已刪除。</green>"
+      stale: "<yellow>該子領地確認已過期。請查看最新內容後重試。</yellow>"
+      confirm_depth: "<yellow>該子領地超出母領地保護下限，需要明確確認深度：<reason>。</yellow>"
+      failed: "<red>子領地操作失敗：<reason>。</red>"
+      degraded: "<yellow>子領地已儲存，但即時地圖仍在重建中，請稍後再試：<reason>。</yellow>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"

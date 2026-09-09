@@ -44,7 +44,7 @@ public final class LandCommand {
     }
 
     public static final List<String> SUBCOMMANDS = List.of(
-            "help", "confirm", "wand", "claim", "trust", "untrust", "ban", "unban", "expand", "rename", "delete");
+            "help", "confirm", "wand", "claim", "trust", "untrust", "ban", "unban", "subland", "expand", "rename", "delete");
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
