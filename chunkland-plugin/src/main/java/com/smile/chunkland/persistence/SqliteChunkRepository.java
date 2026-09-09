@@ -2,12 +2,15 @@ package com.smile.chunkland.persistence;
 
 import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.runtime.vertical.VerticalDepths;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -78,6 +81,36 @@ public final class SqliteChunkRepository implements ChunkRepository {
                 }
             }
             return List.copyOf(out);
+        });
+    }
+
+    @Override
+    public CompletionStage<Map<ChunkKey, Integer>> listDepthsByLand(LandId landId) {
+        Objects.requireNonNull(landId, "landId");
+        return store.submitAsync(conn -> {
+            String sql = "SELECT world_uuid, chunk_x, chunk_z, stored_min_protected_y "
+                    + "FROM land_chunks WHERE land_id = ? ORDER BY chunk_x, chunk_z";
+            Map<ChunkKey, Integer> out = new HashMap<>();
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setBytes(1, UuidBlob.encode(landId.value()));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        byte[] w = rs.getBytes(1);
+                        if (w == null) continue;
+                        UUID wid = UuidBlob.decode(w);
+                        int x = rs.getInt(2);
+                        if (rs.wasNull()) continue;
+                        int z = rs.getInt(3);
+                        if (rs.wasNull()) continue;
+                        int stored = rs.getInt(4);
+                        Integer normalized = rs.wasNull()
+                                ? VerticalDepths.LEGACY_STORED_FALLBACK_Y
+                                : stored;
+                        out.put(new ChunkKey(wid, x, z), normalized);
+                    }
+                }
+            }
+            return Map.copyOf(out);
         });
     }
 

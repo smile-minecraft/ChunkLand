@@ -146,7 +146,7 @@ class ConfigServiceTest {
         String yaml = ""
                 + "worlds:\n"
                 + "  world:\n"
-                + "    vertical-mode: FULL_HEIGHT\n";
+                + "    vertical-mode-typo: FULL_HEIGHT\n";
         assertThrows(
                 ConfigValidationException.class,
                 () -> new ConfigService(new StringYamlLoader(yaml)));

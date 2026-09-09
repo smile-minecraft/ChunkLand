@@ -25,6 +25,7 @@ import org.yaml.snakeyaml.Yaml;
  * worlds:
  *   &lt;world-name&gt;:
  *     claim-enabled: true|false
+ *     vertical-mode: PER_CHUNK_DEPTH|FULL_HEIGHT
  * selection:
  *   session-timeout-seconds: 600
  * </pre>
@@ -142,16 +143,23 @@ public final class ConfigSchema {
             Map<String, Object> settingsMap = castStringKeyMap(rawSettingsMap, worldPath);
             // Reject unknown world-level keys — explicit fail-fast over silent defaults.
             for (String key : settingsMap.keySet()) {
-                if (!"claim-enabled".equals(key)) {
+                if (!"claim-enabled".equals(key) && !"vertical-mode".equals(key)) {
                 throw new ConfigValidationException(
                         worldPath + " has unknown key '" + key
-                                + "' (only 'claim-enabled' is supported in the current schema)");
+                                + "' (only 'claim-enabled' and 'vertical-mode' are supported in the current schema)");
                 }
             }
             boolean claimEnabled = parseClaimEnabled(
                     settingsMap.get("claim-enabled"),
                     worldPath + ".claim-enabled");
-            result.put(worldName, new WorldSettings(claimEnabled));
+            VerticalMode verticalMode;
+            if (!settingsMap.containsKey("vertical-mode")) {
+                verticalMode = VerticalMode.defaultMode();
+            } else {
+                verticalMode = VerticalMode.parse(
+                        settingsMap.get("vertical-mode"), worldPath + ".vertical-mode");
+            }
+            result.put(worldName, new WorldSettings(claimEnabled, verticalMode));
         }
         return result;
     }

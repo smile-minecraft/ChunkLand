@@ -1,5 +1,6 @@
 package com.smile.chunkland.runtime.index;
 
+import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.SubLandSnapshot;
@@ -28,17 +29,26 @@ public final class LandRegistry {
     private final Map<UUID, WorldChunkIndex> worlds;
     private final Map<LandId, LandSnapshot> lands;
     private final Map<LandId, SubLandIndex> subLandIndexes;
+    private final Map<ChunkKey, Integer> chunkDepths;
 
     private LandRegistry(Map<UUID, WorldChunkIndex> worlds,
                          Map<LandId, LandSnapshot> lands,
                          Map<LandId, SubLandIndex> subLandIndexes) {
+        this(worlds, lands, subLandIndexes, Map.of());
+    }
+
+    private LandRegistry(Map<UUID, WorldChunkIndex> worlds,
+                         Map<LandId, LandSnapshot> lands,
+                         Map<LandId, SubLandIndex> subLandIndexes,
+                         Map<ChunkKey, Integer> chunkDepths) {
         this.worlds = worlds;
         this.lands = lands;
         this.subLandIndexes = subLandIndexes;
+        this.chunkDepths = chunkDepths;
     }
 
     public static LandRegistry empty() {
-        return new LandRegistry(Map.of(), Map.of(), Map.of());
+        return new LandRegistry(Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     /**
@@ -93,7 +103,40 @@ public final class LandRegistry {
         return new LandRegistry(
                 Collections.unmodifiableMap(worlds),
                 Collections.unmodifiableMap(new HashMap<>(landsById)),
-                Collections.unmodifiableMap(subIndexes));
+                Collections.unmodifiableMap(subIndexes),
+                Map.of());
+    }
+
+    /**
+     * Build a registry with authoritative per-chunk stored depths.
+     *
+     * <p>{@code storedDepths} maps each claimed chunk to its durable
+     * {@code storedMinProtectedY}. Entries for unknown chunks are ignored so a
+     * stale depth row can never create a phantom claim; chunks without an
+     * entry resolve through the legacy fallback at read time. The map is
+     * defensively copied; mode switching only changes effective reads, never
+     * this table.
+     */
+    public static LandRegistry fromWithDepths(
+            Collection<LandSnapshot> snapshots, Map<ChunkKey, Integer> storedDepths) {
+        Objects.requireNonNull(snapshots, "snapshots");
+        Objects.requireNonNull(storedDepths, "storedDepths");
+        LandRegistry base = from(snapshots);
+        if (storedDepths.isEmpty()) {
+            return base;
+        }
+        Map<ChunkKey, Integer> filtered = new HashMap<>(storedDepths.size());
+        for (Map.Entry<ChunkKey, Integer> entry : storedDepths.entrySet()) {
+            ChunkKey key = Objects.requireNonNull(entry.getKey(), "storedDepths key");
+            Integer value = Objects.requireNonNull(entry.getValue(), "storedDepths value");
+            LandId owner = base.findLandId(key.worldId(), key.chunkX(), key.chunkZ());
+            if (owner == null) {
+                continue;
+            }
+            filtered.put(key, value);
+        }
+        return new LandRegistry(
+                base.worlds, base.lands, base.subLandIndexes, Collections.unmodifiableMap(filtered));
     }
 
     public Map<UUID, WorldChunkIndex> worlds() { return worlds; }
@@ -146,5 +189,24 @@ public final class LandRegistry {
     public LandSnapshot land(LandId id) {
         Objects.requireNonNull(id, "id");
         return lands.get(id);
+    }
+
+    /**
+     * Authoritative per-chunk stored depths keyed by {@link ChunkKey}.
+     * Never {@code null}; missing chunks resolve through the legacy fallback
+     * at read time. Unmodifiable.
+     */
+    public Map<ChunkKey, Integer> chunkDepths() { return chunkDepths; }
+
+    /**
+     * Stored depth for one chunk, or empty when the chunk is wilderness or the
+     * depth row is absent (caller applies the legacy fallback).
+     */
+    public java.util.Optional<Integer> storedDepth(ChunkKey chunk) {
+        Objects.requireNonNull(chunk, "chunk");
+        if (findLandId(chunk.worldId(), chunk.chunkX(), chunk.chunkZ()) == null) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.ofNullable(chunkDepths.get(chunk));
     }
 }

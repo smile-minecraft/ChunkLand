@@ -4,12 +4,12 @@
 # the plugin. Each feature owns its own typed section rather than using one
 # consolidated block:
 #   limits            -> typed land quotas
-#   economy           -> economy settings
-#   vertical-mode     -> vertical claim settings
-#   permission-cache  -> cache settings
-#   particle          -> selection particle settings
-#   audit             -> audit retention settings
 #   messages          -> message settings
+#   selection         -> selection sessions and particle budgets
+#   worlds.<name>     -> per-world claim-enabled + vertical-mode
+#     vertical-mode accepts PER_CHUNK_DEPTH (default) or FULL_HEIGHT.
+#     The mode only changes effective depth reads; stored depths are never
+#     migrated or rewritten on a mode switch.
 # Until a section is added, its top-level key is rejected on load so a typo or
 # a premature copy-paste is a loud failure rather than a silently ignored line.
 #
@@ -43,9 +43,11 @@ selection:
   visualization-refresh-interval-ticks: 10
 
 worlds:
-  # Worlds not listed here follow the `claim-enabled: true` default.
+  # Worlds not listed here follow the `claim-enabled: true` and
+  # `vertical-mode: PER_CHUNK_DEPTH` defaults.
   world:
     claim-enabled: true
+    vertical-mode: PER_CHUNK_DEPTH
   world_nether:
     claim-enabled: false
   world_the_end:

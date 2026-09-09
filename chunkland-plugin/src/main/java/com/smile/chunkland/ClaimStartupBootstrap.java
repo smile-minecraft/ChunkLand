@@ -10,6 +10,7 @@ import com.smile.chunkland.economy.VaultBridge;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.RecoveryResult;
+import com.smile.chunkland.persistence.SqliteChunkRepository;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import java.nio.file.Path;
@@ -117,7 +118,8 @@ public final class ClaimStartupBootstrap implements AutoCloseable {
             OperationLedger ledger = new OperationLedger(store);
             ClaimEconomy economy = new VaultClaimEconomy(active, CLAIM_CURRENCY);
             RuntimeRegistryRebuilder rebuilder =
-                    new RuntimeRegistryRebuilder(new SqliteLandRepository(store), sharedStore);
+                    new RuntimeRegistryRebuilder(new SqliteLandRepository(store), sharedStore,
+                            new SqliteChunkRepository(store));
             CompletionStage<List<RecoveryResult>> scan =
                     ClaimRecoveryHandlers.scanAtStartup(ledger, economy, rebuilder);
             ClaimStartupBootstrap bootstrap =
