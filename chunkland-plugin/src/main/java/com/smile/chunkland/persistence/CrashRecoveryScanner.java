@@ -68,7 +68,7 @@ public final class CrashRecoveryScanner {
             case CREATED -> failCreated(entry);
             case PAYMENT_PENDING -> recoverPaymentPending(entry);
             case CHARGED -> recoverCharged(entry);
-            case DOMAIN_COMMITTED -> recoverDomainCommitted(entry);
+            case DOMAIN_COMMITTED -> recoverDomainCommittedByType(entry);
             case ACTIVE, FAILED, COMPENSATED -> completed(noOp(entry, state));
             case COMPENSATION_PENDING -> recoverCompensation(entry);
             case NEEDS_RECONCILIATION -> completed(noOp(entry, state));
@@ -128,8 +128,39 @@ public final class CrashRecoveryScanner {
         });
     }
 
-    private CompletionStage<RecoveryResult> recoverDomainCommitted(LedgerEntry entry) {
+    /**
+     * Route a domain-committed row by operation kind. Claim rows rebuild the
+     * runtime towards {@code ACTIVE}; refund rows already released their
+     * domain but may never have moved money, so they park for compensation
+     * and retry the deposit through the shared compensation path instead of
+     * being marked active with an unpaid refund.
+     */
+    private CompletionStage<RecoveryResult> recoverDomainCommittedByType(LedgerEntry entry) {
+        if ("REFUND".equals(entry.operationType())) {
+            return recoverRefundCommitted(entry);
+        }
+        return recoverDomainCommitted(entry);
+    }
+
+    private CompletionStage<RecoveryResult> recoverRefundCommitted(LedgerEntry entry) {
         return payloadFor(entry).thenCompose(payload -> {
+            if (payload == null) {
+                return moveToReconciliation(entry, "refund domain-committed payload is invalid");
+            }
+            if (!"REFUND".equals(payload.operationType())) {
+                return moveToReconciliation(entry, "refund row carries a non-refund payload");
+            }
+            return ledger.parkForRefundCompensation(
+                            entry.operationId(), "refund:" + entry.operationId(), now())
+                    .thenCompose(ignored -> ledger.find(entry.operationId()))
+                    .thenCompose(this::recoverCompensation)
+                    .exceptionally(failure -> unchanged(entry,
+                            LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                            "refund could not be parked for compensation"));
+        });
+    }
+
+    private CompletionStage<RecoveryResult> recoverDomainCommitted(LedgerEntry entry) {        return payloadFor(entry).thenCompose(payload -> {
             if (payload == null) return moveToReconciliation(entry, "domain-committed payload is invalid");
             return recoverDomainCommitted(entry, payload);
         });
@@ -170,10 +201,28 @@ public final class CrashRecoveryScanner {
                 .exceptionally(failure -> unchanged(entry, LedgerState.RecoveryClassification.INVALID_RECORD, reason));
     }
 
+    /**
+     * Retry a parked compensation. Refund rows carry their own payload
+     * contract, so the payload is validated before touching Economy: an
+     * untrusted payload quarantines without a deposit, a settle, or a runtime
+     * rebuild. Claim rows keep their existing retry path unchanged.
+     */
     private CompletionStage<RecoveryResult> recoverCompensation(LedgerEntry entry) {
         if (entry.economyTransactionRef() == null || entry.economyTransactionRef().isBlank()) {
             return moveToReconciliation(entry, "compensation has no Economy transaction reference");
         }
+        if ("REFUND".equals(entry.operationType())) {
+            return payloadFor(entry).thenCompose(payload -> {
+                if (payload == null || !"REFUND".equals(payload.operationType())) {
+                    return moveToReconciliation(entry, "refund compensation payload is invalid");
+                }
+                return refundCompensation(entry);
+            });
+        }
+        return refundCompensation(entry);
+    }
+
+    private CompletionStage<RecoveryResult> refundCompensation(LedgerEntry entry) {
         CompletionStage<RefundOutcome> refund;
         try {
             refund = handlers.refund(entry);
@@ -184,6 +233,9 @@ public final class CrashRecoveryScanner {
         return refund.handle((result, failure) -> failure == null && result != null ? result : RefundOutcome.UNKNOWN)
                 .thenCompose(result -> {
                     if (result == RefundOutcome.REFUNDED) {
+                        if ("REFUND".equals(entry.operationType())) {
+                            return settleRefundCompensatedWithRuntime(entry);
+                        }
                         return ledger.compareAndSetState(entry.operationId(), LedgerState.COMPENSATION_PENDING,
                                 LedgerState.COMPENSATED, now())
                                 .thenApply(ignored -> changed(entry, LedgerState.COMPENSATED,
@@ -195,6 +247,47 @@ public final class CrashRecoveryScanner {
                                     "refund was not confirmed; attempt " + decision.attempts()));
                 }).exceptionally(failure -> unchanged(entry, LedgerState.RecoveryClassification.RETRY_COMPENSATION,
                         "compensation retry could not be persisted"));
+    }
+
+    /**
+     * Settle a refund row as compensated and then rebuild the runtime from
+     * durable truth, mirroring the saga settle-then-publish order. Both the
+     * settle and the rebuild run outside any SQL transaction: the settle is
+     * its own transaction and the rebuild reads authoritative storage after
+     * it completes. A rebuild failure keeps the durable {@code COMPENSATED}
+     * marking (money moved) but reports the stale runtime explicitly; an
+     * unsettleable row is left untouched for retry. Claim rows never enter
+     * here, so their compensation path stays runtime-free.
+     */
+    private CompletionStage<RecoveryResult> settleRefundCompensatedWithRuntime(LedgerEntry entry) {
+        return payloadFor(entry).thenCompose(payload -> ledger.compareAndSetState(entry.operationId(),
+                        LedgerState.COMPENSATION_PENDING, LedgerState.COMPENSATED, now())
+                .thenCompose(ignored -> {
+                    if (payload == null || !"REFUND".equals(payload.operationType())) {
+                        return completed(changed(entry, LedgerState.COMPENSATED,
+                                LedgerState.RecoveryClassification.RETRY_COMPENSATION, "refund confirmed"));
+                    }
+                    CompletionStage<Void> rebuild;
+                    try {
+                        rebuild = handlers.rebuildRuntime(entry, payload);
+                    } catch (Throwable failure) {
+                        rebuild = CompletableFuture.failedFuture(failure);
+                    }
+                    if (rebuild == null) {
+                        rebuild = CompletableFuture.failedFuture(
+                                new IllegalStateException("runtime rebuild returned null"));
+                    }
+                    return rebuild.handle((ignoredRebuild, failure) -> failure == null)
+                            .thenApply(rebuilt -> rebuilt
+                                    ? changed(entry, LedgerState.COMPENSATED,
+                                            LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                                            "refund confirmed and runtime rebuilt")
+                                    : changed(entry, LedgerState.COMPENSATED,
+                                            LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                                            "refund confirmed; runtime rebuild failed"));
+                })
+                .exceptionally(failure -> unchanged(entry, LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                        "compensation retry could not be persisted")));
     }
 
     private CompletionStage<RecoveryResult> moveToReconciliation(LedgerEntry entry, String diagnostic) {

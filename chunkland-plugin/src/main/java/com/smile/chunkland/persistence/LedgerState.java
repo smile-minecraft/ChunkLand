@@ -59,12 +59,29 @@ public enum LedgerState {
             return false;
         }
         return switch (this) {
-            case CREATED -> next == PAYMENT_PENDING || next == FAILED;
+            // CREATED rows normally enter the payment flow, but a domain-first
+            // refund records its row and then commits the domain straight away:
+            // the money moves only after DOMAIN_COMMITTED. NEEDS_RECONCILIATION
+            // stays available as the fail-closed escape for corrupt payloads.
+            case CREATED -> next == PAYMENT_PENDING
+                    || next == DOMAIN_COMMITTED
+                    || next == FAILED
+                    || next == NEEDS_RECONCILIATION;
             case PAYMENT_PENDING -> next == CHARGED || next == FAILED || next == NEEDS_RECONCILIATION;
             case CHARGED -> next == DOMAIN_COMMITTED
                     || next == COMPENSATION_PENDING
                     || next == NEEDS_RECONCILIATION;
-            case DOMAIN_COMMITTED -> next == ACTIVE || next == NEEDS_RECONCILIATION;
+            // A domain-first refund commits its domain while DOMAIN_COMMITTED
+            // and only then moves money. A failed deposit parks the row in
+            // COMPENSATION_PENDING (the shared recovery retry contract) and a
+            // confirmed deposit settles it as COMPENSATED, both straight from
+            // DOMAIN_COMMITTED. Claim rows never take these two edges: their
+            // money moves before the domain commit, so their post-commit path
+            // only rebuilds the runtime towards ACTIVE.
+            case DOMAIN_COMMITTED -> next == ACTIVE
+                    || next == COMPENSATION_PENDING
+                    || next == COMPENSATED
+                    || next == NEEDS_RECONCILIATION;
             case COMPENSATION_PENDING -> next == COMPENSATED || next == NEEDS_RECONCILIATION;
             case ACTIVE, FAILED, COMPENSATED, NEEDS_RECONCILIATION -> false;
         };

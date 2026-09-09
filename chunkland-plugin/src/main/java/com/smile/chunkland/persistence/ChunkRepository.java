@@ -28,5 +28,19 @@ public interface ChunkRepository {
 
     CompletionStage<Void> removeChunk(ChunkKey chunk);
 
+    /**
+     * Durable per-chunk facts for every row of a land.
+     *
+     * <p>Reads the stored cost basis, protected depth, and claim lot alongside
+     * the coordinates. Any value may be {@code null} for legacy rows; callers
+     * that need exact money must fail closed on a missing or negative basis
+     * instead of refunding a guessed amount. The returned map is immutable.
+     */
+    CompletionStage<Map<ChunkKey, ChunkFact>> factsByLand(LandId landId);
+
+    /** Nullable durable facts for one {@code land_chunks} row. */
+    record ChunkFact(Long costBasisMinorUnits, Integer storedMinProtectedY, UUID claimLotId) {
+    }
+
     CompletionStage<Void> deleteByLand(LandId landId);
 }

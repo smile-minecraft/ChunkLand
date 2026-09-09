@@ -27,7 +27,9 @@ public record OperationPayload(
         Instant createdAt,
         Instant updatedAt,
         int schemaVersion,
-        String landDisplayName) {
+        String landDisplayName,
+        Long refundNumerator,
+        Long refundDenominator) {
 
     public static final int CURRENT_SCHEMA_VERSION = 1;
 
@@ -46,7 +48,31 @@ public record OperationPayload(
             int schemaVersion) {
         this(operationId, operationType, actorUuid, worldUuid, targetLandId, chunkSet,
                 priceMinorUnits, economyProviderId, economyTransactionRef, createdAt,
-                updatedAt, schemaVersion, "Recovered land");
+                updatedAt, schemaVersion, "Recovered land", null, null);
+    }
+
+    /**
+     * Compatibility overload for rows written before the refund ratio was
+     * persisted: legacy payloads carry no ratio and fall back to the
+     * amount-implied check in the refund gates.
+     */
+    public OperationPayload(
+            UUID operationId,
+            String operationType,
+            UUID actorUuid,
+            UUID worldUuid,
+            LandId targetLandId,
+            List<Chunk> chunkSet,
+            long priceMinorUnits,
+            String economyProviderId,
+            String economyTransactionRef,
+            Instant createdAt,
+            Instant updatedAt,
+            int schemaVersion,
+            String landDisplayName) {
+        this(operationId, operationType, actorUuid, worldUuid, targetLandId, chunkSet,
+                priceMinorUnits, economyProviderId, economyTransactionRef, createdAt,
+                updatedAt, schemaVersion, landDisplayName, null, null);
     }
 
     public OperationPayload {
@@ -76,6 +102,20 @@ public record OperationPayload(
         }
         if (landDisplayName == null || landDisplayName.isBlank()) {
             throw new IllegalArgumentException("landDisplayName must not be blank");
+        }
+        // Refund ratio is optional so claim rows and legacy refund rows without
+        // the fields keep parsing; when present both sides must form a valid
+        // 0 <= numerator <= denominator ratio for literal identity checks.
+        if ((refundNumerator == null) != (refundDenominator == null)) {
+            throw new IllegalArgumentException("refund ratio must carry both numerator and denominator");
+        }
+        if (refundNumerator != null) {
+            if (refundDenominator <= 0) {
+                throw new IllegalArgumentException("refundDenominator must be positive");
+            }
+            if (refundNumerator < 0 || refundNumerator > refundDenominator) {
+                throw new IllegalArgumentException("refund ratio must satisfy 0 <= numerator <= denominator");
+            }
         }
 
         Set<ChunkCoordinate> coordinates = new HashSet<>();
@@ -133,7 +173,7 @@ public record OperationPayload(
             String landDisplayName) {
         return new OperationPayload(operationId, "CLAIM", actorUuid, worldUuid, targetLandId,
                 chunkSet, priceMinorUnits, economyProviderId, economyTransactionRef,
-                createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName);
+                createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName, null, null);
     }
 
     public String toJson() {
@@ -165,6 +205,8 @@ public record OperationPayload(
         field(json, "createdAt", createdAt.toString());
         field(json, "updatedAt", updatedAt.toString());
         numberField(json, "schemaVersion", schemaVersion);
+        nullableNumberField(json, "refundNumerator", refundNumerator);
+        nullableNumberField(json, "refundDenominator", refundDenominator);
         field(json, "landDisplayName", landDisplayName);
         trimComma(json);
         json.append('}');
@@ -207,8 +249,11 @@ public record OperationPayload(
         int version = exactInt(object.requiredNumber("schemaVersion"), "schemaVersion");
         String displayName = object.optionalString("landDisplayName");
         if (displayName == null) displayName = "Recovered land";
+        Long refundNumerator = object.optionalLong("refundNumerator");
+        Long refundDenominator = object.optionalLong("refundDenominator");
         return new OperationPayload(uuid(operationId, "operationId"), operationType, actor, world,
-                targetLand, chunks, price, provider, ref, created, updated, version, displayName);
+                targetLand, chunks, price, provider, ref, created, updated, version, displayName,
+                refundNumerator, refundDenominator);
     }
 
     private static UUID uuid(String value, String field) {
@@ -256,6 +301,14 @@ public record OperationPayload(
 
     private static void numberField(StringBuilder json, String name, long value) {
         json.append('"').append(name).append("\":").append(value).append(',');
+    }
+
+    private static void nullableNumberField(StringBuilder json, String name, Long value) {
+        if (value == null) {
+            json.append('"').append(name).append("\":null,");
+        } else {
+            numberField(json, name, value.longValue());
+        }
     }
 
     private static void trimComma(StringBuilder json) {
@@ -340,6 +393,19 @@ public record OperationPayload(
                 throw new IllegalArgumentException("payload field must be a number: " + key);
             }
             return number;
+        }
+
+        private Long optionalLong(String key) {
+            if (!values.containsKey(key)) return null;
+            Object value = values.get(key);
+            if (value == null) return null;
+            if (!(value instanceof Number number)) {
+                throw new IllegalArgumentException("payload field must be a number or null: " + key);
+            }
+            if (!(number instanceof Long parsed)) {
+                throw new IllegalArgumentException("payload field must be an integer: " + key);
+            }
+            return parsed;
         }
 
         @SuppressWarnings("unchecked")

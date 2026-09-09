@@ -76,6 +76,28 @@ public final class OperationLedger {
         return compareAndSetState(operationId, expected, next, updatedAt);
     }
 
+    /**
+     * Parks a domain-committed refund for compensation with its Economy
+     * idempotency reference in a single transaction.
+     *
+     * <p>The reference lets startup recovery retry the deposit through the
+     * shared compensation path, which requires a recorded transaction
+     * reference before it will call Economy.
+     */
+    public CompletionStage<Void> parkForRefundCompensation(
+            UUID operationId, String transactionRef, Instant updatedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(transactionRef, "transactionRef");
+        if (transactionRef.isBlank()) throw new IllegalArgumentException("transactionRef must not be blank");
+        Objects.requireNonNull(updatedAt, "updatedAt");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, c -> {
+            SqliteLedgerRepository.compareAndSetState(
+                    c, operationId, LedgerState.DOMAIN_COMMITTED,
+                    LedgerState.COMPENSATION_PENDING, transactionRef, updatedAt);
+            return null;
+        }));
+    }
+
     public CompletionStage<Void> transitionToCharged(UUID operationId, String transactionRef, Instant updatedAt) {
         Objects.requireNonNull(operationId, "operationId");
         Objects.requireNonNull(transactionRef, "transactionRef");
@@ -180,6 +202,31 @@ public final class OperationLedger {
     }
 
     /**
+     * Settles a refund row as compensated from its post-commit state with the
+     * Economy idempotency reference in a single transaction.
+     *
+     * <p>Accepts both {@code DOMAIN_COMMITTED} (first confirmed deposit) and
+     * {@code COMPENSATION_PENDING} (confirmed retry) as the expected state, so
+     * a retry never has to guess which post-commit state the row is in.
+     */
+    public CompletionStage<Void> settleRefundCompensated(
+            UUID operationId, LedgerState expected, String transactionRef, Instant updatedAt) {
+        Objects.requireNonNull(operationId, "operationId");
+        Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(transactionRef, "transactionRef");
+        if (transactionRef.isBlank()) throw new IllegalArgumentException("transactionRef must not be blank");
+        Objects.requireNonNull(updatedAt, "updatedAt");
+        if (expected != LedgerState.DOMAIN_COMMITTED && expected != LedgerState.COMPENSATION_PENDING) {
+            throw new IllegalArgumentException("refund settlement requires a post-commit state, got " + expected);
+        }
+        return store.submitAsync(connection -> SqlTransaction.run(connection, c -> {
+            SqliteLedgerRepository.compareAndSetState(
+                    c, operationId, expected, LedgerState.COMPENSATED, transactionRef, updatedAt);
+            return null;
+        }));
+    }
+
+    /**
      * Writes domain truth, its audit trail, and DOMAIN_COMMITTED in one SQL
      * transaction. No repository callback or external collaborator is called.
      */
@@ -208,6 +255,40 @@ public final class OperationLedger {
     public CompletionStage<Void> commitClaimAtomically(
             UUID operationId, LandSnapshot land, List<OperationPayload.Chunk> chunks, AuditEntry audit) {
         return commitClaimAtomically(new ClaimCommit(operationId, land, chunks, audit));
+    }
+
+    /**
+     * Removes the refunded chunks, writes the refund audit trail, deletes the
+     * land row when no chunk remains, and marks {@code DOMAIN_COMMITTED} in
+     * one SQL transaction. No repository callback or external collaborator is
+     * called; Economy work always happens after this transaction completes.
+     *
+     * <p>Each chunk row is re-read inside the transaction: a missing chunk, a
+     * chunk owned by another land, or a stored cost basis that no longer
+     * matches the validated value aborts the whole transaction, so stale or
+     * already-refunded requests fail closed without moving money.
+     */
+    public CompletionStage<Void> commitRefundAtomically(RefundCommit commit) {
+        Objects.requireNonNull(commit, "commit");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, c -> {
+            LedgerEntry created = findRow(c, commit.operationId());
+            if (!LedgerState.CREATED.name().equals(created.state())) {
+                throw new SQLException("atomic refund commit requires CREATED state, got " + created.state());
+            }
+            validateRefundAgainstPayload(created, commit);
+            verifyRefundChunks(c, commit);
+            deleteRefundChunks(c, commit);
+            failureInjector.accept(AtomicCommitStep.AFTER_CHUNKS);
+            insertAudit(c, commit.audit());
+            failureInjector.accept(AtomicCommitStep.AFTER_AUDIT);
+            deleteLandWhenEmpty(c, commit.landId());
+            failureInjector.accept(AtomicCommitStep.AFTER_LAND);
+            SqliteLedgerRepository.compareAndSetState(
+                    c, commit.operationId(), LedgerState.CREATED, LedgerState.DOMAIN_COMMITTED,
+                    null, commit.audit().timestamp());
+            failureInjector.accept(AtomicCommitStep.AFTER_LEDGER);
+            return null;
+        }));
     }
 
     private static void insertRow(Connection connection, LedgerEntry entry) throws SQLException {
@@ -284,8 +365,7 @@ public final class OperationLedger {
                 rows.getInt(14));
     }
 
-    private static void validateCommitAgainstPayload(LedgerEntry charged, ClaimCommit commit) throws SQLException {
-        final OperationPayload payload;
+    private static void validateCommitAgainstPayload(LedgerEntry charged, ClaimCommit commit) throws SQLException {        final OperationPayload payload;
         try {
             payload = OperationPayload.fromJson(charged.payloadJson());
         } catch (RuntimeException failure) {
@@ -302,6 +382,96 @@ public final class OperationLedger {
         }
         if (!payload.chunkSet().equals(commit.chunks())) {
             throw new SQLException("committed chunks must use the saved operation payload");
+        }
+    }
+
+    private static void validateRefundAgainstPayload(LedgerEntry created, RefundCommit commit) throws SQLException {
+        final OperationPayload payload;
+        try {
+            payload = OperationPayload.fromJson(created.payloadJson());
+        } catch (RuntimeException failure) {
+            throw new SQLException("refund operation has an invalid payload", failure);
+        }
+        if (!"REFUND".equals(payload.operationType())) {
+            throw new SQLException("atomic refund commit requires a REFUND payload, got " + payload.operationType());
+        }
+        if (!payload.operationId().equals(commit.operationId())) {
+            throw new SQLException("payload operationId does not match ledger row");
+        }
+        if (payload.targetLandId() != null && !payload.targetLandId().equals(commit.landId())) {
+            throw new SQLException("refunded land does not match payload targetLandId");
+        }
+        if (!payload.worldUuid().equals(commit.worldId())) {
+            throw new SQLException("refunded land does not match payload worldUuid");
+        }
+        if (!payload.chunkSet().equals(commit.chunks())) {
+            throw new SQLException("refunded chunks must use the saved operation payload");
+        }
+        if (payload.priceMinorUnits() != commit.refundAmountMinorUnits()) {
+            throw new SQLException("refund amount does not match payload priceMinorUnits");
+        }
+    }
+
+    private static void verifyRefundChunks(Connection connection, RefundCommit commit) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT land_id, cost_basis_minor_units FROM land_chunks "
+                        + "WHERE world_uuid = ? AND chunk_x = ? AND chunk_z = ?")) {
+            for (OperationPayload.Chunk chunk : commit.chunks()) {
+                statement.setBytes(1, UuidBlob.encode(chunk.chunk().worldId()));
+                statement.setInt(2, chunk.chunk().chunkX());
+                statement.setInt(3, chunk.chunk().chunkZ());
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (!rows.next()) {
+                        throw new SQLException("refund chunk is already released or unknown: "
+                                + chunk.chunk().chunkX() + "," + chunk.chunk().chunkZ());
+                    }
+                    byte[] landBytes = rows.getBytes(1);
+                    if (landBytes == null || !commit.landId().value().equals(UuidBlob.decode(landBytes))) {
+                        throw new SQLException("refund chunk does not belong to the refunded land");
+                    }
+                    Object basisValue = rows.getObject(2);
+                    if (basisValue == null) {
+                        throw new SQLException("refund chunk has no durable cost basis");
+                    }
+                    long storedBasis = rows.getLong(2);
+                    if (storedBasis < 0) {
+                        throw new SQLException("refund chunk has a negative durable cost basis");
+                    }
+                    if (storedBasis != chunk.costBasisMinorUnits()) {
+                        throw new SQLException("refund chunk cost basis changed since validation");
+                    }
+                }
+            }
+        }
+    }
+
+    private static void deleteRefundChunks(Connection connection, RefundCommit commit) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM land_chunks WHERE world_uuid = ? AND chunk_x = ? AND chunk_z = ?")) {
+            for (OperationPayload.Chunk chunk : commit.chunks()) {
+                statement.setBytes(1, UuidBlob.encode(chunk.chunk().worldId()));
+                statement.setInt(2, chunk.chunk().chunkX());
+                statement.setInt(3, chunk.chunk().chunkZ());
+                if (statement.executeUpdate() != 1) {
+                    throw new SQLException("refund chunk disappeared during commit");
+                }
+            }
+        }
+    }
+
+    private static void deleteLandWhenEmpty(Connection connection, LandId landId) throws SQLException {
+        try (PreparedStatement remaining = connection.prepareStatement(
+                "SELECT 1 FROM land_chunks WHERE land_id = ? LIMIT 1")) {
+            remaining.setBytes(1, UuidBlob.encode(landId.value()));
+            try (ResultSet rows = remaining.executeQuery()) {
+                if (rows.next()) {
+                    return;
+                }
+            }
+        }
+        try (PreparedStatement delete = connection.prepareStatement("DELETE FROM lands WHERE id = ?")) {
+            delete.setBytes(1, UuidBlob.encode(landId.value()));
+            delete.executeUpdate();
         }
     }
 

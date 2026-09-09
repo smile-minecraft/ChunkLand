@@ -137,6 +137,39 @@ public final class SqliteChunkRepository implements ChunkRepository {
     }
 
     @Override
+    public CompletionStage<Map<ChunkKey, ChunkFact>> factsByLand(LandId landId) {
+        Objects.requireNonNull(landId, "landId");
+        return store.submitAsync(conn -> {
+            String sql = "SELECT world_uuid, chunk_x, chunk_z, cost_basis_minor_units, "
+                    + "stored_min_protected_y, claim_lot_id "
+                    + "FROM land_chunks WHERE land_id = ? ORDER BY chunk_x, chunk_z";
+            Map<ChunkKey, ChunkFact> out = new HashMap<>();
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setBytes(1, UuidBlob.encode(landId.value()));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        byte[] w = rs.getBytes(1);
+                        if (w == null) continue;
+                        UUID wid = UuidBlob.decode(w);
+                        int x = rs.getInt(2);
+                        if (rs.wasNull()) continue;
+                        int z = rs.getInt(3);
+                        if (rs.wasNull()) continue;
+                        Object basisValue = rs.getObject(4);
+                        Long basis = basisValue == null ? null : rs.getLong(4);
+                        int storedMin = rs.getInt(5);
+                        Integer stored = rs.wasNull() ? null : storedMin;
+                        byte[] lotBytes = rs.getBytes(6);
+                        UUID lot = lotBytes == null ? null : UuidBlob.decode(lotBytes);
+                        out.put(new ChunkKey(wid, x, z), new ChunkFact(basis, stored, lot));
+                    }
+                }
+            }
+            return Map.copyOf(out);
+        });
+    }
+
+    @Override
     public CompletionStage<Void> removeChunk(ChunkKey chunk) {
         Objects.requireNonNull(chunk, "chunk");
         return store.submitAsync(conn -> {
