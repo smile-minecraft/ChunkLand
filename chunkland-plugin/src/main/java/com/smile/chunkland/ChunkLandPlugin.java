@@ -1,5 +1,10 @@
 package com.smile.chunkland;
 
+import com.smile.acelib.AceLibApi;
+import com.smile.acelib.platform.Platform;
+import com.smile.acelib.platform.PlatformCapability;
+import com.smile.acelib.scheduler.AceLibScheduler;
+import com.smile.acelib.scheduler.SafeScheduler;
 import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
 import com.smile.chunkland.api.money.Currency;
@@ -17,6 +22,7 @@ import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.PluginManagementGateResolver;
+import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.economy.UnavailableVaultBridge;
@@ -38,10 +44,13 @@ import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
 import com.smile.chunkland.runtime.rule.LandRuleService;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
+import com.smile.chunkland.selection.FoliaSelectionParticleSink;
+import com.smile.chunkland.selection.FoliaVisualizationTickScheduler;
 import com.smile.chunkland.selection.SelectionLifecycleListener;
 import com.smile.chunkland.selection.SelectionNotifier;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
+import com.smile.chunkland.selection.SelectionVisualizationRenderer;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandSafetyListener;
@@ -121,6 +130,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private WandSafetyListener wandSafetyListener;
     private SelectionSessionManager selectionSessionManager;
     private SelectionLifecycleListener selectionLifecycleListener;
+    private SelectionVisualizationTaskController visualizationController;
+    private Optional<SafeScheduler> visualizationScheduler = Optional.empty();
     private SelectionStructureRevisionLookup selectionStructureRevisions;
     private LandRegistryStore protectionStore;
     private ProtectionEngine protectionEngine;
@@ -185,9 +196,24 @@ public final class ChunkLandPlugin extends JavaPlugin {
         SelectionStructureRevisionLookup structureRevisions =
                 SelectionStructureRevisionLookup.unavailable();
         this.selectionStructureRevisions = structureRevisions;
+        // Selection boundary particles: a dedicated SafeScheduler built through the public
+        // AceLib factory (player-scoped ticks only, never global). Empty when AceLib is not
+        // ready — rendering then stays dormant while selection data keeps working.
+        this.visualizationScheduler = tryBuildVisualizationScheduler(this, bridge.getApi());
+        SelectionVisualizationTaskController visualization = visualizationScheduler
+                .map(scheduler -> (SelectionVisualizationTaskController) new SelectionVisualizationRenderer(
+                        new FoliaVisualizationTickScheduler(
+                                uuid -> getServer().getPlayer(uuid), () -> visualizationScheduler),
+                        new FoliaSelectionParticleSink(uuid -> getServer().getPlayer(uuid)),
+                        () -> activeConfig.current().selection().visualizationBudget()))
+                .orElseGet(SelectionVisualizationTaskController::noop);
+        this.visualizationController = visualization;
+        getLogger().info("ChunkLand selection visualization: "
+                + (visualizationScheduler.isPresent() ? "scheduler ready" : "dormant (AceLib scheduler unavailable)")
+                + ", budget=" + activeConfig.current().selection().visualizationBudget());
         this.selectionSessionManager = new SelectionSessionManager(
                 new FoliaSelectionTimeoutScheduler(this, uuid -> getServer().getPlayer(uuid)),
-                SelectionVisualizationTaskController.noop(),
+                visualization,
                 SelectionNotifier.noop(),
                 Clock.systemUTC()::instant,
                 () -> activeConfig.current().selection().sessionTimeout(),
@@ -542,6 +568,48 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Build the visualization scheduler through the public AceLib factory.
+     *
+     * <p>Narrow readiness on purpose: rendering only needs a ready API with a
+     * platform and capability, independent of the GUI/Bedrock services the M0
+     * capability probe requires. Only the supported public contract is used —
+     * {@code isReady()}, {@code getPlatform()}, {@code getPlatformCapability()},
+     * then {@code AceLibScheduler.create(...)}. Empty (never throws) when the
+     * API is missing, not ready, or the factory fails; rendering then stays
+     * dormant while selection data keeps working.
+     */
+    static Optional<SafeScheduler> tryBuildVisualizationScheduler(JavaPlugin plugin, AceLibApi api) {
+        if (plugin == null || api == null) {
+            return Optional.empty();
+        }
+        boolean ready;
+        try {
+            ready = api.isReady();
+        } catch (RuntimeException readinessFailure) {
+            return Optional.empty();
+        }
+        if (!ready) {
+            return Optional.empty();
+        }
+        Platform platform;
+        PlatformCapability capability;
+        try {
+            platform = api.getPlatform();
+            capability = api.getPlatformCapability();
+        } catch (RuntimeException serviceFailure) {
+            return Optional.empty();
+        }
+        if (platform == null || capability == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(AceLibScheduler.create(plugin, platform, capability));
+        } catch (RuntimeException factoryFailure) {
+            return Optional.empty();
+        }
+    }
+
+    /**
      * Builds the protection engine for startup wiring. Construction validates
      * that every action has a decision source, so an incomplete registry
      * throws here and the caller must refuse to start. Ownership comes from
@@ -602,6 +670,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
         selectionSessionManager = null;
         selectionStructureRevisions = null;
+        visualizationController = null;
+        if (visualizationScheduler != null && visualizationScheduler.isPresent()) {
+            try {
+                visualizationScheduler.get().cancelAll();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        visualizationScheduler = Optional.empty();
         if (wandSafetyListener != null) {
             try {
                 HandlerList.unregisterAll(wandSafetyListener);
@@ -658,6 +734,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (command.getName().equalsIgnoreCase("chunkland")) {
+            if (args != null && args.length >= 1 && args[0].equalsIgnoreCase("viz")) {
+                return VisualizationDebugCommand.handle(
+                        sender, args, this.selectionSessionManager,
+                        () -> this.visualizationScheduler, this.visualizationController);
+            }
             return dispatch(sender, args, () -> this.messagePipeline, () -> this.capabilityProbe);
         }
         if (command.getName().equalsIgnoreCase("land")) {

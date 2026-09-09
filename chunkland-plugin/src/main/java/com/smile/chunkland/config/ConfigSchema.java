@@ -1,5 +1,6 @@
 package com.smile.chunkland.config;
 
+import com.smile.chunkland.selection.SelectionVisualizationBudget;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.HashMap;
@@ -251,7 +252,11 @@ public final class ConfigSchema {
         }
         Map<String, Object> map = castStringKeyMap(rawMap, path);
         for (String key : map.keySet()) {
-            if (!"session-timeout-seconds".equals(key)) {
+            if (!"session-timeout-seconds".equals(key)
+                    && !"visualization-max-segments".equals(key)
+                    && !"visualization-max-particles-per-tick".equals(key)
+                    && !"visualization-render-distance-blocks".equals(key)
+                    && !"visualization-refresh-interval-ticks".equals(key)) {
                 throw new ConfigValidationException(path + " has unknown key '" + key + "'");
             }
         }
@@ -269,11 +274,42 @@ public final class ConfigSchema {
                         path + ".session-timeout-seconds must be > 0, got " + timeout);
             }
         }
+        SelectionSettings defaults = SelectionSettings.defaults();
+        int maxSegments = parseVisualizationField(
+                map, "visualization-max-segments", path, defaults.visualizationMaxSegments(), 1,
+                SelectionVisualizationBudget.MAX_SEGMENTS_LIMIT);
+        int maxParticles = parseVisualizationField(
+                map, "visualization-max-particles-per-tick", path, defaults.visualizationMaxParticlesPerTick(), 1,
+                SelectionVisualizationBudget.MAX_PARTICLES_PER_TICK_LIMIT);
+        int renderDistance = parseVisualizationField(
+                map, "visualization-render-distance-blocks", path, defaults.visualizationRenderDistanceBlocks(),
+                SelectionVisualizationBudget.MIN_RENDER_DISTANCE_BLOCKS,
+                SelectionVisualizationBudget.RENDER_DISTANCE_BLOCKS_LIMIT);
+        int refreshInterval = parseVisualizationField(
+                map, "visualization-refresh-interval-ticks", path, defaults.visualizationRefreshIntervalTicks(), 1,
+                SelectionVisualizationBudget.REFRESH_INTERVAL_TICKS_LIMIT);
         try {
-            return new SelectionSettings(timeout);
+            return new SelectionSettings(timeout, maxSegments, maxParticles, renderDistance, refreshInterval);
         } catch (IllegalArgumentException ex) {
-            throw new ConfigValidationException(path + ".session-timeout-seconds must be positive");
+            throw new ConfigValidationException(path + " has an out-of-range visualization budget: " + ex.getMessage());
         }
+    }
+
+    private static int parseVisualizationField(
+            Map<String, Object> map, String key, String path, int defaultValue, int min, int max) {
+        if (!map.containsKey(key)) {
+            return defaultValue;
+        }
+        Object raw = map.get(key);
+        if (raw == null) {
+            throw new ConfigValidationException(path + "." + key + " must not be null");
+        }
+        int value = parseIntLimit(raw, path + "." + key);
+        if (value < min || value > max) {
+            throw new ConfigValidationException(
+                    path + "." + key + " must be in [" + min + ", " + max + "], got " + value);
+        }
+        return value;
     }
 
     private static int parseIntLimit(Object raw, String path) {

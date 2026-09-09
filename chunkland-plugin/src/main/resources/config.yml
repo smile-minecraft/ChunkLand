@@ -32,6 +32,15 @@ limits:
 
 selection:
   session-timeout-seconds: 600
+  # Selection boundary particle visualization (player-scoped, no terrain queries).
+  # max-segments: boundary edges kept per frame (1-4096, sorted, prefix kept).
+  # max-particles-per-tick: particles sent per render tick (1-1024, window rotates).
+  # render-distance-blocks: segments culled beyond this viewer distance (8-128).
+  # refresh-interval-ticks: ticks between renders (1-200).
+  visualization-max-segments: 256
+  visualization-max-particles-per-tick: 128
+  visualization-render-distance-blocks: 48
+  visualization-refresh-interval-ticks: 10
 
 worlds:
   # Worlds not listed here follow the `claim-enabled: true` default.

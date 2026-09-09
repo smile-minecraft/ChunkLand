@@ -142,6 +142,7 @@ public final class SelectionSessionManager implements ConfigReloadListener {
             }
             throw ex;
         }
+        notifyVisualizationStart(stamped);
         return stamped;
     }
 
@@ -264,6 +265,7 @@ public final class SelectionSessionManager implements ConfigReloadListener {
             rotation = beginTimeoutRotation(entry);
         }
         performTimeoutRotation(rotation);
+        notifyVisualizationRefresh(updated);
         return Optional.of(updated);
     }
 
@@ -491,9 +493,37 @@ public final class SelectionSessionManager implements ConfigReloadListener {
                         reason == SelectionEndReason.LAND_STRUCTURE_CHANGED) : null);
     }
 
-    /** Execute callbacks without holding the manager monitor, in the established order. */
-    private void performCleanup(CleanupPlan cleanup) {
+    /**
+     * Best-effort render notifications. Display must never break selection
+     * data: a failing render is stopped defensively and the session operation
+     * still succeeds. Every cleanup path already stops rendering through
+     * {@link #performCleanup}, so these only cover the start/refresh side.
+     */
+    private void notifyVisualizationStart(SelectionSession session) {
         try {
+            visualizationTasks.start(session);
+        } catch (RuntimeException startFailure) {
+            stopVisualization(session.playerId());
+        }
+    }
+
+    private void notifyVisualizationRefresh(SelectionSession session) {
+        try {
+            visualizationTasks.refresh(session);
+        } catch (RuntimeException refreshFailure) {
+            stopVisualization(session.playerId());
+        }
+    }
+
+    private void stopVisualization(UUID playerId) {
+        try {
+            visualizationTasks.stop(playerId);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    /** Execute callbacks without holding the manager monitor, in the established order. */
+    private void performCleanup(CleanupPlan cleanup) {        try {
             cleanup.timeoutHandle().cancel();
         } catch (RuntimeException ignored) {
         }

@@ -205,7 +205,6 @@ public final class ConfigService {
                 next.globalPolicyEpoch(),
                 !previous.limits().equals(next.limits())
                         || !previous.messages().equals(next.messages())
-                        || previous.selection().sessionTimeoutSeconds()
-                                != next.selection().sessionTimeoutSeconds());
+                        || !previous.selection().equals(next.selection()));
     }
 }
