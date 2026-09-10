@@ -61,6 +61,7 @@ import com.smile.chunkland.config.WorldSettings;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.economy.UnavailableVaultBridge;
 import com.smile.chunkland.economy.VaultBridge;
+import com.smile.chunkland.gui.GuiNavigator;
 import com.smile.chunkland.limit.LimitResolver;
 import com.smile.chunkland.limit.OwnerQuotaHydrator;
 import com.smile.chunkland.limit.OwnerQuotaService;
@@ -200,6 +201,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<M0MessageProbe> messagePipeline = Optional.empty();
     private Optional<M0CapabilityProbe> capabilityProbe = Optional.empty();
     private Optional<Capabilities> capabilities = Optional.empty();
+    private GuiNavigator guiNavigator;
     private Optional<ConfigService> configService = Optional.empty();
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
     private LandCommand landCommand;
@@ -268,6 +270,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
      */
     public Optional<ConfigService> getConfigService() {
         return configService;
+    }
+
+    /**
+     * @return the GUI navigator built from the live {@code GuiService}, or
+     *     empty when capabilities are unavailable. The navigator tracks only
+     *     sessions opened through it; disable closes exactly those sessions.
+     */
+    public Optional<GuiNavigator> guiNavigator() {
+        return Optional.ofNullable(guiNavigator);
     }
 
     @Override
@@ -453,6 +464,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // Capturing here (still ahead of the listener registration below)
         // keeps the no-leak guarantee on registration failure.
         this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
+        // Java GUI framework: navigate per-player pages over the shared
+        // GuiService. The navigator is empty when capabilities (or the GUI
+        // service itself) are unavailable, so all GUI entry points fail
+        // closed without touching the provider.
+        this.guiNavigator = capabilities
+                .map(Capabilities::guiService)
+                .map(service -> service == null ? null : new GuiNavigator(service))
+                .orElse(null);
         DirectTrustCommandHandler.LandResolver trustLands =
                 currentLocationLandResolver(this.protectionStore);
         Function<String, Optional<UUID>> trustPlayers =
@@ -2282,6 +2301,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.capabilityProbe = Optional.empty();
         this.landMessagePipeline = Optional.empty();
         this.landCommand = null;
+        // GUI sessions opened through the navigator are closed one by one
+        // with their exact tracked player-plus-generation identity. The
+        // shared provider is never shut down here; other plugins' sessions
+        // are untouched. Clearing the reference first keeps a repeated
+        // disable idempotent.
+        GuiNavigator navigator = this.guiNavigator;
+        this.guiNavigator = null;
+        if (navigator != null) {
+            try {
+                navigator.closeAll();
+            } catch (RuntimeException ignored) {
+            }
+        }
         if (capabilities.isPresent()) {
             try {
                 capabilities.get().release();
