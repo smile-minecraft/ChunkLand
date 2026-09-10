@@ -19,7 +19,10 @@ import com.smile.chunkland.capability.M0CapabilityProbe;
 import com.smile.chunkland.claim.ClaimEconomy;
 import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.ClaimValidator;
+import com.smile.chunkland.claim.ExpandSaga;
+import com.smile.chunkland.claim.ExpandValidator;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
+import com.smile.chunkland.claim.SnapshotExpandValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.command.BedrockClaimFormHandler;
@@ -28,6 +31,7 @@ import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.DirectTrustCommandHandler;
 import com.smile.chunkland.command.EntryBanCommandHandler;
+import com.smile.chunkland.command.ExpandCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
@@ -184,6 +188,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ProtectionListener protectionListener;
     private ClaimStartupBootstrap claimStartup;
     private ClaimSaga claimSaga;
+    private ExpandSaga expandSaga;
     private OwnerQuotaService claimQuotas;
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
@@ -434,7 +439,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
-                        trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler),
+                        trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler,
+                        expandRunner(), expandCurrentLand(this.protectionStore)),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -485,6 +491,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
     static Map<String, LandCommand.Handler> buildLandHandlers() {
         Map<String, LandCommand.Handler> base = new HashMap<>(LandCommand.defaultStubHandlers());
         base.put("wand", new WandGiveHandler());
+        // Expand left the legacy not-yet pool: without a runner the slot stays
+        // fail-closed with expand.unavailable, so half-wired maps never pretend
+        // the flow is coming soon. The expand-aware overload overwrites this
+        // entry with the real handler when a runner exists.
+        base.put("expand", (sender, args, sink) ->
+                sink.reply("command.land.expand.failed", Map.of("reason", "expand.unavailable")));
         return Map.copyOf(base);
     }
 
@@ -610,6 +622,30 @@ public final class ChunkLandPlugin extends JavaPlugin {
             DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
             LandDefaultCommandHandler defaults,
             EntryBanCommandHandler ban, EntryBanCommandHandler unban) {
+        return buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, null, null);
+    }
+
+    /**
+     * Production {@code /land} handlers with the land expansion flow wired.
+     *
+     * <p>A null expand runner keeps the slot fail-closed: it replies
+     * {@code command.land.expand.failed} with {@code expand.unavailable}
+     * instead of the not-yet stub, so an unwired server never pretends the
+     * flow is coming soon and never runs a half-wired mutation. The current
+     * land view resolves the land under the sender; a null view skips the
+     * position check (tests that drive the saga tokens directly).
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand) {
         Map<String, LandCommand.Handler> base = new HashMap<>(
                 buildLandHandlers(selections, runner, recoveryScan, structures, subland, capabilities));
         base.put("trust", trust == null
@@ -627,6 +663,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
         base.put("unban", unban == null
                 ? (sender, args, sink) -> sink.reply("command.land.unban.failed", Map.of("reason", "unban.unavailable"))
                 : unban);
+        base.put("expand", expand == null || selections == null
+                ? (sender, args, sink) -> sink.reply("command.land.expand.failed", Map.of("reason", "expand.unavailable"))
+                : new ExpandCommandHandler(selections, expand, recoveryScan, currentLand));
         return Map.copyOf(base);
     }
 
@@ -961,6 +1000,113 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Assembles the formal expansion saga from its production parts. Package
+     * visible so integration tests drive the same assembly the server uses.
+     */
+    static ExpandSaga buildExpandSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor) {
+        return buildExpandSaga(registryStore, selections, quotas, pricing, reservations,
+                ledger, economy, rebuilder, asyncExecutor,
+                SelectionStructureRevisionLookup.unavailable());
+    }
+
+    static ExpandSaga buildExpandSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures) {
+        return buildExpandSaga(registryStore, selections, quotas, pricing, reservations,
+                ledger, economy, rebuilder, asyncExecutor, structures,
+                WorldClaimPolicy.allowAll());
+    }
+
+    /**
+     * Production expansion saga with the per-world {@code claim-enabled} gate.
+     *
+     * <p>The policy runs inside the step-one validator, ahead of every quota,
+     * reservation, ledger and economy side effect. A {@code null} policy
+     * fails closed to deny-all so a half-wired assembly can never treat an
+     * unknown world as enabled.
+     */
+    static ExpandSaga buildExpandSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            WorldClaimPolicy worldPolicy) {
+        OwnerQuotaService activeQuotas = Objects.requireNonNull(quotas, "quotas");
+        SelectionStructureRevisionLookup activeStructures = structures == null
+                ? SelectionStructureRevisionLookup.unavailable()
+                : structures;
+        WorldClaimPolicy activePolicy = worldPolicy == null
+                ? WorldClaimPolicy.denyAll("world.unknown")
+                : worldPolicy;
+        ExpandValidator validator = new SnapshotExpandValidator(
+                Objects.requireNonNull(registryStore, "registryStore"),
+                actorUuid -> selections.sessionFor(actorUuid)
+                        .map(session -> OptionalLong.of(session.selectionRevision()))
+                        .orElseGet(OptionalLong::empty),
+                actorUuid -> selections.sessionFor(actorUuid)
+                        .map(session -> OptionalLong.of(session.sessionGeneration()))
+                        .orElseGet(OptionalLong::empty),
+                chunk -> CLAIM_DEPTH_FALLBACK,
+                activeQuotas::chunkCommitted,
+                targetLandId -> activeStructures.currentRevision(targetLandId),
+                activePolicy);
+        return new ExpandSaga(validator, activeQuotas,
+                Objects.requireNonNull(pricing, "pricing"),
+                Objects.requireNonNull(reservations, "reservations"),
+                Objects.requireNonNull(ledger, "ledger"),
+                Objects.requireNonNull(economy, "economy"),
+                Objects.requireNonNull(rebuilder, "rebuilder"),
+                Clock.systemUTC(),
+                Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
+                CLAIM_COMPENSATION_RETRIES);
+    }
+
+    /**
+     * Current-land view for {@code /land expand}: the land under the sender's
+     * position against the immutable snapshot. Wilderness, non-player senders
+     * and unresolvable positions stay empty so the handler fails closed. A
+     * null store yields a view that always stays empty.
+     */
+    static java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> expandCurrentLand(
+            LandRegistryStore store) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        PluginManagementGateResolver.TargetLandResolver targets =
+                PluginManagementGateResolver.TargetLandResolver.currentLocation();
+        return sender -> {
+            try {
+                return targets.resolveTarget(sender,
+                        com.smile.chunkland.api.permission.ProtectionActionType.EXPAND_LAND,
+                        new String[0], active.snapshot());
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        };
+    }
+
+    /**
      * Production per-world claim gate over the live config snapshot.
      *
      * <p>A {@code null} config service or resolver fails closed to deny-all
@@ -1197,6 +1343,46 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 }
                 this.claimExecutor = null;
             }
+            return null;
+        }
+    }
+
+    /**
+     * Live expansion runner sharing the claim flow's quotas, reservations,
+     * executor, ledger, Economy and rebuilder, so live expansions and claims
+     * converge on one durable row and one refund cache. Null when the claim
+     * flow never assembled (quotas, reservations or executor missing) or the
+     * recovery bootstrap is absent: the handler then replies
+     * {@code expand.unavailable} instead of running half-wired.
+     *
+     * <p>Must run after {@link #claimRunner()}: the shared quota, reservation
+     * and executor instances are created there.
+     */
+    private ExpandCommandHandler.ExpandRunner expandRunner() {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        SelectionSessionManager selections = this.selectionSessionManager;
+        OwnerQuotaService quotas = this.claimQuotas;
+        LogicalReservationRegistry reservations = this.claimReservations;
+        Executor async = this.claimExecutor;
+        if (bootstrap == null || selections == null || quotas == null
+                || reservations == null || async == null) {
+            return null;
+        }
+        try {
+            ConfigService config = this.configService.orElseThrow(
+                    () -> new IllegalStateException("ChunkLand config service is unavailable"));
+            this.expandSaga = buildExpandSaga(this.protectionStore, selections,
+                    quotas, claimPricing(), reservations,
+                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
+                    this.selectionStructureRevisions,
+                    buildWorldClaimPolicy(config,
+                            uuid -> Optional.ofNullable(getServer().getWorld(uuid))
+                                    .map(org.bukkit.World::getName)));
+            return this.expandSaga::expand;
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand expand flow assembly failed; "
+                    + "/land expand stays unavailable: " + failure.getMessage());
+            this.expandSaga = null;
             return null;
         }
     }

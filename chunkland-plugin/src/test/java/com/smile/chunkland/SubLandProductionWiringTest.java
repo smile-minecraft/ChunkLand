@@ -247,11 +247,12 @@ class SubLandProductionWiringTest {
             assertEquals("command.land.subland.created", sink.keys.get(0));
             assertEquals(1, env.subs.findByLand(env.parentId)
                     .toCompletableFuture().join().size());
-            // Regression guard: an unrelated stub slot stays a stub.
+            // Regression guard: the expand slot stays fail-closed without a
+            // runner, never falling back to the legacy not-yet stub.
             CapturingSink expandSink = new CapturingSink(1);
             handlers.get("expand").handle(player(env.actor), new String[]{"expand"}, expandSink);
             expandSink.await();
-            assertEquals("command.land.not_yet", expandSink.keys.get(0));
+            assertEquals("command.land.expand.failed", expandSink.keys.get(0));
         }
     }
 

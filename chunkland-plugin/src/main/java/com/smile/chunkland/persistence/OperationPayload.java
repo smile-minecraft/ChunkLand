@@ -176,6 +176,26 @@ public record OperationPayload(
                 createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName, null, null);
     }
 
+    /**
+     * Expansion payload: the chunk set is the delta appended to an existing
+     * land, and {@code targetLandId} is always the expanded land.
+     */
+    public static OperationPayload expand(
+            UUID operationId,
+            UUID actorUuid,
+            UUID worldUuid,
+            LandId targetLandId,
+            List<Chunk> chunkSet,
+            long priceMinorUnits,
+            String economyProviderId,
+            Instant createdAt,
+            String landDisplayName) {
+        Objects.requireNonNull(targetLandId, "targetLandId");
+        return new OperationPayload(operationId, "EXPAND", actorUuid, worldUuid, targetLandId,
+                chunkSet, priceMinorUnits, economyProviderId, null,
+                createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName, null, null);
+    }
+
     public String toJson() {
         StringBuilder json = new StringBuilder(512);
         json.append('{');

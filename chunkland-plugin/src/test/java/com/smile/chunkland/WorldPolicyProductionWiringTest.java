@@ -464,11 +464,11 @@ class WorldPolicyProductionWiringTest {
     }
 
     // ------------------------------------------------------------------
-    // Scope guard: Expand/Shrink/Delete stay out of this task
+    // Scope guard: Delete stays out of this task; Expand is wired by CL-M2-21
     // ------------------------------------------------------------------
 
     @Test
-    void expandAndDeleteStayUnimplementedStubs() {
+    void deleteStaysAnUnimplementedStubWhileExpandIsWired() {
         SelectionSessionManager selections = new SelectionSessionManager(
                 (playerId, delay, task) -> SelectionTimeoutScheduler.Cancellable.noop(),
                 SelectionVisualizationTaskController.noop(),
@@ -482,24 +482,31 @@ class WorldPolicyProductionWiringTest {
         Map<String, LandCommand.Handler> handlers = ChunkLandPlugin.buildLandHandlers(
                 selections, runner, null, SelectionStructureRevisionLookup.unavailable(), null);
 
-        for (String subcommand : List.of("expand", "delete")) {
-            List<String> keys = new ArrayList<>();
-            ReplySink sink = new ReplySink() {
-                @Override
-                public void reply(String messageKey, Map<String, Object> vars) {
-                    keys.add(messageKey);
-                }
+        List<String> keys = new ArrayList<>();
+        Map<String, Map<String, Object>> varsByKey = new HashMap<>();
+        ReplySink sink = new ReplySink() {
+            @Override
+            public void reply(String messageKey, Map<String, Object> vars) {
+                keys.add(messageKey);
+                varsByKey.put(messageKey, vars);
+            }
 
-                @Override
-                public void reply(String messageKey, Map<String, Object> vars, Locale localeOverride) {
-                    keys.add(messageKey);
-                }
-            };
-            assertNotNull(handlers.get(subcommand), subcommand + " must stay registered");
-            handlers.get(subcommand).handle(null, new String[]{subcommand}, sink);
-            assertEquals(List.of("command.land.not_yet"), keys,
-                    subcommand + " must stay a not-yet stub in this task");
-        }
+            @Override
+            public void reply(String messageKey, Map<String, Object> vars, Locale localeOverride) {
+                keys.add(messageKey);
+                varsByKey.put(messageKey, vars);
+            }
+        };
+        assertNotNull(handlers.get("delete"), "delete must stay registered");
+        handlers.get("delete").handle(null, new String[]{"delete"}, sink);
+        assertEquals(List.of("command.land.not_yet"), keys,
+                "delete must stay a not-yet stub in this task");
+        // Expand left the stub pool: without a runner it fails closed as
+        // unavailable instead of pretending it is coming soon.
+        assertNotNull(handlers.get("expand"), "expand must stay registered");
+        handlers.get("expand").handle(null, new String[]{"expand"}, sink);
+        assertEquals("command.land.expand.failed", keys.get(1));
+        assertEquals("expand.unavailable", varsByKey.get("command.land.expand.failed").get("reason"));
         assertFalse(handlers.containsKey("shrink"),
                 "no shrink handler may appear as a side effect of this task");
     }

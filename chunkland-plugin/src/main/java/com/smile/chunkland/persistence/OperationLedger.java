@@ -258,6 +258,154 @@ public final class OperationLedger {
     }
 
     /**
+     * Writes an expansion's durable truth in one SQL transaction: the delta
+     * chunk rows, the land {@code structure_revision} compare-and-set bump
+     * (exactly one past the validated revision), the {@code CHUNK_ADD} audit
+     * row and {@code DOMAIN_COMMITTED}. No repository callback or external
+     * collaborator is called.
+     *
+     * <p>Two expansions racing on the same revision serialize to exactly one
+     * winner: the loser sees a stale revision and fails instead of a lost
+     * update. A delta chunk that is already occupied — by any land — aborts
+     * the whole transaction, so the database stays the final authority behind
+     * the validator's snapshot check.
+     */
+    public CompletionStage<Void> commitExpandAtomically(ExpandCommit commit) {
+        Objects.requireNonNull(commit, "commit");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, c -> {
+            LedgerEntry charged = findRow(c, commit.operationId());
+            if (!LedgerState.CHARGED.name().equals(charged.state())) {
+                throw new SQLException("atomic expand commit requires CHARGED state, got " + charged.state());
+            }
+            validateExpandAgainstPayload(charged, commit);
+            String storedOwnerKey = readLandOwnerKey(c, commit.landId(), commit.worldId());
+            if (!storedOwnerKey.equals(commit.owner().key())) {
+                throw new SQLException("expand owner changed since validation");
+            }
+            verifyExpandChunksAbsent(c, commit);
+            failureInjector.accept(AtomicCommitStep.AFTER_LAND);
+            insertExpandChunks(c, commit);
+            failureInjector.accept(AtomicCommitStep.AFTER_CHUNKS);
+            casStructureRevision(c, commit);
+            insertAudit(c, commit.audit());
+            failureInjector.accept(AtomicCommitStep.AFTER_AUDIT);
+            SqliteLedgerRepository.compareAndSetState(
+                    c, commit.operationId(), LedgerState.CHARGED, LedgerState.DOMAIN_COMMITTED,
+                    null, commit.audit().timestamp());
+            failureInjector.accept(AtomicCommitStep.AFTER_LEDGER);
+            return null;
+        }));
+    }
+
+    private static void validateExpandAgainstPayload(LedgerEntry charged, ExpandCommit commit) throws SQLException {
+        final OperationPayload payload;
+        try {
+            payload = OperationPayload.fromJson(charged.payloadJson());
+        } catch (RuntimeException failure) {
+            throw new SQLException("charged operation has an invalid payload", failure);
+        }
+        if (!"EXPAND".equals(payload.operationType())) {
+            throw new SQLException("atomic expand commit requires an EXPAND payload, got "
+                    + payload.operationType());
+        }
+        if (!payload.operationId().equals(commit.operationId())) {
+            throw new SQLException("payload operationId does not match ledger row");
+        }
+        if (payload.targetLandId() == null || !payload.targetLandId().equals(commit.landId())) {
+            throw new SQLException("expanded land does not match payload targetLandId");
+        }
+        if (!payload.worldUuid().equals(commit.worldId())) {
+            throw new SQLException("expanded land does not match payload worldUuid");
+        }
+        if (!payload.chunkSet().equals(commit.chunks())) {
+            throw new SQLException("expanded chunks must use the saved operation payload");
+        }
+    }
+
+    private static String readLandOwnerKey(java.sql.Connection connection, LandId landId, UUID worldId)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT owner_key, world_uuid, structure_revision FROM lands WHERE id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new SQLException("unknown expanded land " + landId);
+                }
+                String ownerKey = rows.getString(1);
+                byte[] worldBytes = rows.getBytes(2);
+                if (worldBytes == null || !worldId.equals(UuidBlob.decode(worldBytes))) {
+                    throw new SQLException("expanded land world changed since validation");
+                }
+                return ownerKey;
+            }
+        }
+    }
+
+    private static void verifyExpandChunksAbsent(java.sql.Connection connection, ExpandCommit commit)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT land_id FROM land_chunks WHERE world_uuid = ? AND chunk_x = ? AND chunk_z = ?")) {
+            for (OperationPayload.Chunk chunk : commit.chunks()) {
+                statement.setBytes(1, UuidBlob.encode(chunk.chunk().worldId()));
+                statement.setInt(2, chunk.chunk().chunkX());
+                statement.setInt(3, chunk.chunk().chunkZ());
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (rows.next()) {
+                        throw new SQLException("expand chunk is already occupied: "
+                                + chunk.chunk().chunkX() + "," + chunk.chunk().chunkZ());
+                    }
+                }
+            }
+        }
+    }
+
+    private static void insertExpandChunks(java.sql.Connection connection, ExpandCommit commit)
+            throws SQLException {
+        long now = commit.audit().timestamp().toEpochMilli();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO land_chunks (world, chunk, owner_key, owner_uuid, claimed_at, land_id, world_uuid, "
+                        + "chunk_x, chunk_z, stored_min_protected_y, claim_lot_id, cost_basis_minor_units) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+            for (OperationPayload.Chunk payloadChunk : commit.chunks()) {
+                statement.setString(1, payloadChunk.chunk().worldId().toString());
+                statement.setString(2, payloadChunk.chunk().chunkX() + "," + payloadChunk.chunk().chunkZ());
+                statement.setString(3, commit.owner().key());
+                setUuid(statement, 4, ownerUuid(commit.owner()));
+                statement.setLong(5, now);
+                statement.setBytes(6, UuidBlob.encode(commit.landId().value()));
+                statement.setBytes(7, UuidBlob.encode(payloadChunk.chunk().worldId()));
+                statement.setInt(8, payloadChunk.chunk().chunkX());
+                statement.setInt(9, payloadChunk.chunk().chunkZ());
+                statement.setInt(10, payloadChunk.storedMinProtectedY());
+                statement.setBytes(11, UuidBlob.encode(payloadChunk.claimLotId()));
+                statement.setLong(12, payloadChunk.costBasisMinorUnits());
+                statement.executeUpdate();
+            }
+        }
+    }
+
+    private static void casStructureRevision(java.sql.Connection connection, ExpandCommit commit)
+            throws SQLException {
+        long next;
+        try {
+            next = Math.addExact(commit.expectedStructureRevision(), 1);
+        } catch (ArithmeticException overflow) {
+            throw new SQLException("expectedStructureRevision overflows", overflow);
+        }
+        try (PreparedStatement bump = connection.prepareStatement(
+                "UPDATE lands SET structure_revision = ?, updated_at = ? WHERE id = ? AND structure_revision = ?")) {
+            bump.setLong(1, next);
+            bump.setLong(2, commit.audit().timestamp().toEpochMilli());
+            bump.setBytes(3, UuidBlob.encode(commit.landId().value()));
+            bump.setLong(4, commit.expectedStructureRevision());
+            if (bump.executeUpdate() != 1) {
+                throw new SQLException("stale land structure revision: expected "
+                        + commit.expectedStructureRevision() + " but the durable row moved");
+            }
+        }
+    }
+
+    /**
      * Removes the refunded chunks, writes the refund audit trail, deletes the
      * land row when no chunk remains, and marks {@code DOMAIN_COMMITTED} in
      * one SQL transaction. No repository callback or external collaborator is
