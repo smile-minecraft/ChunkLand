@@ -72,7 +72,7 @@ class SubLandProductionPathTest {
 
     private Supplier<ConfigView> fixedViews() {
         PermissionDefaultsSnapshot empty = PermissionDefaultsSnapshot.empty();
-        ConfigView view = new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty));
+        ConfigView view = new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty), 0L, Map.of());
         return () -> view;
     }
 
@@ -157,8 +157,8 @@ class SubLandProductionPathTest {
         LandRegistry registry = LandRegistry.from(List.of(land));
 
         PermissionDefaultsSnapshot empty = PermissionDefaultsSnapshot.empty();
-        ConfigView oldView = new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty));
-        ConfigView newView = new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty));
+        ConfigView oldView = new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty), 0L, Map.of());
+        ConfigView newView = new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty), 1L, Map.of());
         AtomicInteger calls = new AtomicInteger();
         Supplier<ConfigView> views = () -> {
             int seen = calls.incrementAndGet();

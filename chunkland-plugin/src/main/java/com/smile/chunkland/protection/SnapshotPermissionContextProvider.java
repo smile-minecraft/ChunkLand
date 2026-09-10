@@ -63,8 +63,16 @@ import java.util.function.Supplier;
  * Production wiring must use {@link #atomic(Supplier, Supplier)}, which
  * captures one {@link PermissionDefaultsCache.ConfigView} per
  * {@code provide()} call and derives both halves from it.
+ *
+ * <p>The atomic provider also serves as the decision-cache epoch source
+ * (see {@link #keyFor}): it captures the same one view plus one durable
+ * snapshot and folds their epochs, the land revisions and the owner
+ * context into a full cache key. The legacy provider has no epochs and
+ * always answers {@code null} there, so decisions through it bypass the
+ * cache exactly like before.
  */
-public final class SnapshotPermissionContextProvider implements PermissionContextProvider {
+public final class SnapshotPermissionContextProvider implements PermissionContextProvider,
+        PermissionDecisionEpochSource {
 
     private static final Map<ProtectionActionType, LandRuleType> RULE_BY_ACTION = ruleTable();
 
@@ -357,6 +365,45 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         } catch (RuntimeException failure) {
             return null;
         }
+    }
+
+    /**
+     * Cache identity for one decision, or {@code null} when it must bypass
+     * the cache. The legacy provider (no atomic views) always answers
+     * {@code null}. The atomic path captures one config view and one
+     * durable snapshot — the same generations {@link #provide} would read —
+     * and returns {@code null} for unloaded, unknown-land or failed
+     * sources so those decisions stay uncached and fail closed.
+     */
+    @Override
+    public PermissionDecisionCache.Key keyFor(UUID actor, LandId landId, SubLandId sublandId,
+            ProtectionActionType action, LandRegistry snapshot) {
+        if (actor == null || landId == null || action == null || snapshot == null) {
+            return null;
+        }
+        if (views == null) {
+            return null;
+        }
+        PermissionDefaultsCache.ConfigView view = capturedView();
+        LandAuthorisationSnapshot landAuth = capturedLandAuth();
+        if (view == null || landAuth == null || !landAuth.loaded()) {
+            return null;
+        }
+        LandSnapshot land;
+        try {
+            land = snapshot.land(landId);
+        } catch (RuntimeException failure) {
+            return null;
+        }
+        if (land == null) {
+            return null;
+        }
+        boolean owner = land.ownerRef() instanceof OwnerRef.PlayerOwnerRef player
+                && player.uuid().equals(actor);
+        return new PermissionDecisionCache.Key(actor, landId, sublandId, land.worldId(), action,
+                view.globalPolicyEpoch(), view.worldPolicyEpoch(land.worldId()),
+                land.landPolicyRevision(), land.structureRevision(),
+                landAuth.ownerAclEpoch(), true, owner, false);
     }
 
     private PermissionState ruleStateAtomic(LandRuleService rules, LandId landId,

@@ -148,8 +148,35 @@ public final class ConfigSchema {
             }
             ruleDefaults = parseRuleDefaults(rawRuleDefaults, "rule-defaults");
         }
+        int decisionCacheMaxEntries = parseDecisionCacheMaxEntries(root.get("limits"));
         return new ChunkLandConfig(worlds, limits, messages, selection,
-                subjectDefaults, ruleDefaults, 0L, deriveWorldEpochs(worlds));
+                subjectDefaults, ruleDefaults, 0L, deriveWorldEpochs(worlds),
+                decisionCacheMaxEntries);
+    }
+
+    /**
+     * Optional {@code limits.max-decision-cache-entries}: the protection
+     * decision-cache budget. Absent means the default (4096); explicit zero
+     * disables the cache; negative or non-integer values fail closed with a
+     * validation error so a bad edit can never silently unbind the cache.
+     */
+    static int parseDecisionCacheMaxEntries(Object rawLimits) {
+        if (rawLimits == null) {
+            return 4096;
+        }
+        if (!(rawLimits instanceof Map<?, ?> rawMap)) {
+            // parseLimits reports the shape error; keep this helper total.
+            return 4096;
+        }
+        Map<String, Object> map = castStringKeyMap(rawMap, "limits");
+        if (!map.containsKey("max-decision-cache-entries")) {
+            return 4096;
+        }
+        Object raw = map.get("max-decision-cache-entries");
+        if (raw == null) {
+            throw new ConfigValidationException("limits.max-decision-cache-entries must not be null");
+        }
+        return parseIntLimit(raw, "limits.max-decision-cache-entries");
     }
 
     /** Build the worldPolicyEpochs map (every known world starts at 0). */
@@ -447,7 +474,8 @@ public final class ConfigSchema {
                     && !key.equals("max-chunks-per-land")
                     && !key.equals("max-sublands-per-land")
                     && !key.equals("max-selection-side-length")
-                    && !key.equals("max-selection-chunks")) {
+                    && !key.equals("max-selection-chunks")
+                    && !key.equals("max-decision-cache-entries")) {
                 throw new ConfigValidationException(
                         path + " has unknown key '" + key + "'");
             }

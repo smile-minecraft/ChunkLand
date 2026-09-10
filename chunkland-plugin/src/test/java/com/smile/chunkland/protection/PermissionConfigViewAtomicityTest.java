@@ -80,7 +80,7 @@ class PermissionConfigViewAtomicityTest {
                 Map.of(),
                 Map.of(LandRuleType.PVP, rule),
                 Map.of());
-        return new ConfigView(snapshot, LandRuleService.fromRuleSnapshot(snapshot));
+        return new ConfigView(snapshot, LandRuleService.fromRuleSnapshot(snapshot), 0L, Map.of());
     }
 
     @Test

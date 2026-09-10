@@ -38,6 +38,11 @@ import java.util.Set;
  * typed namespaces that never fall back to each other; world names are
  * resolved to UUIDs once at load/bootstrap by the permission defaults
  * snapshot, never on the hot path.</p>
+ *
+ * <p>{@code decisionCacheMaxEntries} bounds the protection decision cache
+ * ({@code limits.max-decision-cache-entries}, default 4096, zero disables).
+ * It is plain payload like the other limit values: reloads replace it from
+ * the freshly loaded file while epochs keep their bumped counters.</p>
  */
 public final class ChunkLandConfig {
 
@@ -49,6 +54,7 @@ public final class ChunkLandConfig {
     private final RuleDefaultsConfig ruleDefaults;
     private final long globalPolicyEpoch;
     private final Map<String, Long> worldPolicyEpochs;
+    private final int decisionCacheMaxEntries;
 
     public ChunkLandConfig(Map<String, WorldSettings> worlds,
                            long globalPolicyEpoch,
@@ -89,7 +95,8 @@ public final class ChunkLandConfig {
                            SubjectDefaultsConfig subjectDefaults,
                            RuleDefaultsConfig ruleDefaults,
                            long globalPolicyEpoch,
-                           Map<String, Long> worldPolicyEpochs) {
+                           Map<String, Long> worldPolicyEpochs,
+                           int decisionCacheMaxEntries) {
         Objects.requireNonNull(worlds, "worlds");
         Objects.requireNonNull(limits, "limits");
         Objects.requireNonNull(messages, "messages");
@@ -100,6 +107,10 @@ public final class ChunkLandConfig {
         if (globalPolicyEpoch < 0) {
             throw new IllegalArgumentException(
                     "globalPolicyEpoch must be non-negative: " + globalPolicyEpoch);
+        }
+        if (decisionCacheMaxEntries < 0) {
+            throw new IllegalArgumentException(
+                    "decisionCacheMaxEntries must be >= 0: " + decisionCacheMaxEntries);
         }
         Map<String, WorldSettings> defensiveWorlds = new HashMap<>(worlds.size());
         for (Map.Entry<String, WorldSettings> e : worlds.entrySet()) {
@@ -130,6 +141,24 @@ public final class ChunkLandConfig {
         this.ruleDefaults = ruleDefaults;
         this.globalPolicyEpoch = globalPolicyEpoch;
         this.worldPolicyEpochs = Collections.unmodifiableMap(defensiveEpochs);
+        this.decisionCacheMaxEntries = decisionCacheMaxEntries;
+    }
+
+    /**
+     * Compatibility overload: the decision-cache budget defaults to
+     * {@code 4096} (see the decision cache default). Prefer the canonical
+     * constructor with an explicit budget for production snapshots.
+     */
+    public ChunkLandConfig(Map<String, WorldSettings> worlds,
+                           LimitSettings limits,
+                           MessageSettings messages,
+                           SelectionSettings selection,
+                           SubjectDefaultsConfig subjectDefaults,
+                           RuleDefaultsConfig ruleDefaults,
+                           long globalPolicyEpoch,
+                           Map<String, Long> worldPolicyEpochs) {
+        this(worlds, limits, messages, selection, subjectDefaults, ruleDefaults,
+                globalPolicyEpoch, worldPolicyEpochs, 4096);
     }
 
     /** Default snapshot: no worlds, both epoch counters at zero. */
@@ -170,6 +199,14 @@ public final class ChunkLandConfig {
         return worldPolicyEpochs;
     }
 
+    /**
+     * Decision-cache entry budget from {@code limits.max-decision-cache-entries}.
+     * Zero disables the cache; always non-negative.
+     */
+    public int decisionCacheMaxEntries() {
+        return decisionCacheMaxEntries;
+    }
+
     /** Lookup helper: returns the epoch for {@code worldName} or {@code null}. */
     public Long worldPolicyEpoch(String worldName) {
         return worldPolicyEpochs.get(worldName);
@@ -192,31 +229,31 @@ public final class ChunkLandConfig {
     public ChunkLandConfig withWorlds(Map<String, WorldSettings> newWorlds) {
         Objects.requireNonNull(newWorlds, "newWorlds");
         return new ChunkLandConfig(newWorlds, limits, messages, selection, subjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs);
+                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withLimits(LimitSettings newLimits) {
         Objects.requireNonNull(newLimits, "newLimits");
         return new ChunkLandConfig(worlds, newLimits, messages, selection, subjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs);
+                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withMessages(MessageSettings newMessages) {
         Objects.requireNonNull(newMessages, "newMessages");
         return new ChunkLandConfig(worlds, limits, newMessages, selection, subjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs);
+                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withSubjectDefaults(SubjectDefaultsConfig newSubjectDefaults) {
         Objects.requireNonNull(newSubjectDefaults, "newSubjectDefaults");
         return new ChunkLandConfig(worlds, limits, messages, selection, newSubjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs);
+                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withRuleDefaults(RuleDefaultsConfig newRuleDefaults) {
         Objects.requireNonNull(newRuleDefaults, "newRuleDefaults");
         return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, newRuleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs);
+                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     /**
@@ -247,7 +284,8 @@ public final class ChunkLandConfig {
                 this.subjectDefaults,
                 this.ruleDefaults,
                 Math.addExact(this.globalPolicyEpoch, 1L),
-                bumped);
+                bumped,
+                this.decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds, LimitSettings nextLimits) {
@@ -268,7 +306,8 @@ public final class ChunkLandConfig {
                 this.subjectDefaults,
                 this.ruleDefaults,
                 Math.addExact(this.globalPolicyEpoch, 1L),
-                bumped);
+                bumped,
+                this.decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds, LimitSettings nextLimits, MessageSettings nextMessages) {
@@ -284,11 +323,12 @@ public final class ChunkLandConfig {
     }
 
     public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds,
-                                            LimitSettings nextLimits,
-                                            MessageSettings nextMessages,
-                                            SelectionSettings nextSelection,
-                                            SubjectDefaultsConfig nextSubjectDefaults,
-                                            RuleDefaultsConfig nextRuleDefaults) {
+                                             LimitSettings nextLimits,
+                                             MessageSettings nextMessages,
+                                             SelectionSettings nextSelection,
+                                             SubjectDefaultsConfig nextSubjectDefaults,
+                                             RuleDefaultsConfig nextRuleDefaults,
+                                             int nextDecisionCacheMaxEntries) {
         Objects.requireNonNull(nextWorlds, "nextWorlds");
         Objects.requireNonNull(nextLimits, "nextLimits");
         Objects.requireNonNull(nextMessages, "nextMessages");
@@ -310,6 +350,22 @@ public final class ChunkLandConfig {
                 nextSubjectDefaults,
                 nextRuleDefaults,
                 Math.addExact(this.globalPolicyEpoch, 1L),
-                bumped);
+                bumped,
+                nextDecisionCacheMaxEntries);
+    }
+
+    /**
+     * Compatibility overload: keeps this snapshot's decision-cache budget.
+     * The reload path uses the seven-argument overload with the freshly
+     * loaded budget instead.
+     */
+    public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds,
+                                             LimitSettings nextLimits,
+                                             MessageSettings nextMessages,
+                                             SelectionSettings nextSelection,
+                                             SubjectDefaultsConfig nextSubjectDefaults,
+                                             RuleDefaultsConfig nextRuleDefaults) {
+        return withEpochsBumped(nextWorlds, nextLimits, nextMessages, nextSelection,
+                nextSubjectDefaults, nextRuleDefaults, this.decisionCacheMaxEntries);
     }
 }

@@ -31,6 +31,10 @@ limits:
   max-sublands-per-land: 16
   max-selection-side-length: 32
   max-selection-chunks: 1024
+  # Protection decision-cache budget (memory-only, per enable generation).
+  # Same-epoch decisions reuse one verdict; any epoch move misses naturally.
+  # Zero disables reuse (every decision recomputes, fail-closed as before).
+  max-decision-cache-entries: 4096
 
 selection:
   session-timeout-seconds: 600

@@ -52,6 +52,7 @@ import com.smile.chunkland.command.RenameCommandHandler;
 import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.ConfigReloadListener;
 import com.smile.chunkland.config.ChunkLandConfig;
 import com.smile.chunkland.config.LimitSettings;
 import com.smile.chunkland.config.VerticalMode;
@@ -80,7 +81,10 @@ import com.smile.chunkland.protection.LandAuthorisationCache;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.PermissionDefaultsCache;
-import com.smile.chunkland.protection.SnapshotPermissionContextProvider;import com.smile.chunkland.protection.SubjectPermissionLookup;
+import com.smile.chunkland.protection.PermissionDecisionCache;
+import com.smile.chunkland.protection.PermissionDecisionEpochSource;
+import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
+import com.smile.chunkland.protection.SubjectPermissionLookup;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.api.ChunkLandReadApi;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
@@ -207,6 +211,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private LandRegistryStore protectionStore;
     private ProtectionEngine protectionEngine;
     private PermissionDefaultsCache permissionDefaults;
+    private PermissionDecisionCache decisionCache;
+    private ConfigReloadListener decisionCacheBudgetSync;
     private SnapshotProtectionDepthLookup protectionDepthLookup;
     private ProtectionListener protectionListener;
     private ClaimStartupBootstrap claimStartup;
@@ -355,7 +361,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // single provide() call. The shared instance stays live: new
         // decisions observe later reloads without rebuilding consumers.
         SnapshotPermissionContextProvider atomicContexts = this.permissionDefaults.provider();
-        this.protectionEngine = buildProtectionEngine(this.protectionStore, atomicContexts);
+        // Decision cache: bounded, memory-only reuse keyed on the four
+        // epochs plus structure and owner context. The budget follows the
+        // live config; reloads apply it without rebuilding the engine.
+        this.decisionCache =
+                new PermissionDecisionCache(activeConfig.current().decisionCacheMaxEntries());
+        PermissionDecisionCache budgeted = this.decisionCache;
+        this.decisionCacheBudgetSync = diff -> {
+            try {
+                budgeted.setMaxEntries(activeConfig.current().decisionCacheMaxEntries());
+            } catch (RuntimeException ignored) {
+                // A budget sync must never break a committed reload.
+            }
+        };
+        this.configService.ifPresent(service -> service.addListener(this.decisionCacheBudgetSync));
+        this.protectionEngine = buildProtectionEngine(
+                this.protectionStore, atomicContexts, this.decisionCache, atomicContexts);
         // Formal per-world vertical-mode read path: the lookup resolves the
         // effective depth from the live config snapshot plus the
         // startup-injected name/minimum tables, so the hot path performs only
@@ -2044,6 +2065,21 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return new ProtectionEngine(active::snapshot, activeProvider);
     }
 
+    /**
+     * Builds the protection engine with decision-cache reuse. A
+     * {@code null} cache or {@code null} epoch source keeps the exact
+     * behaviour of the uncached overload above.
+     */
+    static ProtectionEngine buildProtectionEngine(LandRegistryStore store,
+                                                  PermissionContextProvider provider,
+                                                  PermissionDecisionCache cache,
+                                                  PermissionDecisionEpochSource epochs) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        PermissionContextProvider activeProvider = provider == null
+                ? ProtectionEngine.inheritOnlyProvider() : provider;
+        return new ProtectionEngine(active::snapshot, activeProvider, cache, epochs);
+    }
+
     void registerWandListener(WandSafetyListener listener) {
         getServer().getPluginManager().registerEvents(listener, this);
     }
@@ -2093,6 +2129,25 @@ public final class ChunkLandPlugin extends JavaPlugin {
             } catch (RuntimeException ignored) {
             }
         }
+        // Detach the decision-cache budget sync for the same reason, then
+        // drop the cached decisions themselves: disable leaves no reused
+        // verdict behind for the next enable generation.
+        ConfigReloadListener budgetSync = this.decisionCacheBudgetSync;
+        if (budgetSync != null && configService != null && configService.isPresent()) {
+            try {
+                configService.get().removeListener(budgetSync);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        this.decisionCacheBudgetSync = null;
+        PermissionDecisionCache decisions = this.decisionCache;
+        if (decisions != null) {
+            try {
+                decisions.clear();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        this.decisionCache = null;
         if (selectionLifecycleListener != null) {
             try {
                 HandlerList.unregisterAll(selectionLifecycleListener);

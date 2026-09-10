@@ -38,6 +38,15 @@ import java.util.UUID;
  * value that must never authorise — cache startup before the first durable
  * load and every failed reload publish it so readers fail closed instead
  * of trusting an empty or stale view.
+ *
+ * <p>Every snapshot also carries an {@link #ownerAclEpoch()}: a monotonic
+ * publish counter that starts at zero for fresh loads and rises by exactly
+ * one on every {@link #withDirect} / {@link #withGeneric} republish. The
+ * decision cache keys on it, so any trust, default, ban, binding, group,
+ * profile or membership change — all of which republish through those two
+ * paths — naturally misses older entries without a scan. The unloaded
+ * marker carries {@code -1} so it can never share an epoch with a real
+ * load.
  */
 public final class LandAuthorisationSnapshot {
 
@@ -49,6 +58,7 @@ public final class LandAuthorisationSnapshot {
     private final Map<String, Set<UUID>> groupMembers;
     private final Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults;
     private final boolean loaded;
+    private final long ownerAclEpoch;
 
     private LandAuthorisationSnapshot(
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct,
@@ -58,7 +68,8 @@ public final class LandAuthorisationSnapshot {
             Map<SubLandId, List<PermissionBinding>> genericSubland,
             Map<String, Set<UUID>> groupMembers,
             Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults,
-            boolean loaded) {
+            boolean loaded,
+            long ownerAclEpoch) {
         this.direct = direct;
         this.defaults = defaults;
         this.bans = bans;
@@ -67,23 +78,25 @@ public final class LandAuthorisationSnapshot {
         this.groupMembers = groupMembers;
         this.sublandDefaults = sublandDefaults;
         this.loaded = loaded;
+        this.ownerAclEpoch = ownerAclEpoch;
     }
 
     /** Empty snapshot from a successful load: no bindings, every land default {@code INHERIT}, nobody banned. */
     public static LandAuthorisationSnapshot empty() {
         return new LandAuthorisationSnapshot(Map.of(), Map.of(), Map.of(),
-                Map.of(), Map.of(), Map.of(), Map.of(), true);
+                Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
     }
 
     /**
      * Unloaded marker for cache startup and failed reloads: carries no data
      * and must never authorise. Readers check {@link #loaded()} first and
      * fail closed on {@code false} instead of treating the empty maps as a
-     * known-unbanned answer.
+     * known-unbanned answer. Its epoch is {@code -1} so it can never share
+     * a cache key with a real load.
      */
     public static LandAuthorisationSnapshot unloaded() {
         return new LandAuthorisationSnapshot(Map.of(), Map.of(), Map.of(),
-                Map.of(), Map.of(), Map.of(), Map.of(), false);
+                Map.of(), Map.of(), Map.of(), Map.of(), false, -1L);
     }
 
     /**
@@ -97,6 +110,30 @@ public final class LandAuthorisationSnapshot {
     }
 
     /**
+     * Monotonic publish counter for the decision cache. Fresh loads start
+     * at zero; every {@link #withDirect} / {@link #withGeneric} republish
+     * adds exactly one. Reads never touch storage: the value travels with
+     * the immutable snapshot itself.
+     */
+    public long ownerAclEpoch() {
+        return ownerAclEpoch;
+    }
+
+    /**
+     * Rebuild with an explicit epoch, keeping every layer. Used by tests
+     * and by any future publish path that carries the durable per-owner
+     * epoch directly; production refresh paths use the monotonic
+     * {@link #withDirect} / {@link #withGeneric} bump instead.
+     */
+    public LandAuthorisationSnapshot withOwnerAclEpoch(long epoch) {
+        if (epoch < -1L) {
+            throw new IllegalArgumentException("ownerAclEpoch must be >= -1: " + epoch);
+        }
+        return new LandAuthorisationSnapshot(direct, defaults, bans,
+                genericLand, genericSubland, groupMembers, sublandDefaults, loaded, epoch);
+    }
+
+    /**
      * Defensive copy of both layers; {@code null} layers read as empty.
      * Every nested map and set is copied into an unmodifiable view, so later
      * changes to the inputs can never leak into the snapshot.
@@ -105,7 +142,7 @@ public final class LandAuthorisationSnapshot {
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct,
             Map<LandId, Map<ProtectionActionType, PermissionState>> defaults) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults), Map.of(),
-                Map.of(), Map.of(), Map.of(), Map.of(), true);
+                Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
     }
 
     /**
@@ -119,7 +156,7 @@ public final class LandAuthorisationSnapshot {
             Map<LandId, Map<ProtectionActionType, PermissionState>> defaults,
             Map<LandId, Set<UUID>> bans) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults),
-                copyBans(bans), Map.of(), Map.of(), Map.of(), Map.of(), true);
+                copyBans(bans), Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
     }
 
     /**
@@ -139,7 +176,7 @@ public final class LandAuthorisationSnapshot {
             Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults),
                 copyBans(bans), copyBindingLists(genericLand), copySubBindingLists(genericSubland),
-                copyMembers(groupMembers), copySubDefaults(sublandDefaults), true);
+                copyMembers(groupMembers), copySubDefaults(sublandDefaults), true, 0L);
     }
 
     /**
@@ -154,7 +191,7 @@ public final class LandAuthorisationSnapshot {
             Map<LandId, Set<UUID>> bans) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults),
                 copyBans(bans), genericLand, genericSubland, groupMembers, sublandDefaults,
-                true);
+                true, nextEpoch(ownerAclEpoch));
     }
 
     /**
@@ -171,7 +208,12 @@ public final class LandAuthorisationSnapshot {
             Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults) {
         return new LandAuthorisationSnapshot(direct, defaults, bans,
                 copyBindingLists(genericLand), copySubBindingLists(genericSubland),
-                copyMembers(groupMembers), copySubDefaults(sublandDefaults), loaded);
+                copyMembers(groupMembers), copySubDefaults(sublandDefaults), loaded,
+                nextEpoch(ownerAclEpoch));
+    }
+
+    private static long nextEpoch(long current) {
+        return current == Long.MAX_VALUE ? current : current + 1L;
     }
 
     /**

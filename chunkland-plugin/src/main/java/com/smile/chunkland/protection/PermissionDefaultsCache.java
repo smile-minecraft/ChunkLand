@@ -5,6 +5,10 @@ import com.smile.chunkland.config.ConfigReloadListener;
 import com.smile.chunkland.config.ReloadDiff;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.rule.LandRuleService;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -42,14 +46,31 @@ import java.util.function.Supplier;
 public final class PermissionDefaultsCache implements ConfigReloadListener {
 
     /**
-     * Immutable pair of the config subject/rule namespaces for one generation.
+     * Immutable pair of the config subject/rule namespaces for one generation,
+     * plus the epoch counters that identify that generation.
      * Published through a single volatile reference so one decision can hold
      * both halves without mixing versions across a reload.
+     *
+     * <p>{@code globalPolicyEpoch} rises on every successful config reload;
+     * {@code worldPolicyEpochs} holds the per-world counter keyed by world
+     * UUID (resolved once at refresh, first name claim wins, unknown names
+     * skipped — the same rule the defaults snapshot uses). Readers fall
+     * back to the global epoch for worlds absent from the map. A failed
+     * refresh publishes the empty snapshot with epoch {@code -1} so it can
+     * never share a decision-cache key with a real generation.
      */
-    public record ConfigView(PermissionDefaultsSnapshot snapshot, LandRuleService rules) {
+    public record ConfigView(PermissionDefaultsSnapshot snapshot, LandRuleService rules,
+                             long globalPolicyEpoch, Map<UUID, Long> worldPolicyEpochs) {
         public ConfigView {
             Objects.requireNonNull(snapshot, "snapshot");
             Objects.requireNonNull(rules, "rules");
+            worldPolicyEpochs = worldPolicyEpochs == null ? Map.of() : Map.copyOf(worldPolicyEpochs);
+        }
+
+        /** World epoch for one world, or the global epoch when unmapped. */
+        public long worldPolicyEpoch(UUID worldId) {
+            Objects.requireNonNull(worldId, "worldId");
+            return worldPolicyEpochs.getOrDefault(worldId, globalPolicyEpoch);
         }
     }
 
@@ -168,14 +189,53 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
     private ConfigView resolve() {
         try {
             ChunkLandConfig config = configs.get();
+            if (config == null) {
+                throw new IllegalStateException("config source returned null");
+            }
             PermissionDefaultsSnapshot snapshot =
                     PermissionDefaultsSnapshot.resolve(config, worldIds, warnings);
-            return new ConfigView(snapshot, LandRuleService.fromRuleSnapshot(snapshot));
+            return new ConfigView(snapshot, LandRuleService.fromRuleSnapshot(snapshot),
+                    config.globalPolicyEpoch(), resolveWorldEpochs(config));
         } catch (RuntimeException failure) {
             warnings.accept("ChunkLand permission defaults refresh failed (fail-closed): "
                     + failure.getMessage());
             PermissionDefaultsSnapshot empty = PermissionDefaultsSnapshot.empty();
-            return new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty));
+            return new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty), -1L, Map.of());
         }
+    }
+
+    /**
+     * Translate the name-keyed world epochs of one config into the
+     * UUID-keyed map the hot path reads. Names resolve through the same
+     * lookup the defaults snapshot uses, in sorted name order so the first
+     * claim wins exactly like the defaults; unknown or failing names are
+     * skipped (their defaults were skipped too, and readers fall back to
+     * the global epoch for them).
+     */
+    private Map<UUID, Long> resolveWorldEpochs(ChunkLandConfig config) {
+        Map<String, Long> byName = config.worldPolicyEpochs();
+        if (byName == null || byName.isEmpty() || worldIds == null) {
+            return Map.of();
+        }
+        List<String> names = new ArrayList<>(byName.keySet());
+        names.sort(String::compareTo);
+        Map<UUID, Long> out = new HashMap<>();
+        for (String name : names) {
+            Long epoch = byName.get(name);
+            if (epoch == null) {
+                continue;
+            }
+            Optional<UUID> resolved;
+            try {
+                resolved = worldIds.apply(name);
+            } catch (RuntimeException failure) {
+                continue;
+            }
+            if (resolved == null || resolved.isEmpty()) {
+                continue;
+            }
+            out.putIfAbsent(resolved.get(), epoch);
+        }
+        return out;
     }
 }
