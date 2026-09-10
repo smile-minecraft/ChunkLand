@@ -7,6 +7,8 @@
 #   messages          -> message settings
 #   selection         -> selection sessions and particle budgets
 #   worlds.<name>     -> per-world claim-enabled + vertical-mode
+#   subject-defaults  -> world/global SUBJECT_PERMISSION defaults (optional)
+#   rule-defaults     -> world/global LAND_RULE defaults (optional)
 #     vertical-mode accepts PER_CHUNK_DEPTH (default) or FULL_HEIGHT.
 #     The mode only changes effective depth reads; stored depths are never
 #     migrated or rewritten on a mode switch.
@@ -52,3 +54,29 @@ worlds:
     claim-enabled: false
   world_the_end:
     claim-enabled: false
+
+# Permission world/global defaults (Direct Trust foundation).
+#
+# `subject-defaults` answers "may this actor act?" per SUBJECT_PERMISSION
+# action; `rule-defaults` answers "can this mechanic happen here?" per
+# LAND_RULE. The two namespaces are separate typed maps and never fall back
+# to each other. World entries use world names and resolve to world UUIDs
+# once at load; unknown worlds warn and are ignored. A missing section, a
+# missing entry, or an explicit INHERIT all mean "fall through to the next
+# resolver layer", ending at implicit DENY. Action/rule keys are
+# case-insensitive; world names are case-sensitive. Land bindings, land
+# defaults and SubLand layers are NOT configured here (no durable source is
+# wired yet) and stay INHERIT.
+#
+#subject-defaults:
+#  global:
+#    BLOCK_BREAK: DENY
+#  worlds:
+#    world:
+#      BLOCK_BREAK: ALLOW
+#rule-defaults:
+#  global:
+#    PVP: DENY
+#  worlds:
+#    world:
+#      PVP: ALLOW

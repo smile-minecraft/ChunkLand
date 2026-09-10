@@ -1,13 +1,19 @@
 package com.smile.chunkland.config;
 
+import com.smile.chunkland.api.permission.PermissionState;
+import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.api.rule.LandRuleType;
 import com.smile.chunkland.selection.SelectionVisualizationBudget;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import org.yaml.snakeyaml.Yaml;
 
 /**
@@ -28,7 +34,26 @@ import org.yaml.snakeyaml.Yaml;
  *     vertical-mode: PER_CHUNK_DEPTH|FULL_HEIGHT
  * selection:
  *   session-timeout-seconds: 600
+ * subject-defaults:            # optional; absent means every subject default stays INHERIT
+ *   global:
+ *     BLOCK_BREAK: ALLOW|DENY|INHERIT
+ *   worlds:
+ *     &lt;world-name&gt;:
+ *       BLOCK_BREAK: ALLOW|DENY|INHERIT
+ * rule-defaults:               # optional; absent means every rule default stays INHERIT
+ *   global:
+ *     PVP: ALLOW|DENY|INHERIT
+ *   worlds:
+ *     &lt;world-name&gt;:
+ *       PVP: ALLOW|DENY|INHERIT
  * </pre>
+ *
+ * <p>Action and rule keys are matched case-insensitively ({@code pvp} and
+ * {@code PVP} are the same key); repeating a key in different cases is
+ * rejected instead of silently overwritten. World names stay case-sensitive,
+ * matching the existing {@code worlds} map. An explicit {@code INHERIT} value
+ * is identical to omitting the entry: both fall through to the next resolver
+ * layer.</p>
  *
  * <p>Unknown top-level keys are rejected; unknown sub-keys under a world are
  * rejected. The validator never silently drops data — that is how a future
@@ -64,10 +89,12 @@ public final class ConfigSchema {
         // loud failures instead of silent runtime bugs.
         for (String key : root.keySet()) {
             if (!"worlds".equals(key) && !"limits".equals(key) && !"messages".equals(key)
-                    && !"selection".equals(key)) {
+                    && !"selection".equals(key)
+                    && !"subject-defaults".equals(key) && !"rule-defaults".equals(key)) {
                 throw new ConfigValidationException(
                         "unknown top-level key '" + key
-                                + "' (only 'worlds', 'limits', 'messages' and 'selection' are supported in the current schema)");
+                                + "' (only 'worlds', 'limits', 'messages', 'selection', "
+                                + "'subject-defaults' and 'rule-defaults' are supported in the current schema)");
             }
         }
         Map<String, WorldSettings> worlds = parseWorlds(root.get("worlds"), "worlds");
@@ -101,7 +128,28 @@ public final class ConfigSchema {
             }
             selection = parseSelection(rawSelection, "selection");
         }
-        return new ChunkLandConfig(worlds, limits, messages, selection, 0L, deriveWorldEpochs(worlds));
+        SubjectDefaultsConfig subjectDefaults;
+        if (!root.containsKey("subject-defaults")) {
+            subjectDefaults = SubjectDefaultsConfig.empty();
+        } else {
+            Object rawSubjectDefaults = root.get("subject-defaults");
+            if (rawSubjectDefaults == null) {
+                throw new ConfigValidationException("subject-defaults must not be null");
+            }
+            subjectDefaults = parseSubjectDefaults(rawSubjectDefaults, "subject-defaults");
+        }
+        RuleDefaultsConfig ruleDefaults;
+        if (!root.containsKey("rule-defaults")) {
+            ruleDefaults = RuleDefaultsConfig.empty();
+        } else {
+            Object rawRuleDefaults = root.get("rule-defaults");
+            if (rawRuleDefaults == null) {
+                throw new ConfigValidationException("rule-defaults must not be null");
+            }
+            ruleDefaults = parseRuleDefaults(rawRuleDefaults, "rule-defaults");
+        }
+        return new ChunkLandConfig(worlds, limits, messages, selection,
+                subjectDefaults, ruleDefaults, 0L, deriveWorldEpochs(worlds));
     }
 
     /** Build the worldPolicyEpochs map (every known world starts at 0). */
@@ -164,8 +212,227 @@ public final class ConfigSchema {
         return result;
     }
 
-    private static LimitSettings parseLimits(Object raw, String path) {
+    private static SubjectDefaultsConfig parseSubjectDefaults(Object raw, String path) {
+        Map<String, Object> map = requireMapping(raw, path, "'global' and 'worlds'");
+        rejectUnknownKeys(map, path, Set.of("global", "worlds"));
+        Map<ProtectionActionType, PermissionState> global =
+                parseSubjectStates(map, "global", path + ".global");
+        Map<String, Map<ProtectionActionType, PermissionState>> worlds = new LinkedHashMap<>();
+        if (map.containsKey("worlds")) {
+            Object rawWorlds = map.get("worlds");
+            if (rawWorlds == null) {
+                throw new ConfigValidationException(path + ".worlds must not be null");
+            }
+            if (!(rawWorlds instanceof Map<?, ?> rawWorldsMap)) {
+                throw new ConfigValidationException(
+                        path + ".worlds must be a mapping of world name -> defaults, got "
+                                + rawWorlds.getClass().getSimpleName());
+            }
+            Map<String, Object> worldsMap = castStringKeyMap(rawWorldsMap, path + ".worlds");
+            for (Map.Entry<String, Object> entry : worldsMap.entrySet()) {
+                String worldName = entry.getKey();
+                if (worldName == null || worldName.isBlank()) {
+                    throw new ConfigValidationException(path + ".worlds requires a non-blank world name");
+                }
+                if (worlds.containsKey(worldName)) {
+                    throw new ConfigValidationException(
+                            path + ".worlds has a duplicate world entry '" + worldName + "'");
+                }
+                worlds.put(worldName, parseSubjectWorldStates(entry.getValue(),
+                        path + ".worlds." + worldName));
+            }
+        }
+        return new SubjectDefaultsConfig(global, worlds);
+    }
+
+    private static Map<ProtectionActionType, PermissionState> parseSubjectStates(
+            Map<String, Object> parent, String key, String path) {
+        if (!parent.containsKey(key)) {
+            return Map.of();
+        }
+        Object raw = parent.get(key);
         if (raw == null) {
+            throw new ConfigValidationException(path + " must not be null");
+        }
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping of subject action -> ALLOW|DENY|INHERIT, got "
+                            + raw.getClass().getSimpleName());
+        }
+        Map<String, Object> map = castStringKeyMap(rawMap, path);
+        Map<ProtectionActionType, PermissionState> out = new EnumMap<>(ProtectionActionType.class);
+        Set<String> seen = new HashSet<>();
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String rawName = entry.getKey();
+            String normalized = normalizeEnumKey(rawName, path);
+            if (!seen.add(normalized)) {
+                throw new ConfigValidationException(
+                        path + " has a duplicate subject action '" + rawName
+                                + "' (action keys are case-insensitive)");
+            }
+            ProtectionActionType action;
+            try {
+                action = ProtectionActionType.valueOf(normalized);
+            } catch (IllegalArgumentException unknown) {
+                throw new ConfigValidationException(
+                        path + "." + rawName + " is not a known SUBJECT_PERMISSION action "
+                                + "(rule keys belong under 'rule-defaults')");
+            }
+            PermissionState state = parseDefaultState(entry.getValue(), path + "." + rawName);
+            if (state == PermissionState.INHERIT) {
+                continue;
+            }
+            out.put(action, state);
+        }
+        return out;
+    }
+
+    private static Map<ProtectionActionType, PermissionState> parseSubjectWorldStates(
+            Object raw, String path) {
+        if (raw == null) {
+            throw new ConfigValidationException(path + " must be a mapping of subject action -> state, got null");
+        }
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping of subject action -> ALLOW|DENY|INHERIT, got "
+                            + raw.getClass().getSimpleName());
+        }
+        Map<String, Object> wrapper = Map.of("states", raw);
+        return parseSubjectStates(wrapper, "states", path);
+    }
+
+    private static RuleDefaultsConfig parseRuleDefaults(Object raw, String path) {
+        Map<String, Object> map = requireMapping(raw, path, "'global' and 'worlds'");
+        rejectUnknownKeys(map, path, Set.of("global", "worlds"));
+        Map<LandRuleType, PermissionState> global =
+                parseRuleStates(map, "global", path + ".global");
+        Map<String, Map<LandRuleType, PermissionState>> worlds = new LinkedHashMap<>();
+        if (map.containsKey("worlds")) {
+            Object rawWorlds = map.get("worlds");
+            if (rawWorlds == null) {
+                throw new ConfigValidationException(path + ".worlds must not be null");
+            }
+            if (!(rawWorlds instanceof Map<?, ?> rawWorldsMap)) {
+                throw new ConfigValidationException(
+                        path + ".worlds must be a mapping of world name -> defaults, got "
+                                + rawWorlds.getClass().getSimpleName());
+            }
+            Map<String, Object> worldsMap = castStringKeyMap(rawWorldsMap, path + ".worlds");
+            for (Map.Entry<String, Object> entry : worldsMap.entrySet()) {
+                String worldName = entry.getKey();
+                if (worldName == null || worldName.isBlank()) {
+                    throw new ConfigValidationException(path + ".worlds requires a non-blank world name");
+                }
+                if (worlds.containsKey(worldName)) {
+                    throw new ConfigValidationException(
+                            path + ".worlds has a duplicate world entry '" + worldName + "'");
+                }
+                worlds.put(worldName, parseRuleWorldStates(entry.getValue(),
+                        path + ".worlds." + worldName));
+            }
+        }
+        return new RuleDefaultsConfig(global, worlds);
+    }
+
+    private static Map<LandRuleType, PermissionState> parseRuleStates(
+            Map<String, Object> parent, String key, String path) {
+        if (!parent.containsKey(key)) {
+            return Map.of();
+        }
+        Object raw = parent.get(key);
+        if (raw == null) {
+            throw new ConfigValidationException(path + " must not be null");
+        }
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping of rule -> ALLOW|DENY|INHERIT, got "
+                            + raw.getClass().getSimpleName());
+        }
+        Map<String, Object> map = castStringKeyMap(rawMap, path);
+        Map<LandRuleType, PermissionState> out = new EnumMap<>(LandRuleType.class);
+        Set<String> seen = new HashSet<>();
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String rawName = entry.getKey();
+            String normalized = normalizeEnumKey(rawName, path);
+            if (!seen.add(normalized)) {
+                throw new ConfigValidationException(
+                        path + " has a duplicate rule '" + rawName
+                                + "' (rule keys are case-insensitive)");
+            }
+            LandRuleType rule;
+            try {
+                rule = LandRuleType.valueOf(normalized);
+            } catch (IllegalArgumentException unknown) {
+                throw new ConfigValidationException(
+                        path + "." + rawName + " is not a known LAND_RULE "
+                                + "(subject action keys belong under 'subject-defaults')");
+            }
+            PermissionState state = parseDefaultState(entry.getValue(), path + "." + rawName);
+            if (state == PermissionState.INHERIT) {
+                continue;
+            }
+            out.put(rule, state);
+        }
+        return out;
+    }
+
+    private static Map<LandRuleType, PermissionState> parseRuleWorldStates(
+            Object raw, String path) {
+        if (raw == null) {
+            throw new ConfigValidationException(path + " must be a mapping of rule -> state, got null");
+        }
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping of rule -> ALLOW|DENY|INHERIT, got "
+                            + raw.getClass().getSimpleName());
+        }
+        Map<String, Object> wrapper = Map.of("states", raw);
+        return parseRuleStates(wrapper, "states", path);
+    }
+
+    private static Map<String, Object> requireMapping(Object raw, String path, String expected) {
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping with " + expected + ", got "
+                            + raw.getClass().getSimpleName());
+        }
+        return castStringKeyMap(rawMap, path);
+    }
+
+    private static void rejectUnknownKeys(Map<String, Object> map, String path, Set<String> allowed) {
+        for (String key : map.keySet()) {
+            if (!allowed.contains(key)) {
+                throw new ConfigValidationException(
+                        path + " has unknown key '" + key + "' (only "
+                                + String.join(", ", allowed.stream().map(k -> "'" + k + "'").toList())
+                                + " are supported here)");
+            }
+        }
+    }
+
+    private static String normalizeEnumKey(String rawName, String path) {
+        if (rawName == null || rawName.isBlank()) {
+            throw new ConfigValidationException(path + " requires a non-blank key");
+        }
+        return rawName.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static PermissionState parseDefaultState(Object raw, String path) {
+        if (!(raw instanceof String text)) {
+            throw new ConfigValidationException(
+                    path + " must be ALLOW, DENY or INHERIT, got "
+                            + (raw == null ? "null" : raw.getClass().getSimpleName() + " value '" + raw + "'"));
+        }
+        String normalized = text.trim().toUpperCase(Locale.ROOT);
+        try {
+            return PermissionState.valueOf(normalized);
+        } catch (IllegalArgumentException unknown) {
+            throw new ConfigValidationException(
+                    path + " must be ALLOW, DENY or INHERIT, got '" + text + "'");
+        }
+    }
+
+    private static LimitSettings parseLimits(Object raw, String path) {        if (raw == null) {
             throw new ConfigValidationException(path + " must not be null");
         }
         if (!(raw instanceof Map<?, ?> rawMap)) {

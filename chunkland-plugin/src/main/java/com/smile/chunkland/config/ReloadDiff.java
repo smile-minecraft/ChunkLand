@@ -19,7 +19,8 @@ import java.util.Set;
  * listeners can drop derived state.</p>
  *
  * <p>{@code globalPolicyChanged} is content-based and independent of the global
- * epoch: it is true only when limits, messages or selection timeout changed.</p>
+ * epoch: it is true only when limits, messages, selection timeout or the
+ * subject/rule permission defaults changed.</p>
  */
 public record ReloadDiff(
         Set<String> changedWorlds,

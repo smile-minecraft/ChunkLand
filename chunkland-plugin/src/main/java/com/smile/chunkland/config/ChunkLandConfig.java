@@ -31,6 +31,13 @@ import java.util.Set;
  *
  * <p>The {@code worlds} map holds the typed per-world settings
  * ({@link WorldSettings}) keyed by world name. Names are case-sensitive.</p>
+ *
+ * <p>The {@code subjectDefaults} and {@code ruleDefaults} payloads hold the
+ * world/global permission defaults from the {@code subject-defaults} and
+ * {@code rule-defaults} sections, keyed by world name. They are separate
+ * typed namespaces that never fall back to each other; world names are
+ * resolved to UUIDs once at load/bootstrap by the permission defaults
+ * snapshot, never on the hot path.</p>
  */
 public final class ChunkLandConfig {
 
@@ -38,6 +45,8 @@ public final class ChunkLandConfig {
     private final LimitSettings limits;
     private final MessageSettings messages;
     private final SelectionSettings selection;
+    private final SubjectDefaultsConfig subjectDefaults;
+    private final RuleDefaultsConfig ruleDefaults;
     private final long globalPolicyEpoch;
     private final Map<String, Long> worldPolicyEpochs;
 
@@ -69,10 +78,24 @@ public final class ChunkLandConfig {
                            SelectionSettings selection,
                            long globalPolicyEpoch,
                            Map<String, Long> worldPolicyEpochs) {
+        this(worlds, limits, messages, selection, SubjectDefaultsConfig.empty(), RuleDefaultsConfig.empty(),
+                globalPolicyEpoch, worldPolicyEpochs);
+    }
+
+    public ChunkLandConfig(Map<String, WorldSettings> worlds,
+                           LimitSettings limits,
+                           MessageSettings messages,
+                           SelectionSettings selection,
+                           SubjectDefaultsConfig subjectDefaults,
+                           RuleDefaultsConfig ruleDefaults,
+                           long globalPolicyEpoch,
+                           Map<String, Long> worldPolicyEpochs) {
         Objects.requireNonNull(worlds, "worlds");
         Objects.requireNonNull(limits, "limits");
         Objects.requireNonNull(messages, "messages");
         Objects.requireNonNull(selection, "selection");
+        Objects.requireNonNull(subjectDefaults, "subjectDefaults");
+        Objects.requireNonNull(ruleDefaults, "ruleDefaults");
         Objects.requireNonNull(worldPolicyEpochs, "worldPolicyEpochs");
         if (globalPolicyEpoch < 0) {
             throw new IllegalArgumentException(
@@ -103,6 +126,8 @@ public final class ChunkLandConfig {
         this.limits = limits;
         this.messages = messages;
         this.selection = selection;
+        this.subjectDefaults = subjectDefaults;
+        this.ruleDefaults = ruleDefaults;
         this.globalPolicyEpoch = globalPolicyEpoch;
         this.worldPolicyEpochs = Collections.unmodifiableMap(defensiveEpochs);
     }
@@ -127,6 +152,14 @@ public final class ChunkLandConfig {
 
     public SelectionSettings selection() {
         return selection;
+    }
+
+    public SubjectDefaultsConfig subjectDefaults() {
+        return subjectDefaults;
+    }
+
+    public RuleDefaultsConfig ruleDefaults() {
+        return ruleDefaults;
     }
 
     public long globalPolicyEpoch() {
@@ -158,17 +191,32 @@ public final class ChunkLandConfig {
      */
     public ChunkLandConfig withWorlds(Map<String, WorldSettings> newWorlds) {
         Objects.requireNonNull(newWorlds, "newWorlds");
-        return new ChunkLandConfig(newWorlds, limits, messages, selection, globalPolicyEpoch, worldPolicyEpochs);
+        return new ChunkLandConfig(newWorlds, limits, messages, selection, subjectDefaults, ruleDefaults,
+                globalPolicyEpoch, worldPolicyEpochs);
     }
 
     public ChunkLandConfig withLimits(LimitSettings newLimits) {
         Objects.requireNonNull(newLimits, "newLimits");
-        return new ChunkLandConfig(worlds, newLimits, messages, selection, globalPolicyEpoch, worldPolicyEpochs);
+        return new ChunkLandConfig(worlds, newLimits, messages, selection, subjectDefaults, ruleDefaults,
+                globalPolicyEpoch, worldPolicyEpochs);
     }
 
     public ChunkLandConfig withMessages(MessageSettings newMessages) {
         Objects.requireNonNull(newMessages, "newMessages");
-        return new ChunkLandConfig(worlds, limits, newMessages, selection, globalPolicyEpoch, worldPolicyEpochs);
+        return new ChunkLandConfig(worlds, limits, newMessages, selection, subjectDefaults, ruleDefaults,
+                globalPolicyEpoch, worldPolicyEpochs);
+    }
+
+    public ChunkLandConfig withSubjectDefaults(SubjectDefaultsConfig newSubjectDefaults) {
+        Objects.requireNonNull(newSubjectDefaults, "newSubjectDefaults");
+        return new ChunkLandConfig(worlds, limits, messages, selection, newSubjectDefaults, ruleDefaults,
+                globalPolicyEpoch, worldPolicyEpochs);
+    }
+
+    public ChunkLandConfig withRuleDefaults(RuleDefaultsConfig newRuleDefaults) {
+        Objects.requireNonNull(newRuleDefaults, "newRuleDefaults");
+        return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, newRuleDefaults,
+                globalPolicyEpoch, worldPolicyEpochs);
     }
 
     /**
@@ -196,6 +244,8 @@ public final class ChunkLandConfig {
                 this.limits,
                 this.messages,
                 this.selection,
+                this.subjectDefaults,
+                this.ruleDefaults,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped);
     }
@@ -215,6 +265,8 @@ public final class ChunkLandConfig {
                 nextLimits,
                 this.messages,
                 this.selection,
+                this.subjectDefaults,
+                this.ruleDefaults,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped);
     }
@@ -227,10 +279,22 @@ public final class ChunkLandConfig {
                                             LimitSettings nextLimits,
                                             MessageSettings nextMessages,
                                             SelectionSettings nextSelection) {
+        return withEpochsBumped(nextWorlds, nextLimits, nextMessages, nextSelection,
+                this.subjectDefaults, this.ruleDefaults);
+    }
+
+    public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds,
+                                            LimitSettings nextLimits,
+                                            MessageSettings nextMessages,
+                                            SelectionSettings nextSelection,
+                                            SubjectDefaultsConfig nextSubjectDefaults,
+                                            RuleDefaultsConfig nextRuleDefaults) {
         Objects.requireNonNull(nextWorlds, "nextWorlds");
         Objects.requireNonNull(nextLimits, "nextLimits");
         Objects.requireNonNull(nextMessages, "nextMessages");
         Objects.requireNonNull(nextSelection, "nextSelection");
+        Objects.requireNonNull(nextSubjectDefaults, "nextSubjectDefaults");
+        Objects.requireNonNull(nextRuleDefaults, "nextRuleDefaults");
         Set<String> union = new LinkedHashSet<>(this.worldPolicyEpochs.keySet());
         union.addAll(nextWorlds.keySet());
         Map<String, Long> bumped = new HashMap<>(union.size());
@@ -243,6 +307,8 @@ public final class ChunkLandConfig {
                 nextLimits,
                 nextMessages,
                 nextSelection,
+                nextSubjectDefaults,
+                nextRuleDefaults,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped);
     }

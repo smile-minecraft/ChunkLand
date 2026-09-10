@@ -65,6 +65,23 @@ public final class LandRuleService implements LandRuleLookup {
     }
 
     /**
+     * Service whose world/global layers come from the config defaults
+     * snapshot. Land rules stay empty (no durable rule source is wired yet),
+     * so unknown lands still resolve through world/global/built-in defaults
+     * and missing lands still yield {@code Optional.empty()}.
+     *
+     * @param snapshot UUID-keyed config defaults; {@code null} behaves like
+     *                 {@link #defaults()}
+     */
+    public static LandRuleService fromRuleSnapshot(
+            com.smile.chunkland.protection.PermissionDefaultsSnapshot snapshot) {
+        if (snapshot == null) {
+            return defaults();
+        }
+        return new LandRuleService(Map.of(), snapshot.ruleWorlds(), snapshot.ruleGlobal());
+    }
+
+    /**
      * The built-in default per rule, used when no Land / World / Global layer
      * sets a value. Protective rules default to {@code DENY}; passive mob
      * spawning is harmless ambience and defaults to {@code ALLOW} to preserve

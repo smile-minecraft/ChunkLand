@@ -3,6 +3,7 @@ package com.smile.chunkland.protection;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.api.permission.DecisionSource;
 import com.smile.chunkland.api.permission.PermissionContext;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
@@ -34,6 +35,19 @@ import java.util.UUID;
  * bound by environment rules like anyone else. A lookup that throws, returns
  * {@code null}, or yields empty propagates as an exception or {@code INHERIT},
  * and the engine turns both into {@code DENY} (fail-closed).
+ *
+ * <p>Namespace routing: subject defaults and rule defaults are separate
+ * typed namespaces from parse time on. The shared world/global context
+ * layers always carry the <em>subject</em> namespace; for {@code LAND_RULE}
+ * actions they are forced to {@code INHERIT} so a subject key can never
+ * decide the rule chain. Rule world/global defaults instead arrive
+ * pre-resolved inside the {@link LandRuleLookup} result (for example a
+ * {@code LandRuleService} built from the rule namespace) and sit on the
+ * land-rule layer, so a rule key can never decide the subject chain either.
+ * {@code COMBINED} actions keep the subject layers and read the effective
+ * rule from the land-rule layer: the rule half stops there for known lands
+ * (the rule service always returns a concrete state), so it never reaches
+ * the subject-carrying layers.</p>
  *
  * <p>Hot-path rules: memory-only snapshot and lookup reads, no blocking, no
  * cross-region calls, no storage access.
@@ -76,12 +90,17 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         SubjectPermissionLookup.Grant grants =
                 SubjectPermissionLookup.requireNonNullGrant(
                         subjectLookup.grants(actor, landId, action, snapshot));
+        // LAND_RULE actions must not observe the subject namespace: their
+        // world/global layers stay INHERIT and the rule chain decides purely
+        // from the pre-resolved land-rule layer (which already folds the rule
+        // namespace's land -> world -> global -> built-in order).
+        boolean ruleAction = action.decisionSource() == DecisionSource.LAND_RULE;
         return PermissionContext.builder(action)
                 .isOwner(owner)
                 .landBindings(grants.landBindings())
                 .landDefault(grants.landDefault())
-                .worldDefault(grants.worldDefault())
-                .globalDefault(grants.globalDefault())
+                .worldDefault(ruleAction ? PermissionState.INHERIT : grants.worldDefault())
+                .globalDefault(ruleAction ? PermissionState.INHERIT : grants.globalDefault())
                 .landRule(ruleState(landId, action, snapshot))
                 .build();
     }

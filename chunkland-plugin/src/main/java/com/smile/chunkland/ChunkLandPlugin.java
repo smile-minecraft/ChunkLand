@@ -49,8 +49,8 @@ import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
-import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
-import com.smile.chunkland.protection.SubjectPermissionLookup;
+import com.smile.chunkland.protection.PermissionDefaultsCache;
+import com.smile.chunkland.protection.SnapshotPermissionContextProvider;import com.smile.chunkland.protection.SubjectPermissionLookup;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.api.ChunkLandReadApi;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
@@ -169,6 +169,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SelectionStructureRevisionLookup selectionStructureRevisions;
     private LandRegistryStore protectionStore;
     private ProtectionEngine protectionEngine;
+    private PermissionDefaultsCache permissionDefaults;
     private SnapshotProtectionDepthLookup protectionDepthLookup;
     private ProtectionListener protectionListener;
     private ClaimStartupBootstrap claimStartup;
@@ -298,7 +299,17 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // the same live snapshots the engine enforces.
         this.protectionStore = new LandRegistryStore();
         this.readApiLifecycle = new ReadApiLifecycle();
-        this.protectionEngine = buildProtectionEngine(this.protectionStore);
+        // Config permission defaults: world names resolve to UUIDs once here
+        // (and on every config reload) against the startup-captured table, so
+        // the enforcement hot path only reads immutable UUID-keyed maps. Land
+        // bindings/defaults still have no durable source and stay empty/
+        // INHERIT — strangers fall through to the configured world/global
+        // defaults, then to implicit DENY.
+        this.permissionDefaults = buildPermissionDefaults(
+                activeConfig, snapshotWorldIdsByName(), getLogger()::warning);
+        this.configService.ifPresent(service -> service.addListener(this.permissionDefaults));
+        this.protectionEngine = buildProtectionEngine(this.protectionStore,
+                this.permissionDefaults.ruleLookup(), this.permissionDefaults.subjectLookup());
         // Formal per-world vertical-mode read path: the lookup resolves the
         // effective depth from the live config snapshot plus the
         // startup-injected name/minimum tables, so the hot path performs only
@@ -344,7 +355,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null)),
-                null, buildManagementGateResolver(this.protectionStore));
+                null, buildManagementGateResolver(this.protectionStore,
+                        () -> new SnapshotPermissionContextProvider(
+                                this.permissionDefaults.ruleLookup(),
+                                this.permissionDefaults.subjectLookup()),
+                        PluginManagementGateResolver.TargetLandResolver.currentLocation()));
         // Wand safety listener: native Bukkit listener for selection wand protection
         this.wandSafetyListener = new WandSafetyListener();
         this.protectionListener = new ProtectionListener(this.protectionEngine);
@@ -827,6 +842,51 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Production permission-defaults cache over the live config snapshot.
+     *
+     * <p>World names resolve through the startup-captured name table (no
+     * Bukkit on the hot path or on reload); unknown entries warn once per
+     * resolve and are ignored. A {@code null} config or table fails closed
+     * to empty defaults. Worlds created after startup that carry config
+     * entries stay {@code INHERIT} until the next restart — the same posture
+     * as the protection depth lookup's startup table.
+     */
+    static PermissionDefaultsCache buildPermissionDefaults(ConfigService config,
+                                                           Map<String, UUID> worldIdsByName,
+                                                           java.util.function.Consumer<String> warnings) {
+        Map<String, UUID> table = worldIdsByName == null ? Map.of() : Map.copyOf(worldIdsByName);
+        java.util.function.Supplier<ChunkLandConfig> configs =
+                config == null ? ChunkLandConfig::defaults : config::current;
+        return new PermissionDefaultsCache(configs,
+                name -> Optional.ofNullable(name == null ? null : table.get(name)),
+                warnings);
+    }
+
+    /**
+     * Startup snapshot of world config name to world UUID, read once at enable.
+     * Config world entries absent from this table warn and stay {@code INHERIT}
+     * (fail-closed) until the world is known at a later restart.
+     */
+    private Map<String, UUID> snapshotWorldIdsByName() {
+        Map<String, UUID> ids = new HashMap<>();
+        try {
+            for (org.bukkit.World world : getServer().getWorlds()) {
+                if (world == null) {
+                    continue;
+                }
+                try {
+                    ids.putIfAbsent(world.getName(), world.getUID());
+                } catch (RuntimeException ignored) {
+                    // One unreadable world must not poison the rest of the table.
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // No world list at all: every world default stays INHERIT.
+        }
+        return Map.copyOf(ids);
+    }
+
+    /**
      * Startup snapshot of world UUID to config name, read once at enable.
      * Later world loads are absent from the table and read stored depths
      * (fail-closed); a live minimum adapter replaces this table when it lands.
@@ -1138,6 +1198,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
             } catch (RuntimeException ignored) {
             }
         }
+        // Detach the permission defaults cache before clearing it below: a
+        // retained config service reloading after disable must not refresh
+        // the disabled cache.
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        if (defaults != null && configService != null && configService.isPresent()) {
+            try {
+                configService.get().removeListener(defaults);
+            } catch (RuntimeException ignored) {
+            }
+        }
         if (selectionLifecycleListener != null) {
             try {
                 HandlerList.unregisterAll(selectionLifecycleListener);
@@ -1172,6 +1242,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         protectionEngine = null;
         protectionStore = null;
         protectionDepthLookup = null;
+        permissionDefaults = null;
         // Depth extends stop before persistence closes: the service first
         // stops accepting new proposals, flushes every accepted write, and
         // only then closes the persistence handle, so no accepted extend is
