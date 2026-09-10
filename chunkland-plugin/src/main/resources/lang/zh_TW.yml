@@ -11,7 +11,7 @@ message:
       unknown: '未知動作：<payload>'
 command:
   land:
-    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete|group]</gray>"
+    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete|group|profile]</gray>"
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
@@ -96,6 +96,16 @@ command:
       deleted: "<green>群組 <group> 已刪除。</green>"
       force_deleted: "<green>群組 <group> 已強制刪除：<affected>。</green>"
       failed: "<red>群組操作失敗：<reason>。</red>"
+    profile:
+      console: "<red>只有玩家可以管理權限組合。</red>"
+      usage: "<yellow>用法：/land profile (create|list|set|delete) [參數]</yellow>"
+      created: "<green>權限組合 <profile> 已建立。</green>"
+      listed: "<green>權限組合：<profiles>。</green>"
+      listed_empty: "<gray>尚無權限組合。</gray>"
+      set: "<green>權限組合 <profile> 的 <action> 已設為 <state>。</green>"
+      deleted: "<green>權限組合 <profile> 已刪除。</green>"
+      force_deleted: "<green>權限組合 <profile> 已強制刪除：<affected>。</green>"
+      failed: "<red>權限組合操作失敗：<reason>。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"

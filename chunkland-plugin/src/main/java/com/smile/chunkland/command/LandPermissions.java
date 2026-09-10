@@ -26,9 +26,10 @@ public final class LandPermissions {
     public static final String RENAME = "chunkland.command.land.rename";
     public static final String DELETE = "chunkland.command.land.delete";
     public static final String GROUP = "chunkland.command.land.group";
+    public static final String PROFILE = "chunkland.command.land.profile";
 
     public static final List<String> ALL_ORDERED = List.of(
-            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP);
+            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE);
 
     private static final Map<String, String> BY_SUBCOMMAND = Map.ofEntries(
             Map.entry("help", HELP),
@@ -46,7 +47,8 @@ public final class LandPermissions {
             Map.entry("unclaim", SHRINK),
             Map.entry("rename", RENAME),
             Map.entry("delete", DELETE),
-            Map.entry("group", GROUP)
+            Map.entry("group", GROUP),
+            Map.entry("profile", PROFILE)
     );
 
     private LandPermissions() {}

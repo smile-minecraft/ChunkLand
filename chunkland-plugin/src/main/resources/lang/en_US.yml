@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete|group]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete|group|profile]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -96,6 +96,16 @@ command:
       deleted: "<green>Group <group> deleted.</green>"
       force_deleted: "<green>Group <group> force deleted: <affected>.</green>"
       failed: "<red>Group operation failed: <reason>.</red>"
+    profile:
+      console: "<red>Only players can manage profiles.</red>"
+      usage: "<yellow>Usage: /land profile (create|list|set|delete) [args]</yellow>"
+      created: "<green>Profile <profile> created.</green>"
+      listed: "<green>Profiles: <profiles>.</green>"
+      listed_empty: "<gray>No profiles yet.</gray>"
+      set: "<green>Profile <profile> entry <action> set to <state>.</green>"
+      deleted: "<green>Profile <profile> deleted.</green>"
+      force_deleted: "<green>Profile <profile> force deleted: <affected>.</green>"
+      failed: "<red>Profile operation failed: <reason>.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

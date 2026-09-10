@@ -10,7 +10,7 @@ commands:
     usage: /chunkland m0message [locale] | /chunkland m0test [scheduler|gui|form|cancelall] | /chunkland viz <start|stop|status>
   land:
     description: ChunkLand land management commands
-    usage: /land <help|confirm|wand|claim|trust|untrust|default|ban|unban|subland|expand|shrink|unclaim|rename|delete|group>
+    usage: /land <help|confirm|wand|claim|trust|untrust|default|ban|unban|subland|expand|shrink|unclaim|rename|delete|group|profile>
 permissions:
   chunkland.admin.serverland:
     default: op
@@ -49,4 +49,6 @@ permissions:
   chunkland.command.land.delete:
     default: op
   chunkland.command.land.group:
+    default: op
+  chunkland.command.land.profile:
     default: op
