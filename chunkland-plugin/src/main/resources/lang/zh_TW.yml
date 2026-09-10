@@ -11,7 +11,7 @@ message:
       unknown: '未知動作：<payload>'
 command:
   land:
-    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|rename|delete]</gray>"
+    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete]</gray>"
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
@@ -76,6 +76,15 @@ command:
       rejected: "<red>重新命名被拒絕：<reason>。</red>"
       failed: "<red>重新命名失敗：<reason>。</red>"
       degraded: "<yellow>領地已重新命名為 <new_name>，但即時地圖仍在重建中：<reason>。</yellow>"
+    shrink:
+      console: "<red>只有玩家可以縮減領地。</red>"
+      no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再重新執行 /land shrink。</yellow>"
+      no_target: "<yellow>請站在要縮減的領地上並先指定目標。</yellow>"
+      success: "<green>已縮減 <chunk_count> 個區塊，已退費 <refund>。</green>"
+      compensation_pending: "<yellow>已縮減 <chunk_count> 個區塊，<refund> 的退費仍在處理中。</yellow>"
+      delete_required: "<yellow>這會移除整個領地。請改用 /land delete 完整刪除。</yellow>"
+      rejected: "<red>縮減被拒絕：<reason>。</red>"
+      failed: "<red>縮減失敗：<reason>。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"

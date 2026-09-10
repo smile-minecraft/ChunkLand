@@ -82,6 +82,32 @@ public final class OwnerQuotaService {
         }
     }
 
+    /**
+     * Release durable chunk capacity after a shrink commit freed chunks.
+     *
+     * <p>Decrements the committed chunk total by {@code chunks}, floored at
+     * zero so a stale counter can never go negative. Server owners are
+     * untracked and stay a no-op. Best effort by design: callers invoke this
+     * only after the durable domain already won, so a failure here never
+     * blocks the refund or the runtime publish.
+     */
+    public void releaseCommittedChunks(OwnerRef owner, int chunks) {
+        Objects.requireNonNull(owner, "owner");
+        if (chunks < 0) {
+            throw new IllegalArgumentException("chunks must be >= 0: " + chunks);
+        }
+        if (chunks == 0 || owner instanceof OwnerRef.ServerOwnerRef) {
+            return;
+        }
+        State s = states.get(owner.key());
+        if (s == null) {
+            return;
+        }
+        synchronized (s.lock) {
+            s.chunkCommitted = Math.max(0, s.chunkCommitted - chunks);
+        }
+    }
+
     public int committed(OwnerRef owner) {
         return landCommitted(owner);
     }
@@ -216,8 +242,7 @@ public final class OwnerQuotaService {
     }
 
     // Called by QuotaReservation to atomically transition.
-    void completeReservation(String key, State state, boolean isChunk, int chunkDelta) {
-        synchronized (state.lock) {
+    void completeReservation(String key, State state, boolean isChunk, int chunkDelta) {        synchronized (state.lock) {
             if (isChunk) {
                 if (state.chunkReserved < chunkDelta) {
                     throw new IllegalStateException("reserved chunk mismatch for " + key);

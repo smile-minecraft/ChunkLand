@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|rename|delete]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -76,6 +76,15 @@ command:
       rejected: "<red>Rename rejected: <reason>.</red>"
       failed: "<red>Rename failed: <reason>.</red>"
       degraded: "<yellow>Land renamed to <new_name> but the live map is still rebuilding: <reason>.</yellow>"
+    shrink:
+      console: "<red>Only players can shrink land.</red>"
+      no_selection: "<yellow>No active selection. Select chunks first, then run /land shrink again.</yellow>"
+      no_target: "<yellow>Stand on the land you want to shrink and target it first.</yellow>"
+      success: "<green>Shrunk <chunk_count> chunks. Refunded <refund>.</green>"
+      compensation_pending: "<yellow>Shrunk <chunk_count> chunks. The refund of <refund> is still being processed.</yellow>"
+      delete_required: "<yellow>That would remove the whole land. Use /land delete to remove it entirely.</yellow>"
+      rejected: "<red>Shrink rejected: <reason>.</red>"
+      failed: "<red>Shrink failed: <reason>.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

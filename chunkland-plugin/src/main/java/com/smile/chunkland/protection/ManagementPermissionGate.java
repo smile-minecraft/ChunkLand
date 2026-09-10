@@ -36,8 +36,8 @@ import java.util.UUID;
  *
  * <p>Operation mapping: member changes resolve {@code MANAGE_MEMBER},
  * binding/default/profile changes resolve {@code MANAGE_PERMISSION}, SubLand
- * CRUD resolves {@code MANAGE_SUBLAND}, expansion resolves {@code EXPAND_LAND},
- * and deletion resolves {@code DELETE_LAND}. All five are
+ * CRUD resolves {@code MANAGE_SUBLAND}, expansion and shrink/unclaim resolve
+ * {@code EXPAND_LAND}, and deletion resolves {@code DELETE_LAND}. All five are
  * {@code SUBJECT_PERMISSION}, so the Owner Guarantee applies and the owner
  * always passes without Admin Bypass.
  *
@@ -69,6 +69,8 @@ public final class ManagementPermissionGate {
             "unban", ProtectionActionType.MANAGE_MEMBER,
             "subland", ProtectionActionType.MANAGE_SUBLAND,
             "expand", ProtectionActionType.EXPAND_LAND,
+            "shrink", ProtectionActionType.EXPAND_LAND,
+            "unclaim", ProtectionActionType.EXPAND_LAND,
             "delete", ProtectionActionType.DELETE_LAND);
 
     private ManagementPermissionGate() {

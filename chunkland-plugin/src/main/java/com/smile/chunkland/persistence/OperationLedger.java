@@ -439,6 +439,231 @@ public final class OperationLedger {
         }));
     }
 
+    /**
+     * Writes a shrink's durable truth in one SQL transaction: the delta chunk
+     * rows are deleted, the land {@code structure_revision} is bumped by
+     * exactly one under compare-and-set, the {@code CHUNK_REMOVE} audit row is
+     * recorded and the ledger advances to {@code DOMAIN_COMMITTED}. No
+     * repository callback or external collaborator is called.
+     *
+     * <p>Each delta row is re-read inside the transaction: a missing chunk, a
+     * chunk owned by another land, or a stored cost basis that no longer
+     * matches the validated value aborts the whole transaction, so stale or
+     * already-removed requests fail closed without moving money. The remaining
+     * chunk set is re-checked for 4-neighbor connectivity (a split aborts) and
+     * every stored SubLand cuboid is re-checked for overlap with the delta (an
+     * orphan aborts), so the database stays the final authority behind the
+     * validator's snapshot checks. Two shrinks racing on the same revision
+     * serialize to exactly one winner through the revision compare-and-set.
+     */
+    public CompletionStage<Void> commitShrinkAtomically(ShrinkCommit commit) {
+        Objects.requireNonNull(commit, "commit");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, c -> {
+            LedgerEntry created = findRow(c, commit.operationId());
+            if (!LedgerState.CREATED.name().equals(created.state())) {
+                throw new SQLException("atomic shrink commit requires CREATED state, got " + created.state());
+            }
+            validateShrinkAgainstPayload(created, commit);
+            String storedOwnerKey = readLandOwnerKey(c, commit.landId(), commit.worldId());
+            if (!storedOwnerKey.equals(commit.owner().key())) {
+                throw new SQLException("shrink owner changed since validation");
+            }
+            verifyShrinkChunks(c, commit);
+            java.util.Set<com.smile.chunkland.api.land.ChunkKey> remaining =
+                    readRemainingChunks(c, commit);
+            if (remaining.isEmpty()) {
+                throw new SQLException("shrink.delete_required: removal would leave an empty land");
+            }
+            try {
+                com.smile.chunkland.api.geometry.ChunkGeometry geometry =
+                        new com.smile.chunkland.api.geometry.ChunkGeometry(remaining);
+                if (!geometry.isConnected()) {
+                    throw new SQLException("shrink.split: removal would split the land");
+                }
+            } catch (IllegalArgumentException geometryFailure) {
+                throw new SQLException("shrink.split: removal would split the land", geometryFailure);
+            }
+            verifyShrinkSubLands(c, commit);
+            failureInjector.accept(AtomicCommitStep.AFTER_LAND);
+            deleteShrinkChunks(c, commit);
+            failureInjector.accept(AtomicCommitStep.AFTER_CHUNKS);
+            casStructureRevision(c, commit.expectedStructureRevision(),
+                    commit.landId(), commit.audit().timestamp());
+            insertAudit(c, commit.audit());
+            failureInjector.accept(AtomicCommitStep.AFTER_AUDIT);
+            SqliteLedgerRepository.compareAndSetState(
+                    c, commit.operationId(), LedgerState.CREATED, LedgerState.DOMAIN_COMMITTED,
+                    null, commit.audit().timestamp());
+            failureInjector.accept(AtomicCommitStep.AFTER_LEDGER);
+            return null;
+        }));
+    }
+
+    private static void validateShrinkAgainstPayload(LedgerEntry created, ShrinkCommit commit) throws SQLException {
+        final OperationPayload payload;
+        try {
+            payload = OperationPayload.fromJson(created.payloadJson());
+        } catch (RuntimeException failure) {
+            throw new SQLException("shrink operation has an invalid payload", failure);
+        }
+        if (!"SHRINK".equals(payload.operationType())) {
+            throw new SQLException("atomic shrink commit requires a SHRINK payload, got "
+                    + payload.operationType());
+        }
+        if (!payload.operationId().equals(commit.operationId())) {
+            throw new SQLException("payload operationId does not match ledger row");
+        }
+        if (payload.targetLandId() == null || !payload.targetLandId().equals(commit.landId())) {
+            throw new SQLException("shrunk land does not match payload targetLandId");
+        }
+        if (!payload.worldUuid().equals(commit.worldId())) {
+            throw new SQLException("shrunk land does not match payload worldUuid");
+        }
+        if (!payload.chunkSet().equals(commit.chunks())) {
+            throw new SQLException("shrunk chunks must use the saved operation payload");
+        }
+        if (payload.priceMinorUnits() != commit.refundAmountMinorUnits()) {
+            throw new SQLException("shrink refund amount does not match payload priceMinorUnits");
+        }
+    }
+
+    private static void verifyShrinkChunks(java.sql.Connection connection, ShrinkCommit commit)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT land_id, cost_basis_minor_units FROM land_chunks "
+                        + "WHERE world_uuid = ? AND chunk_x = ? AND chunk_z = ?")) {
+            for (OperationPayload.Chunk chunk : commit.chunks()) {
+                statement.setBytes(1, UuidBlob.encode(chunk.chunk().worldId()));
+                statement.setInt(2, chunk.chunk().chunkX());
+                statement.setInt(3, chunk.chunk().chunkZ());
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (!rows.next()) {
+                        throw new SQLException("shrink chunk is already released or unknown: "
+                                + chunk.chunk().chunkX() + "," + chunk.chunk().chunkZ());
+                    }
+                    byte[] landBytes = rows.getBytes(1);
+                    if (landBytes == null || !commit.landId().value().equals(UuidBlob.decode(landBytes))) {
+                        throw new SQLException("shrink chunk does not belong to the shrunk land");
+                    }
+                    Object basisValue = rows.getObject(2);
+                    if (basisValue == null) {
+                        throw new SQLException("shrink chunk has no durable cost basis");
+                    }
+                    long storedBasis = rows.getLong(2);
+                    if (storedBasis < 0) {
+                        throw new SQLException("shrink chunk has a negative durable cost basis");
+                    }
+                    if (storedBasis != chunk.costBasisMinorUnits()) {
+                        throw new SQLException("shrink chunk cost basis changed since validation");
+                    }
+                }
+            }
+        }
+    }
+
+    private static java.util.Set<com.smile.chunkland.api.land.ChunkKey> readRemainingChunks(
+            java.sql.Connection connection, ShrinkCommit commit) throws SQLException {
+        java.util.Set<com.smile.chunkland.api.land.ChunkKey> deltaKeys = new java.util.HashSet<>();
+        for (OperationPayload.Chunk chunk : commit.chunks()) {
+            deltaKeys.add(chunk.chunk());
+        }
+        java.util.Set<com.smile.chunkland.api.land.ChunkKey> remaining = new java.util.HashSet<>();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT world_uuid, chunk_x, chunk_z FROM land_chunks WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(commit.landId().value()));
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    byte[] worldBytes = rows.getBytes(1);
+                    if (worldBytes == null) {
+                        throw new SQLException("shrink land chunk has no world");
+                    }
+                    com.smile.chunkland.api.land.ChunkKey key =
+                            new com.smile.chunkland.api.land.ChunkKey(
+                                    UuidBlob.decode(worldBytes), rows.getInt(2), rows.getInt(3));
+                    if (!deltaKeys.contains(key)) {
+                        remaining.add(key);
+                    }
+                }
+            }
+        }
+        return java.util.Set.copyOf(remaining);
+    }
+
+    private static void verifyShrinkSubLands(java.sql.Connection connection, ShrinkCommit commit)
+            throws SQLException {
+        java.util.Set<com.smile.chunkland.api.land.ChunkKey> deltaKeys = new java.util.HashSet<>();
+        for (OperationPayload.Chunk chunk : commit.chunks()) {
+            deltaKeys.add(chunk.chunk());
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT min_x, min_y, min_z, max_x, max_y, max_z, world_uuid FROM sublands "
+                        + "WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(commit.landId().value()));
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    com.smile.chunkland.api.land.Cuboid cuboid =
+                            new com.smile.chunkland.api.land.Cuboid(
+                                    rows.getInt(1), rows.getInt(2), rows.getInt(3),
+                                    rows.getInt(4), rows.getInt(5), rows.getInt(6));
+                    byte[] worldBytes = rows.getBytes(7);
+                    if (worldBytes == null) {
+                        throw new SQLException("shrink subland has no world");
+                    }
+                    java.util.UUID subWorld = UuidBlob.decode(worldBytes);
+                    java.util.Set<com.smile.chunkland.api.land.ChunkKey> covered;
+                    try {
+                        covered = cuboid.coveredChunks(subWorld);
+                    } catch (RuntimeException failure) {
+                        throw new SQLException("shrink subland geometry is not analysable", failure);
+                    }
+                    for (com.smile.chunkland.api.land.ChunkKey key : covered) {
+                        if (deltaKeys.contains(key)) {
+                            throw new SQLException(
+                                    "shrink.subland_overlap: removal would orphan a subland");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void deleteShrinkChunks(java.sql.Connection connection, ShrinkCommit commit)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM land_chunks WHERE world_uuid = ? AND chunk_x = ? AND chunk_z = ?")) {
+            for (OperationPayload.Chunk chunk : commit.chunks()) {
+                statement.setBytes(1, UuidBlob.encode(chunk.chunk().worldId()));
+                statement.setInt(2, chunk.chunk().chunkX());
+                statement.setInt(3, chunk.chunk().chunkZ());
+                if (statement.executeUpdate() != 1) {
+                    throw new SQLException("shrink chunk disappeared during commit");
+                }
+            }
+        }
+    }
+
+    private static void casStructureRevision(
+            java.sql.Connection connection, long expectedStructureRevision, LandId landId,
+            java.time.Instant updatedAt) throws SQLException {
+        long next;
+        try {
+            next = Math.addExact(expectedStructureRevision, 1);
+        } catch (ArithmeticException overflow) {
+            throw new SQLException("expectedStructureRevision overflows", overflow);
+        }
+        try (PreparedStatement bump = connection.prepareStatement(
+                "UPDATE lands SET structure_revision = ?, updated_at = ? WHERE id = ? AND structure_revision = ?")) {
+            bump.setLong(1, next);
+            bump.setLong(2, updatedAt.toEpochMilli());
+            bump.setBytes(3, UuidBlob.encode(landId.value()));
+            bump.setLong(4, expectedStructureRevision);
+            if (bump.executeUpdate() != 1) {
+                throw new SQLException("stale land structure revision: expected "
+                        + expectedStructureRevision + " but the durable row moved");
+            }
+        }
+    }
+
     private static void insertRow(Connection connection, LedgerEntry entry) throws SQLException {
         String sql = "INSERT INTO operation_ledger (operation_id, operation_type, state, actor_uuid, world_uuid, "
                 + "target_land_id, price_minor_units, economy_provider_id, economy_transaction_ref, payload_json, "

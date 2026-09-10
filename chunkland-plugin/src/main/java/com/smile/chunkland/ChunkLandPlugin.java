@@ -22,10 +22,14 @@ import com.smile.chunkland.claim.ClaimValidator;
 import com.smile.chunkland.claim.ExpandSaga;
 import com.smile.chunkland.claim.ExpandValidator;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
+import com.smile.chunkland.claim.ShrinkSaga;
+import com.smile.chunkland.claim.ShrinkValidator;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
 import com.smile.chunkland.claim.SnapshotExpandValidator;
+import com.smile.chunkland.claim.SnapshotShrinkValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
 import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.command.BedrockClaimFormHandler;
 import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ClaimFormTexts;
@@ -33,6 +37,7 @@ import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.DirectTrustCommandHandler;
 import com.smile.chunkland.command.EntryBanCommandHandler;
 import com.smile.chunkland.command.ExpandCommandHandler;
+import com.smile.chunkland.command.ShrinkCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
@@ -193,6 +198,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ClaimStartupBootstrap claimStartup;
     private ClaimSaga claimSaga;
     private ExpandSaga expandSaga;
+    private ShrinkSaga shrinkSaga;
     private OwnerQuotaService claimQuotas;
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
@@ -463,7 +469,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
                          trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler,
-                         expandRunner(), expandCurrentLand(this.protectionStore), renameHandler),
+                          expandRunner(), expandCurrentLand(this.protectionStore),
+                          shrinkRunner(), expandCurrentLand(this.protectionStore),
+                          shrinkTargetOwner(this.protectionStore), renameHandler),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -520,6 +528,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // entry with the real handler when a runner exists.
         base.put("expand", (sender, args, sink) ->
                 sink.reply("command.land.expand.failed", Map.of("reason", "expand.unavailable")));
+        // Shrink and its unclaim alias share one flow: without a runner both
+        // slots stay fail-closed with shrink.unavailable instead of the
+        // not-yet stub.
+        LandCommand.Handler shrinkUnavailable = (sender, args, sink) ->
+                sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.unavailable"));
+        base.put("shrink", shrinkUnavailable);
+        base.put("unclaim", shrinkUnavailable);
         return Map.copyOf(base);
     }
 
@@ -692,6 +707,67 @@ public final class ChunkLandPlugin extends JavaPlugin {
             ExpandCommandHandler.ExpandRunner expand,
             java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
             RenameCommandHandler rename) {
+        return buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                null, null, rename);
+    }
+
+    /**
+     * Production {@code /land} handlers with the land shrink flow wired.
+     *
+     * <p>{@code shrink} and {@code unclaim} share one handler instance and
+     * one saga runner: both aliases remove the current selection from the
+     * current-location land. A null shrink runner keeps both slots
+     * fail-closed with {@code shrink.unavailable} instead of the not-yet
+     * stub, so an unwired server never pretends the flow is coming soon and
+     * never runs a half-wired mutation.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            RenameCommandHandler rename) {
+        return buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, null, rename);
+    }
+
+    /**
+     * Production {@code /land} handlers with the land shrink flow wired.
+     *
+     * <p>{@code shrink} and {@code unclaim} share one handler instance and
+     * one saga runner: both aliases remove the current selection from the
+     * current-location land. A null shrink runner keeps both slots
+     * fail-closed with {@code shrink.unavailable} instead of the not-yet
+     * stub, so an unwired server never pretends the flow is coming soon and
+     * never runs a half-wired mutation. The target owner view resolves the
+     * target land's owner from the already-published snapshot (no I/O), so a
+     * Server Land steward passes validation with a zero refund while a
+     * player land keeps its owner-only check; a null view keeps the legacy
+     * player-only path.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename) {
         Map<String, LandCommand.Handler> base = new HashMap<>(
                 buildLandHandlers(selections, runner, recoveryScan, structures, subland, capabilities));
         base.put("trust", trust == null
@@ -712,6 +788,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         base.put("expand", expand == null || selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.expand.failed", Map.of("reason", "expand.unavailable"))
                 : new ExpandCommandHandler(selections, expand, recoveryScan, currentLand));
+        LandCommand.Handler shrinkHandler = shrink == null || selections == null
+                ? (sender, args, sink) -> sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.unavailable"))
+                : new ShrinkCommandHandler(selections, shrink, recoveryScan, shrinkCurrentLand,
+                        shrinkTargetOwner);
+        base.put("shrink", shrinkHandler);
+        base.put("unclaim", shrinkHandler);
         base.put("rename", rename == null
                 ? (sender, args, sink) -> sink.reply("command.land.rename.failed", Map.of("reason", "rename.unavailable"))
                 : rename);
@@ -1172,6 +1254,37 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Target-owner view for {@code /land shrink} and {@code /land unclaim}:
+     * the owner of the target land from the already-published immutable
+     * snapshot. One volatile snapshot read, no SQL, no Economy, no chunk
+     * load. Unknown lands, missing snapshots and lookup failures stay empty
+     * so the handler fails closed without touching the saga. A null store
+     * yields a view that always stays empty.
+     */
+    static java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner(
+            LandRegistryStore store) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        return landId -> {
+            try {
+                if (landId == null) {
+                    return Optional.empty();
+                }
+                var snapshot = active.snapshot();
+                if (snapshot == null) {
+                    return Optional.empty();
+                }
+                var land = snapshot.land(landId);
+                if (land == null || land.ownerRef() == null) {
+                    return Optional.empty();
+                }
+                return Optional.of(land.ownerRef());
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        };
+    }
+
+    /**
      * Production per-world claim gate over the live config snapshot.
      *
      * <p>A {@code null} config service or resolver fails closed to deny-all
@@ -1448,6 +1561,88 @@ public final class ChunkLandPlugin extends JavaPlugin {
             getLogger().warning("ChunkLand expand flow assembly failed; "
                     + "/land expand stays unavailable: " + failure.getMessage());
             this.expandSaga = null;
+            return null;
+        }
+    }
+
+    /**
+     * Assembles the formal shrink saga from its production parts. Package
+     * visible so integration tests drive the same assembly the server uses.
+     *
+     * <p>Unlike expansion there is no world-claim gate: a disabled world
+     * forbids new claims but existing lands may still shrink with a refund.
+     * The refund amount always comes from the durable per-chunk cost basis
+     * times the shrink ratio, never from the current pricing table.
+     */
+    static ShrinkSaga buildShrinkSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            com.smile.chunkland.persistence.ChunkRepository chunkRepository,
+            com.smile.chunkland.api.money.Currency currency) {
+        ShrinkValidator validator = new SnapshotShrinkValidator(
+                Objects.requireNonNull(registryStore, "registryStore"),
+                actorUuid -> selections.sessionFor(actorUuid)
+                        .map(session -> OptionalLong.of(session.selectionRevision()))
+                        .orElseGet(OptionalLong::empty),
+                actorUuid -> selections.sessionFor(actorUuid)
+                        .map(session -> OptionalLong.of(session.sessionGeneration()))
+                        .orElseGet(OptionalLong::empty),
+                targetLandId -> (structures == null
+                        ? SelectionStructureRevisionLookup.unavailable() : structures)
+                        .currentRevision(targetLandId));
+        return new ShrinkSaga(validator,
+                Objects.requireNonNull(chunkRepository, "chunkRepository"),
+                Objects.requireNonNull(currency, "currency"),
+                Objects.requireNonNull(reservations, "reservations"),
+                Objects.requireNonNull(ledger, "ledger"),
+                Objects.requireNonNull(economy, "economy"),
+                Objects.requireNonNull(rebuilder, "rebuilder"),
+                Objects.requireNonNull(quotas, "quotas"),
+                Clock.systemUTC(),
+                Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
+                CLAIM_COMPENSATION_RETRIES);
+    }
+
+    /**
+     * Live shrink runner sharing the claim flow's quotas, reservations,
+     * executor, ledger, Economy and rebuilder, so live shrinks serialize with
+     * claims and expansions on one durable row and one reservation registry.
+     * Null when the claim flow never assembled (quotas, reservations or
+     * executor missing) or the recovery bootstrap is absent: both aliases
+     * then reply {@code shrink.unavailable} instead of running half-wired.
+     *
+     * <p>Must run after {@link #claimRunner()}: the shared quota, reservation
+     * and executor instances are created there.
+     */
+    private ShrinkCommandHandler.ShrinkRunner shrinkRunner() {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        SelectionSessionManager selections = this.selectionSessionManager;
+        OwnerQuotaService quotas = this.claimQuotas;
+        LogicalReservationRegistry reservations = this.claimReservations;
+        Executor async = this.claimExecutor;
+        if (bootstrap == null || selections == null || quotas == null
+                || reservations == null || async == null) {
+            return null;
+        }
+        try {
+            this.shrinkSaga = buildShrinkSaga(this.protectionStore, selections,
+                    quotas, reservations,
+                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
+                    this.selectionStructureRevisions,
+                    new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()),
+                    ClaimStartupBootstrap.CLAIM_CURRENCY);
+            return this.shrinkSaga::shrink;
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand shrink flow assembly failed; "
+                    + "/land shrink stays unavailable: " + failure.getMessage());
+            this.shrinkSaga = null;
             return null;
         }
     }
@@ -1739,6 +1934,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         claimSaga = null;
         claimQuotas = null;
         claimReservations = null;
+        expandSaga = null;
+        shrinkSaga = null;
         subLandConfirm = null;
         subLandRunner = null;        if (claimExecutor != null) {
             try {

@@ -12,6 +12,13 @@ import java.util.concurrent.CompletionStage;
 /** Applies the startup recovery table in created-at/operation-id order. */
 public final class CrashRecoveryScanner {
 
+    /**
+     * Transaction marker for zero-amount shrink/refund rows. No money moves,
+     * so recovery settles directly without parking compensation or calling
+     * Economy.
+     */
+    private static final String ZERO_VALUE_TRANSACTION_REF = "zero-value";
+
     private final OperationLedger ledger;
     private final RecoveryHandlers handlers;
     private final Clock clock;
@@ -130,13 +137,15 @@ public final class CrashRecoveryScanner {
 
     /**
      * Route a domain-committed row by operation kind. Claim rows rebuild the
-     * runtime towards {@code ACTIVE}; refund rows already released their
-     * domain but may never have moved money, so they park for compensation
-     * and retry the deposit through the shared compensation path instead of
-     * being marked active with an unpaid refund.
+     * runtime towards {@code ACTIVE}; refund and shrink rows already released
+     * their domain but may never have moved money, so they park for
+     * compensation and retry the deposit through the shared compensation path
+     * instead of being marked active with an unpaid refund. A zero-amount
+     * refund or shrink row moves no money, so it settles directly with the
+     * zero marker and a runtime rebuild, without parking or calling Economy.
      */
     private CompletionStage<RecoveryResult> recoverDomainCommittedByType(LedgerEntry entry) {
-        if ("REFUND".equals(entry.operationType())) {
+        if ("REFUND".equals(entry.operationType()) || "SHRINK".equals(entry.operationType())) {
             return recoverRefundCommitted(entry);
         }
         return recoverDomainCommitted(entry);
@@ -147,8 +156,12 @@ public final class CrashRecoveryScanner {
             if (payload == null) {
                 return moveToReconciliation(entry, "refund domain-committed payload is invalid");
             }
-            if (!"REFUND".equals(payload.operationType())) {
+            if (!"REFUND".equals(payload.operationType())
+                    && !"SHRINK".equals(payload.operationType())) {
                 return moveToReconciliation(entry, "refund row carries a non-refund payload");
+            }
+            if (payload.priceMinorUnits() == 0L) {
+                return settleZeroFromDomainCommitted(entry, payload);
             }
             return ledger.parkForRefundCompensation(
                             entry.operationId(), "refund:" + entry.operationId(), now())
@@ -202,19 +215,27 @@ public final class CrashRecoveryScanner {
     }
 
     /**
-     * Retry a parked compensation. Refund rows carry their own payload
-     * contract, so the payload is validated before touching Economy: an
-     * untrusted payload quarantines without a deposit, a settle, or a runtime
-     * rebuild. Claim rows keep their existing retry path unchanged.
+     * Retry a parked compensation. Refund and shrink rows carry their own
+     * payload contract, so the payload is validated before touching Economy:
+     * an untrusted payload quarantines without a deposit, a settle, or a
+     * runtime rebuild. Claim rows keep their existing retry path unchanged.
+     * A zero-amount refund or shrink row moves no money, so the payload
+     * amount settles it directly without calling Economy; the amount always
+     * comes from the authoritative payload, never from current ownership.
      */
     private CompletionStage<RecoveryResult> recoverCompensation(LedgerEntry entry) {
         if (entry.economyTransactionRef() == null || entry.economyTransactionRef().isBlank()) {
             return moveToReconciliation(entry, "compensation has no Economy transaction reference");
         }
-        if ("REFUND".equals(entry.operationType())) {
+        if ("REFUND".equals(entry.operationType()) || "SHRINK".equals(entry.operationType())) {
             return payloadFor(entry).thenCompose(payload -> {
-                if (payload == null || !"REFUND".equals(payload.operationType())) {
+                if (payload == null
+                        || (!"REFUND".equals(payload.operationType())
+                                && !"SHRINK".equals(payload.operationType()))) {
                     return moveToReconciliation(entry, "refund compensation payload is invalid");
+                }
+                if (payload.priceMinorUnits() == 0L) {
+                    return settleZeroFromCompensationPending(entry, payload);
                 }
                 return refundCompensation(entry);
             });
@@ -233,7 +254,8 @@ public final class CrashRecoveryScanner {
         return refund.handle((result, failure) -> failure == null && result != null ? result : RefundOutcome.UNKNOWN)
                 .thenCompose(result -> {
                     if (result == RefundOutcome.REFUNDED) {
-                        if ("REFUND".equals(entry.operationType())) {
+                        if ("REFUND".equals(entry.operationType())
+                                || "SHRINK".equals(entry.operationType())) {
                             return settleRefundCompensatedWithRuntime(entry);
                         }
                         return ledger.compareAndSetState(entry.operationId(), LedgerState.COMPENSATION_PENDING,
@@ -250,20 +272,73 @@ public final class CrashRecoveryScanner {
     }
 
     /**
-     * Settle a refund row as compensated and then rebuild the runtime from
-     * durable truth, mirroring the saga settle-then-publish order. Both the
-     * settle and the rebuild run outside any SQL transaction: the settle is
-     * its own transaction and the rebuild reads authoritative storage after
-     * it completes. A rebuild failure keeps the durable {@code COMPENSATED}
-     * marking (money moved) but reports the stale runtime explicitly; an
-     * unsettleable row is left untouched for retry. Claim rows never enter
-     * here, so their compensation path stays runtime-free.
+     * Settle a zero-amount refund or shrink row without touching Economy.
+     * The payload amount is authoritative: a zero row settles straight from
+     * its waiting state with the zero marker, then rebuilds the runtime from
+     * durable truth, mirroring the saga settle-then-publish order. A rebuild
+     * failure keeps the durable {@code COMPENSATED} marking but reports the
+     * stale runtime explicitly; an unsettleable row is left untouched so the
+     * next restart retries it, still without an Economy call.
+     */
+    private CompletionStage<RecoveryResult> settleZeroFromDomainCommitted(
+            LedgerEntry entry, OperationPayload payload) {
+        return ledger.settleRefundCompensated(entry.operationId(), LedgerState.DOMAIN_COMMITTED,
+                        ZERO_VALUE_TRANSACTION_REF, now())
+                .thenCompose(ignored -> rebuildAfterZeroSettle(entry, payload))
+                .exceptionally(failure -> unchanged(entry,
+                        LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                        "zero-value settlement could not be persisted"));
+    }
+
+    private CompletionStage<RecoveryResult> settleZeroFromCompensationPending(
+            LedgerEntry entry, OperationPayload payload) {
+        return ledger.settleRefundCompensated(entry.operationId(),
+                        LedgerState.COMPENSATION_PENDING, ZERO_VALUE_TRANSACTION_REF, now())
+                .thenCompose(ignored -> rebuildAfterZeroSettle(entry, payload))
+                .exceptionally(failure -> unchanged(entry,
+                        LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                        "zero-value settlement could not be persisted"));
+    }
+
+    private CompletionStage<RecoveryResult> rebuildAfterZeroSettle(
+            LedgerEntry entry, OperationPayload payload) {
+        CompletionStage<Void> rebuild;
+        try {
+            rebuild = handlers.rebuildRuntime(entry, payload);
+        } catch (Throwable failure) {
+            rebuild = CompletableFuture.failedFuture(failure);
+        }
+        if (rebuild == null) {
+            rebuild = CompletableFuture.failedFuture(
+                    new IllegalStateException("runtime rebuild returned null"));
+        }
+        return rebuild.handle((ignoredRebuild, failure) -> failure == null)
+                .thenApply(rebuilt -> rebuilt
+                        ? changed(entry, LedgerState.COMPENSATED,
+                                LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                                "zero-value refund settled without Economy and runtime rebuilt")
+                        : changed(entry, LedgerState.COMPENSATED,
+                                LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                                "zero-value refund settled without Economy; runtime rebuild failed"));
+    }
+
+    /**
+     * Settle a refund or shrink row as compensated and then rebuild the
+     * runtime from durable truth, mirroring the saga settle-then-publish
+     * order. Both the settle and the rebuild run outside any SQL transaction:
+     * the settle is its own transaction and the rebuild reads authoritative
+     * storage after it completes. A rebuild failure keeps the durable {@code
+     * COMPENSATED} marking (money moved) but reports the stale runtime
+     * explicitly; an unsettleable row is left untouched for retry. Claim rows
+     * never enter here, so their compensation path stays runtime-free.
      */
     private CompletionStage<RecoveryResult> settleRefundCompensatedWithRuntime(LedgerEntry entry) {
         return payloadFor(entry).thenCompose(payload -> ledger.compareAndSetState(entry.operationId(),
                         LedgerState.COMPENSATION_PENDING, LedgerState.COMPENSATED, now())
                 .thenCompose(ignored -> {
-                    if (payload == null || !"REFUND".equals(payload.operationType())) {
+                    if (payload == null
+                            || (!"REFUND".equals(payload.operationType())
+                                    && !"SHRINK".equals(payload.operationType()))) {
                         return completed(changed(entry, LedgerState.COMPENSATED,
                                 LedgerState.RecoveryClassification.RETRY_COMPENSATION, "refund confirmed"));
                     }

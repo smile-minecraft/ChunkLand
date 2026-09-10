@@ -340,7 +340,8 @@ class LandCommandTest {
         List<String> un = LandCommand.tabComplete(sender, new String[]{"un"});
         assertTrue(un.contains("untrust"));
         assertTrue(un.contains("unban"));
-        assertEquals(2, un.size());
+        assertTrue(un.contains("unclaim"));
+        assertEquals(3, un.size());
         // case insensitive prefix
         List<String> up = LandCommand.tabComplete(sender, new String[]{"W"});
         assertTrue(up.contains("wand"));

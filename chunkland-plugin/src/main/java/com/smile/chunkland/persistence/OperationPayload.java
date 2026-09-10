@@ -196,6 +196,31 @@ public record OperationPayload(
                 createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName, null, null);
     }
 
+    /**
+     * Shrink payload: the chunk set is the delta removed from an existing
+     * land, and {@code targetLandId} is always the shrunk land. The price is
+     * the refund amount derived from the durable per-chunk cost bases, never
+     * from the current pricing table.
+     */
+    public static OperationPayload shrink(
+            UUID operationId,
+            UUID actorUuid,
+            UUID worldUuid,
+            LandId targetLandId,
+            List<Chunk> chunkSet,
+            long refundMinorUnits,
+            String economyProviderId,
+            Instant createdAt,
+            String landDisplayName,
+            long refundNumerator,
+            long refundDenominator) {
+        Objects.requireNonNull(targetLandId, "targetLandId");
+        return new OperationPayload(operationId, "SHRINK", actorUuid, worldUuid, targetLandId,
+                chunkSet, refundMinorUnits, economyProviderId, null,
+                createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName,
+                refundNumerator, refundDenominator);
+    }
+
     public String toJson() {
         StringBuilder json = new StringBuilder(512);
         json.append('{');

@@ -507,8 +507,16 @@ class WorldPolicyProductionWiringTest {
         handlers.get("expand").handle(null, new String[]{"expand"}, sink);
         assertEquals("command.land.expand.failed", keys.get(1));
         assertEquals("expand.unavailable", varsByKey.get("command.land.expand.failed").get("reason"));
-        assertFalse(handlers.containsKey("shrink"),
-                "no shrink handler may appear as a side effect of this task");
+        // Shrink left the stub pool with expand: without a runner both aliases
+        // fail closed as unavailable instead of pretending they are coming
+        // soon. Shrink is owned by the shrink task; this scope guard only pins
+        // the fail-closed shape while unwired.
+        assertNotNull(handlers.get("shrink"), "shrink must stay registered");
+        assertTrue(handlers.get("shrink") == handlers.get("unclaim"),
+                "shrink and unclaim must share one handler");
+        handlers.get("shrink").handle(null, new String[]{"shrink"}, sink);
+        assertEquals("command.land.shrink.failed", keys.get(2));
+        assertEquals("shrink.unavailable", varsByKey.get("command.land.shrink.failed").get("reason"));
     }
 
     // ------------------------------------------------------------------
