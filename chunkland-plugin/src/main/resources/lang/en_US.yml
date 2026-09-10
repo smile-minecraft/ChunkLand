@@ -32,6 +32,7 @@ command:
       success: "<green>Land <land_name> claimed: <chunk_count> chunks.</green>"
       rejected: "<red>Claim rejected: <reason>.</red>"
       failed: "<red>Claim failed: <reason>.</red>"
+      cancelled: "<yellow>Claim confirmation cancelled — nothing was claimed.</yellow>"
     subland:
       console: "<red>Only players can manage sublands.</red>"
       usage: "<yellow>Usage: /land subland (create|update|delete) generation revision [name]</yellow>"

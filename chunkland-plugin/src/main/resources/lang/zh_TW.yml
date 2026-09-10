@@ -32,6 +32,7 @@ command:
       success: "<green>領地 <land_name> 已建立：共 <chunk_count> 個區塊。</green>"
       rejected: "<red>圈地被拒絕：<reason>。</red>"
       failed: "<red>圈地失敗：<reason>。</red>"
+      cancelled: "<yellow>已取消圈地確認，未建立領地。</yellow>"
     subland:
       console: "<red>只有玩家可以管理子領地。</red>"
       usage: "<yellow>用法：/land subland (create|update|delete) generation revision [名稱]</yellow>"

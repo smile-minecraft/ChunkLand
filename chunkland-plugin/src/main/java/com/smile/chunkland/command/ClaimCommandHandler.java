@@ -64,6 +64,7 @@ public final class ClaimCommandHandler implements LandCommand.Handler {
     private final SelectionSessionManager selections;
     private final ClaimRunner runner;
     private final Supplier<CompletionStage<?>> recoveryScan;
+    private final BedrockClaimFormHandler bedrockForms;
 
     /**
      * @param selections live selection registry; never null
@@ -86,9 +87,29 @@ public final class ClaimCommandHandler implements LandCommand.Handler {
      */
     public ClaimCommandHandler(SelectionSessionManager selections, ClaimRunner runner,
             Supplier<CompletionStage<?>> recoveryScan) {
+        this(selections, runner, recoveryScan, null);
+    }
+
+    /**
+     * @param selections live selection registry; never null
+     * @param runner saga entry point; null means claiming is not wired yet
+     * @param recoveryScan startup recovery scan; null means no gate (tests).
+     *        While the scan is still in flight claims reply
+     *        {@code claim.recovery_pending}; a failed scan replies
+     *        {@code claim.recovery_failed} permanently until restart. The
+     *        gate is checked before any selection read reaches the saga, so
+     *        a stale runtime snapshot can never hide a collision.
+     * @param bedrockForms Bedrock Modal Form branch; null keeps the legacy
+     *        direct path for every sender (tests and AceLib-less wiring).
+     *        When present, a Bedrock player with a valid name takes the form
+     *        path after the shared pre-checks; Java senders are unaffected.
+     */
+    public ClaimCommandHandler(SelectionSessionManager selections, ClaimRunner runner,
+            Supplier<CompletionStage<?>> recoveryScan, BedrockClaimFormHandler bedrockForms) {
         this.selections = Objects.requireNonNull(selections, "selections");
         this.runner = runner;
         this.recoveryScan = recoveryScan;
+        this.bedrockForms = bedrockForms;
     }
 
     @Override
@@ -130,6 +151,25 @@ public final class ClaimCommandHandler implements LandCommand.Handler {
         if (displayName == null) {
             sink.reply("command.land.usage", Map.of());
             return;
+        }
+        if (bedrockForms != null) {
+            ClaimPreview preview;
+            try {
+                preview = ClaimPreview.fromSession(session, displayName);
+            } catch (RuntimeException invalid) {
+                sink.reply("command.land.usage", Map.of());
+                return;
+            }
+            boolean handled;
+            try {
+                handled = bedrockForms.handle(player, preview, sink);
+            } catch (RuntimeException failure) {
+                sink.reply("command.land.claim.failed", Map.of("reason", "claim.failed"));
+                return;
+            }
+            if (handled) {
+                return;
+            }
         }
         ClaimRequest request;
         try {

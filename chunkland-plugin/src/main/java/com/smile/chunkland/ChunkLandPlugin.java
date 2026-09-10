@@ -1,6 +1,8 @@
 package com.smile.chunkland;
 
 import com.smile.acelib.AceLibApi;
+import com.smile.acelib.bedrock.BedrockService;
+import com.smile.acelib.form.FormService;
 import com.smile.acelib.platform.Platform;
 import com.smile.acelib.platform.PlatformCapability;
 import com.smile.acelib.scheduler.AceLibScheduler;
@@ -19,7 +21,9 @@ import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.ClaimValidator;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
+import com.smile.chunkland.command.BedrockClaimFormHandler;
 import com.smile.chunkland.command.ClaimCommandHandler;
+import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.ManagementGateResolver;
@@ -332,13 +336,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // runtime publish converge on one revision source. Assembly failure
         // keeps the slot fail-closed instead of running half-wired.
         SubLandCommandHandler sublandHandler = subLandHandler(activeConfig);
+        // Capture the underlying capabilities bundle before the land command
+        // is built so the Bedrock claim form resolves its services on demand.
+        // Capturing here (still ahead of the listener registration below)
+        // keeps the no-leak guarantee on registration failure.
+        this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
-                        structureRevisions, sublandHandler),
+                        structureRevisions, sublandHandler, this.capabilities.orElse(null)),
                 null, buildManagementGateResolver(this.protectionStore));
-        // Capture the underlying capabilities bundle before Wand listener registration can fail,
-        // so registration failure does not leak the M0 SafeScheduler.
-        this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
         // Wand safety listener: native Bukkit listener for selection wand protection
         this.wandSafetyListener = new WandSafetyListener();
         this.protectionListener = new ProtectionListener(this.protectionEngine);
@@ -435,19 +441,86 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
             SelectionStructureRevisionLookup structures,
             SubLandCommandHandler subland) {
+        return buildLandHandlers(selections, runner, recoveryScan, structures, subland, null);
+    }
+
+    /**
+     * Production {@code /land} handlers with the Bedrock Modal Form branch
+     * wired behind {@code /land claim}.
+     *
+     * <p>The {@code confirm} slot and the form gateway share one
+     * {@link ConfirmCommandHandler} instance, so form confirmations and chat
+     * confirmations observe the same token revalidation and the same
+     * single-use replay guard. A null capabilities bundle keeps the legacy
+     * direct claim path for every sender (AceLib-less wiring and tests).
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities) {
         Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers());
+        LandCommand.Handler confirm = selections == null
+                ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
+                : new ConfirmCommandHandler(selections, runner, recoveryScan,
+                        structures == null ? SelectionStructureRevisionLookup.unavailable() : structures);
+        BedrockClaimFormHandler bedrockForms = buildBedrockClaimForms(capabilities, confirm);
         base.put("claim", selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
-                : new ClaimCommandHandler(selections, runner, recoveryScan));
-        SelectionStructureRevisionLookup activeStructures =
-                structures == null ? SelectionStructureRevisionLookup.unavailable() : structures;
-        base.put("confirm", selections == null
-                ? (sender, args, sink) -> sink.reply("command.land.claim.failed", Map.of("reason", "claim.unavailable"))
-                : new ConfirmCommandHandler(selections, runner, recoveryScan, activeStructures));
+                : new ClaimCommandHandler(selections, runner, recoveryScan, bedrockForms));
+        base.put("confirm", confirm);
         base.put("subland", subland == null
                 ? (sender, args, sink) -> sink.reply("command.land.subland.failed", Map.of("reason", "subland.unavailable"))
                 : subland);
         return Map.copyOf(base);
+    }
+
+    /**
+     * Build the Bedrock claim form branch for one shared confirmation entry.
+     * Null capabilities or a null confirm entry yields null so the caller
+     * keeps the legacy direct claim path.
+     *
+     * <p>Only public AceLib services are touched, and only on demand: the
+     * player-kind check reads the live {@link BedrockService} per call (a
+     * half-wired bundle without one reports non-Bedrock, keeping the Java
+     * path working), and every send re-resolves the form service instead of
+     * caching it, so a reloaded or failed AceLib facade is never retained.
+     * The form callback is re-dispatched through the bundle's public
+     * {@code SafeScheduler.runForPlayer(Player, Runnable)} before it may
+     * touch the player, the live selection or the confirmation entry; a
+     * bundle without a scheduler fails every callback closed without
+     * reaching the saga.
+     */
+    static BedrockClaimFormHandler buildBedrockClaimForms(
+            Capabilities capabilities, LandCommand.Handler confirm) {
+        if (capabilities == null || confirm == null) {
+            return null;
+        }
+        return new BedrockClaimFormHandler(
+                playerId -> {
+                    BedrockService bedrock;
+                    try {
+                        bedrock = capabilities.bedrockService();
+                    } catch (RuntimeException failure) {
+                        throw new IllegalStateException("BedrockService unavailable", failure);
+                    }
+                    return bedrock != null && bedrock.isBedrockPlayer(playerId);
+                },
+                (playerId, spec, callback) -> {
+                    FormService forms;
+                    try {
+                        forms = capabilities.formService();
+                    } catch (RuntimeException failure) {
+                        throw new IllegalStateException("FormService unavailable", failure);
+                    }
+                    if (forms == null) {
+                        throw new IllegalStateException("FormService unavailable");
+                    }
+                    return forms.sendForm(playerId, spec, callback);
+                },
+                confirm,
+                ClaimFormTexts::forLocale,
+                capabilities.scheduler());
     }
 
     /**

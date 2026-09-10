@@ -27,7 +27,10 @@ import org.bukkit.command.CommandSender;
  * that must not call selection, mutation, economy or persistence.</p>
  *
  * <p>No revision validation, cooldown or Bedrock Form is performed here —
- * that is owned by later milestones. Management subcommands additionally pass
+ * those live in the handlers: chat confirmations revalidate the token pair
+ * in {@link ConfirmCommandHandler}, and the Bedrock Modal Form branch lives
+ * in {@link BedrockClaimFormHandler} behind {@code /land claim}.
+ * Management subcommands additionally pass
  * the shared domain gate: the resolver supplies the actor, target land,
  * snapshot, bypass and steward inputs, and this dispatcher always feeds them
  * through {@link ManagementPermissionGate#check} itself. There is no
