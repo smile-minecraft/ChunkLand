@@ -7,6 +7,7 @@ import com.smile.acelib.scheduler.AceLibScheduler;
 import com.smile.acelib.scheduler.SafeScheduler;
 import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
+import com.smile.chunkland.api.ChunkLandApi;
 import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.api.money.Money;
 import com.smile.chunkland.api.money.PricingTable;
@@ -17,6 +18,7 @@ import com.smile.chunkland.claim.ClaimEconomy;
 import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.ClaimValidator;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
+import com.smile.chunkland.claim.WorldClaimPolicy;
 import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.LandCommand;
@@ -25,7 +27,10 @@ import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.ChunkLandConfig;
 import com.smile.chunkland.config.LimitSettings;
+import com.smile.chunkland.config.VerticalMode;
+import com.smile.chunkland.config.WorldSettings;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.economy.UnavailableVaultBridge;
 import com.smile.chunkland.economy.VaultBridge;
@@ -43,8 +48,11 @@ import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
 import com.smile.chunkland.protection.SubjectPermissionLookup;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
+import com.smile.chunkland.runtime.api.ChunkLandReadApi;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
+import com.smile.chunkland.runtime.api.ProtectionDepthLookup;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
+import com.smile.chunkland.runtime.vertical.SnapshotProtectionDepthLookup;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
 import com.smile.chunkland.runtime.rule.LandRuleService;
 import com.smile.chunkland.runtime.vertical.DepthExtendEventAdapter;
@@ -74,9 +82,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -132,6 +142,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
     /** Compensation retries shared by live claims and startup recovery. */
     static final int CLAIM_COMPENSATION_RETRIES = 3;
 
+    /**
+     * Conservative world-minimum height used when a world has no registered
+     * minimum in the startup snapshot. Matches the vanilla overworld floor so
+     * {@code FULL_HEIGHT} reads stay protective rather than collapsing to
+     * zero; a live Bukkit minimum adapter replaces this table when it lands.
+     */
+    static final int WORLD_MIN_HEIGHT_FALLBACK = -64;
+
     private final AceLibBridge bridge = new AceLibBridge();
     private Optional<M0MessageProbe> messagePipeline = Optional.empty();
     private Optional<M0CapabilityProbe> capabilityProbe = Optional.empty();
@@ -147,6 +165,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SelectionStructureRevisionLookup selectionStructureRevisions;
     private LandRegistryStore protectionStore;
     private ProtectionEngine protectionEngine;
+    private SnapshotProtectionDepthLookup protectionDepthLookup;
     private ProtectionListener protectionListener;
     private ClaimStartupBootstrap claimStartup;
     private ClaimSaga claimSaga;
@@ -156,6 +175,25 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SubLandConfirmService subLandConfirm;
     private SubLandMutationRunner subLandRunner;
     private DepthExtendService depthExtendService;
+    /**
+     * Read-API lifecycle gate. Each enabled generation owns one instance;
+     * holders capture it. Disable deactivates it so cached holders stay
+     * empty and never revive on the next enable. Volatile reads only, so
+     * the hot path performs no Bukkit, SQL or other I/O.
+     */
+    static final class ReadApiLifecycle {
+        volatile boolean active = true;
+    }
+
+    private volatile ReadApiLifecycle readApiLifecycle;
+
+    // Deterministic hook for the immediate-cleanup read-invalidation window.
+    // Invoked at the very start of performFullCleanup before any cleanup step,
+    // without holding any lock. Production leaves this null; tests use a
+    // latch-based hook to pause cleanup mid-flight and prove cached reads are
+    // already empty. The hook never touches domain state and never propagates
+    // failures into cleanup.
+    volatile Runnable cleanupStartedHookForTest;
 
     public ChunkLandPlugin() {
     }
@@ -255,7 +293,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // Built before the land command so the management gate resolver reads
         // the same live snapshots the engine enforces.
         this.protectionStore = new LandRegistryStore();
+        this.readApiLifecycle = new ReadApiLifecycle();
         this.protectionEngine = buildProtectionEngine(this.protectionStore);
+        // Formal per-world vertical-mode read path: the lookup resolves the
+        // effective depth from the live config snapshot plus the
+        // startup-injected name/minimum tables, so the hot path performs only
+        // a volatile snapshot read and map lookups (never Bukkit or SQL).
+        // Stored depths are never rewritten by a mode switch; worlds or
+        // minima missing from the snapshot fall back explicitly.
+        this.protectionDepthLookup = buildProtectionDepthLookup(
+                activeConfig::current, snapshotWorldNames(), snapshotWorldMinimums());
         // Startup claim recovery: open persistence, rebuild durable domain
         // commits into the shared protection store, and scan without blocking.
         // A failed bootstrap keeps the empty fail-closed runtime; the scan
@@ -569,10 +616,38 @@ public final class ChunkLandPlugin extends JavaPlugin {
             com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
             Executor asyncExecutor,
             SelectionStructureRevisionLookup structures) {
+        return buildClaimSaga(registryStore, selections, quotas, pricing, reservations,
+                ledger, economy, rebuilder, asyncExecutor, structures,
+                WorldClaimPolicy.allowAll());
+    }
+
+    /**
+     * Production claim saga with the per-world {@code claim-enabled} gate.
+     *
+     * <p>The policy runs inside the step-one validator, ahead of every quota,
+     * reservation, ledger and economy side effect. A {@code null} policy
+     * fails closed to deny-all so a half-wired assembly can never treat an
+     * unknown world as enabled.
+     */
+    static ClaimSaga buildClaimSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            WorldClaimPolicy worldPolicy) {
         OwnerQuotaService activeQuotas = Objects.requireNonNull(quotas, "quotas");
         SelectionStructureRevisionLookup activeStructures = structures == null
                 ? SelectionStructureRevisionLookup.unavailable()
                 : structures;
+        WorldClaimPolicy activePolicy = worldPolicy == null
+                ? WorldClaimPolicy.denyAll("world.unknown")
+                : worldPolicy;
         ClaimValidator validator = new SnapshotClaimValidator(
                 Objects.requireNonNull(registryStore, "registryStore"),
                 actorUuid -> selections.sessionFor(actorUuid)
@@ -583,7 +658,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         .orElseGet(OptionalLong::empty),
                 chunk -> CLAIM_DEPTH_FALLBACK,
                 activeQuotas::chunkCommitted,
-                targetLandId -> activeStructures.currentRevision(targetLandId));
+                targetLandId -> activeStructures.currentRevision(targetLandId),
+                activePolicy);
         return new ClaimSaga(validator, activeQuotas,
                 Objects.requireNonNull(pricing, "pricing"),
                 Objects.requireNonNull(reservations, "reservations"),
@@ -593,6 +669,137 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 Clock.systemUTC(),
                 Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
                 CLAIM_COMPENSATION_RETRIES);
+    }
+
+    /**
+     * Production per-world claim gate over the live config snapshot.
+     *
+     * <p>A {@code null} config service or resolver fails closed to deny-all
+     * ({@code world.unknown}) so a half-wired server never treats an unknown
+     * world as enabled. The returned policy reads
+     * {@link ConfigService#current()} on every call, so reloads apply without
+     * rebuilding the saga.
+     */
+    static WorldClaimPolicy buildWorldClaimPolicy(ConfigService config,
+            Function<UUID, Optional<String>> worldNames) {
+        if (config == null || worldNames == null) {
+            return WorldClaimPolicy.denyAll("world.unknown");
+        }
+        return WorldClaimPolicy.fromConfig(config::current, worldNames);
+    }
+
+    /**
+     * Formal production depth lookup over the live config snapshot.
+     *
+     * <p>Per-world {@code vertical-mode} resolves from
+     * {@code configs.get()} (one volatile read) through the
+     * startup-injected UUID-to-name table; world minima resolve from the
+     * startup-injected minimum table. The hot path therefore performs no
+     * Bukkit, SQL or network access. A {@code null} input fails closed to
+     * the permissive-shape default ({@code PER_CHUNK_DEPTH} with the explicit
+     * minimum fallback) without throwing, and every seam failure inside the
+     * lambdas degrades the same way. Stored depths are never rewritten by a
+     * mode switch — that guarantee lives in
+     * {@link SnapshotProtectionDepthLookup}.
+     *
+     * @param configs live snapshot source (typically {@code ConfigService::current});
+     *        {@code null} or throwing means every world reads stored depths
+     * @param uuidToNameSnapshot world UUID to config-name table captured at
+     *        startup; worlds absent from it read stored depths
+     * @param worldMinSnapshot world UUID to minimum block Y captured at
+     *        startup; worlds absent from it use {@link #WORLD_MIN_HEIGHT_FALLBACK}
+     */
+    static SnapshotProtectionDepthLookup buildProtectionDepthLookup(
+            Supplier<ChunkLandConfig> configs,
+            Map<UUID, String> uuidToNameSnapshot,
+            Map<UUID, Integer> worldMinSnapshot) {
+        Map<UUID, String> names = uuidToNameSnapshot == null ? Map.of() : uuidToNameSnapshot;
+        Map<UUID, Integer> mins = worldMinSnapshot == null ? Map.of() : worldMinSnapshot;
+        return new SnapshotProtectionDepthLookup(
+                worldId -> modeForWorld(configs, names, worldId),
+                worldId -> minForWorld(mins, worldId));
+    }
+
+    private static VerticalMode modeForWorld(Supplier<ChunkLandConfig> configs,
+            Map<UUID, String> names, UUID worldId) {
+        try {
+            if (configs == null || worldId == null) {
+                return VerticalMode.defaultMode();
+            }
+            ChunkLandConfig config = configs.get();
+            if (config == null) {
+                return VerticalMode.defaultMode();
+            }
+            String name = names.get(worldId);
+            if (name == null) {
+                return VerticalMode.defaultMode();
+            }
+            WorldSettings settings = config.worlds().get(name);
+            if (settings == null || settings.verticalMode() == null) {
+                return VerticalMode.defaultMode();
+            }
+            return settings.verticalMode();
+        } catch (RuntimeException failure) {
+            return VerticalMode.defaultMode();
+        }
+    }
+
+    private static int minForWorld(Map<UUID, Integer> mins, UUID worldId) {
+        try {
+            Integer min = mins == null ? null : mins.get(worldId);
+            return min == null ? WORLD_MIN_HEIGHT_FALLBACK : min.intValue();
+        } catch (RuntimeException failure) {
+            return WORLD_MIN_HEIGHT_FALLBACK;
+        }
+    }
+
+    /**
+     * Startup snapshot of world UUID to config name, read once at enable.
+     * Later world loads are absent from the table and read stored depths
+     * (fail-closed); a live minimum adapter replaces this table when it lands.
+     */
+    private Map<UUID, String> snapshotWorldNames() {
+        Map<UUID, String> names = new HashMap<>();
+        try {
+            for (org.bukkit.World world : getServer().getWorlds()) {
+                if (world == null) {
+                    continue;
+                }
+                try {
+                    names.put(world.getUID(), world.getName());
+                } catch (RuntimeException ignored) {
+                    // One unreadable world must not poison the rest of the table.
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // No world list at all: every lookup falls back to stored depths.
+        }
+        return Map.copyOf(names);
+    }
+
+    /**
+     * Startup snapshot of world UUID to minimum block Y, read once at enable.
+     * Worlds absent from the table use {@link #WORLD_MIN_HEIGHT_FALLBACK}
+     * under {@code FULL_HEIGHT}; a live Bukkit minimum adapter replaces this
+     * table when it lands.
+     */
+    private Map<UUID, Integer> snapshotWorldMinimums() {
+        Map<UUID, Integer> mins = new HashMap<>();
+        try {
+            for (org.bukkit.World world : getServer().getWorlds()) {
+                if (world == null) {
+                    continue;
+                }
+                try {
+                    mins.put(world.getUID(), world.getMinHeight());
+                } catch (RuntimeException ignored) {
+                    // One unreadable world must not poison the rest of the table.
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // No world list at all: every FULL_HEIGHT read uses the fallback.
+        }
+        return Map.copyOf(mins);
     }
 
     /**
@@ -638,7 +845,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
             this.claimSaga = buildClaimSaga(this.protectionStore, selections,
                     this.claimQuotas, claimPricing(), this.claimReservations,
                     bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), this.claimExecutor,
-                    this.selectionStructureRevisions);
+                    this.selectionStructureRevisions,
+                    buildWorldClaimPolicy(config,
+                            uuid -> Optional.ofNullable(getServer().getWorld(uuid))
+                                    .map(org.bukkit.World::getName)));
             return this.claimSaga::claim;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand claim flow assembly failed; "
@@ -828,7 +1038,21 @@ public final class ChunkLandPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 
-    private void performFullCleanup() {
+    void performFullCleanup() {
+        // Immediate read invalidation comes before every cleanup step and
+        // before the test start hook: cached holders gate on this volatile
+        // flag only, so any read racing cleanup already observes empty.
+        ReadApiLifecycle lifecycle = this.readApiLifecycle;
+        if (lifecycle != null) {
+            lifecycle.active = false;
+        }
+        Runnable startedHook = this.cleanupStartedHookForTest;
+        if (startedHook != null) {
+            try {
+                startedHook.run();
+            } catch (RuntimeException ignored) {
+            }
+        }
         if (selectionSessionManager != null) {
             try {
                 selectionSessionManager.disable();
@@ -874,6 +1098,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
         protectionEngine = null;
         protectionStore = null;
+        protectionDepthLookup = null;
         // Depth extends stop before persistence closes: the service first
         // stops accepting new proposals, flushes every accepted write, and
         // only then closes the persistence handle, so no accepted extend is
@@ -1034,6 +1259,95 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     LandRegistryStore getProtectionStore() {
         return protectionStore;
+    }
+
+    /**
+     * @return the formal production depth lookup built from the live config
+     *         snapshot at enable, or null before enable / after disable.
+     */
+    SnapshotProtectionDepthLookup getProtectionDepthLookup() {
+        return protectionDepthLookup;
+    }
+
+    /**
+     * Production assembly for the formal read path.
+     *
+     * <p>The returned API shares the given store's volatile snapshot with the
+     * given depth lookup: every read takes exactly one snapshot and passes
+     * that same immutable instance to the lookup, so existence checks and
+     * depth answers can never mix publications. The lookup itself resolves
+     * per-world modes and minima from in-memory maps only, so the hot path
+     * performs no Bukkit, SQL, network or chunk access. A {@code null} store
+     * falls back to an empty registry and a {@code null} lookup to an empty
+     * answer, matching the fail-closed shape of the store-only constructor.
+     * Permission context and rule sources stay at their fail-closed defaults;
+     * this seam only wires depth.
+     */
+    static ChunkLandReadApi buildReadApi(LandRegistryStore store,
+            ProtectionDepthLookup depthLookup) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        return buildReadApi(active::snapshot, depthLookup);
+    }
+
+    /**
+     * Production assembly over an explicit snapshot supplier.
+     *
+     * <p>Null-tolerant variant of the store seam above: a {@code null}
+     * supplier reads an empty registry and a {@code null} lookup answers
+     * empty. Existing constructors and their tests are untouched.
+     */
+    static ChunkLandReadApi buildReadApi(Supplier<com.smile.chunkland.runtime.index.LandRegistry> registrySupplier,
+            ProtectionDepthLookup depthLookup) {
+        Supplier<com.smile.chunkland.runtime.index.LandRegistry> activeSupplier =
+                registrySupplier == null
+                        ? com.smile.chunkland.runtime.index.LandRegistry::empty : registrySupplier;
+        ProtectionDepthLookup activeLookup =
+                depthLookup == null ? (landId, snapshot) -> Optional.empty() : depthLookup;
+        return new ChunkLandReadApi(activeSupplier,
+                (actor, landId, action, snapshot) -> null,
+                (landId, rule, snapshot) -> Optional.empty(),
+                activeLookup);
+    }
+
+    /**
+     * @return the production read API bound to the shared protection store
+     *         and the formal depth lookup built at enable. Each call returns
+     *         a lightweight holder over the live volatile snapshot, so mode
+     *         reloads apply without rebuilding; before enable or after
+     *         disable the holder stays fail-closed on an empty view.
+     *
+     * <p>Public so external consumers in other packages can read through
+     * the stable {@link ChunkLandApi} contract. The returned holder shares
+     * the same immutable snapshot with the depth lookup on every read and
+     * exposes only immutable snapshots and value objects. Each holder
+     * captures its enable generation: cleanup deactivates that generation
+     * so a cached holder keeps returning empty even after the fields are
+     * cleared, and a later enable starts a new generation without reviving
+     * the old handle. The gate is a volatile flag check only.
+     */
+    public ChunkLandApi getReadApi() {
+        ReadApiLifecycle lifecycle = this.readApiLifecycle;
+        if (lifecycle == null) {
+            synchronized (this) {
+                lifecycle = this.readApiLifecycle;
+                if (lifecycle == null) {
+                    lifecycle = new ReadApiLifecycle();
+                    this.readApiLifecycle = lifecycle;
+                }
+            }
+        }
+        final ReadApiLifecycle captured = lifecycle;
+        LandRegistryStore store = this.protectionStore;
+        ProtectionDepthLookup lookup = this.protectionDepthLookup;
+        Supplier<com.smile.chunkland.runtime.index.LandRegistry> base =
+                store == null
+                        ? com.smile.chunkland.runtime.index.LandRegistry::empty
+                        : store::snapshot;
+        Supplier<com.smile.chunkland.runtime.index.LandRegistry> gated =
+                () -> captured.active
+                        ? base.get()
+                        : com.smile.chunkland.runtime.index.LandRegistry.empty();
+        return buildReadApi(gated, lookup);
     }
 
     static Command commandForTest(String name) {

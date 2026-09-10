@@ -14,13 +14,15 @@ import java.util.UUID;
 /**
  * Production step-one validator over in-memory state only.
  *
- * <p>Checks, in order: the optional session generation against the live
- * source, the optional confirmation revision token against the live source,
- * the optional structure token against the live structure source,
- * four-direction connectivity of the chunk set (diagonals do not count), and
- * collision of every chunk against the published runtime snapshot. Limit
- * checks stay with the saga's quota reservation; the database stays the final
- * authority through the atomic commit constraints.
+ * <p>Checks, in order: the per-world {@code claim-enabled} policy for player
+ * claims (server-owned land keeps its existing bypass), the optional session
+ * generation against the live source, the optional confirmation revision
+ * token against the live source, the optional structure token against the
+ * live structure source, four-direction connectivity of the chunk set
+ * (diagonals do not count), and collision of every chunk against the
+ * published runtime snapshot. Limit checks stay with the saga's quota
+ * reservation; the database stays the final authority through the atomic
+ * commit constraints.
  */
 public final class SnapshotClaimValidator implements ClaimValidator {
 
@@ -30,6 +32,7 @@ public final class SnapshotClaimValidator implements ClaimValidator {
     private final DepthSource depths;
     private final java.util.function.ToLongFunction<OwnerRef> ownerTotalChunks;
     private final StructureRevisionSource structures;
+    private final WorldClaimPolicy worldPolicy;
 
     /** Per-chunk persisted protection depth for the claim lot. */
     @FunctionalInterface
@@ -64,17 +67,32 @@ public final class SnapshotClaimValidator implements ClaimValidator {
             SessionGenerationSource generations, DepthSource depths,
             java.util.function.ToLongFunction<OwnerRef> ownerTotalChunks,
             StructureRevisionSource structures) {
+        this(registryStore, revisions, generations, depths, ownerTotalChunks, structures,
+                WorldClaimPolicy.allowAll());
+    }
+
+    /**
+     * Full constructor with the per-world claim gate. A {@code null} policy
+     * fails closed to deny-all so a half-wired validator can never treat an
+     * unknown world as enabled.
+     */
+    public SnapshotClaimValidator(LandRegistryStore registryStore, RevisionSource revisions,
+            SessionGenerationSource generations, DepthSource depths,
+            java.util.function.ToLongFunction<OwnerRef> ownerTotalChunks,
+            StructureRevisionSource structures, WorldClaimPolicy worldPolicy) {
         this.registryStore = Objects.requireNonNull(registryStore, "registryStore");
         this.revisions = Objects.requireNonNull(revisions, "revisions");
         this.generations = Objects.requireNonNull(generations, "generations");
         this.depths = Objects.requireNonNull(depths, "depths");
         this.ownerTotalChunks = Objects.requireNonNull(ownerTotalChunks, "ownerTotalChunks");
         this.structures = Objects.requireNonNull(structures, "structures");
+        this.worldPolicy = worldPolicy == null ? WorldClaimPolicy.denyAll("world.unknown") : worldPolicy;
     }
 
     @Override
     public ValidatedClaim validate(ClaimRequest request) throws ClaimRejectedException {
         Objects.requireNonNull(request, "request");
+        checkWorldPolicy(request);
         checkGeneration(request);
         checkRevision(request);
         checkStructure(request);
@@ -105,6 +123,13 @@ public final class SnapshotClaimValidator implements ClaimValidator {
             throw new IllegalStateException("owner total must not be negative");
         }
         return basis;
+    }
+
+    private void checkWorldPolicy(ClaimRequest request) {
+        if (request.owner() instanceof OwnerRef.ServerOwnerRef) {
+            return;
+        }
+        worldPolicy.checkClaimAllowed(request.worldId());
     }
 
     private void checkGeneration(ClaimRequest request) {

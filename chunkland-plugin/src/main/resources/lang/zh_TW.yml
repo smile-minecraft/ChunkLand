@@ -64,6 +64,9 @@ protection:
 claim:
   recovery_pending: "<yellow>領地資料仍在復原中，請稍後再試。</yellow>"
   recovery_failed: "<red>領地資料復原失敗，請聯繫管理員。</red>"
+world:
+  claim_disabled: "<red>此世界已關閉圈地，既有領地仍受保護。</red>"
+  unknown: "<red>世界政策目前無法確認，圈地已被阻擋，請稍後再試。</red>"
 pricing:
   unavailable: "<red>圈地計價目前無法使用，請稍後再試。</red>"
 economy:

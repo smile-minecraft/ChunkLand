@@ -64,6 +64,9 @@ protection:
 claim:
   recovery_pending: "<yellow>Land data is still recovering. Please try again in a moment.</yellow>"
   recovery_failed: "<red>Land data recovery failed. Please contact an administrator.</red>"
+world:
+  claim_disabled: "<red>Claiming is disabled in this world. Existing lands stay protected.</red>"
+  unknown: "<red>The world policy is currently unavailable, so claiming is blocked. Please try again later.</red>"
 pricing:
   unavailable: "<red>Land pricing is currently unavailable. Please try again later.</red>"
 economy:
