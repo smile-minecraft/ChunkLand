@@ -11,12 +11,14 @@ import com.smile.chunkland.api.rule.LandRuleType;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.index.LandRegistry;
+import com.smile.chunkland.runtime.rule.LandRuleService;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Snapshot-backed {@link PermissionContextProvider} for live enforcement.
@@ -51,6 +53,13 @@ import java.util.UUID;
  *
  * <p>Hot-path rules: memory-only snapshot and lookup reads, no blocking, no
  * cross-region calls, no storage access.
+ *
+ * <p>Atomic config views: the legacy constructor wires two independent
+ * lookups that each re-read the config source, so a reload between the
+ * subject read and the rule read can mix generations inside one decision.
+ * Production wiring must use {@link #atomic(Supplier, Supplier)}, which
+ * captures one {@link PermissionDefaultsCache.ConfigView} per
+ * {@code provide()} call and derives both halves from it.
  */
 public final class SnapshotPermissionContextProvider implements PermissionContextProvider {
 
@@ -58,6 +67,8 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
 
     private final LandRuleLookup ruleLookup;
     private final SubjectPermissionLookup subjectLookup;
+    private final Supplier<PermissionDefaultsCache.ConfigView> views;
+    private final Supplier<LandAuthorisationSnapshot> landAuths;
 
     /**
      * @param ruleLookup    source for environment rules; {@code null} means no
@@ -72,6 +83,33 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
                 ? ruleLookup
                 : (landId, rule, snapshot) -> Optional.empty();
         this.subjectLookup = subjectLookup != null ? subjectLookup : SubjectPermissionLookup.empty();
+        this.views = null;
+        this.landAuths = null;
+    }
+
+    private SnapshotPermissionContextProvider(Supplier<PermissionDefaultsCache.ConfigView> views,
+                                              Supplier<LandAuthorisationSnapshot> landAuths) {
+        this.ruleLookup = (landId, rule, snapshot) -> Optional.empty();
+        this.subjectLookup = SubjectPermissionLookup.empty();
+        this.views = views;
+        this.landAuths = landAuths;
+    }
+
+    /**
+     * Atomic provider over one config view per decision.
+     *
+     * <p>Each {@code provide()} call reads {@code views} exactly once and
+     * derives both the subject and rule layers from that single view, paired
+     * with one durable land-layer read. A {@code null} or failing view
+     * source degrades to empty layers (fail-closed). The returned provider
+     * holds only the suppliers, so reloads apply to new decisions without
+     * rebuilding consumers and in-flight decisions finish on their captured
+     * view.
+     */
+    public static SnapshotPermissionContextProvider atomic(
+            Supplier<PermissionDefaultsCache.ConfigView> views,
+            Supplier<LandAuthorisationSnapshot> landAuths) {
+        return new SnapshotPermissionContextProvider(views, landAuths);
     }
 
     @Override
@@ -81,6 +119,9 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         Objects.requireNonNull(landId, "landId");
         Objects.requireNonNull(action, "action");
         Objects.requireNonNull(snapshot, "snapshot");
+        if (views != null) {
+            return provideAtomic(actor, landId, action, snapshot);
+        }
         LandSnapshot land = snapshot.land(landId);
         if (land == null) {
             return PermissionContext.builder(action).build();
@@ -111,6 +152,85 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
             return PermissionState.INHERIT;
         }
         Optional<PermissionState> found = ruleLookup.getRule(landId, rule, snapshot);
+        if (found == null || found.isEmpty() || found.get() == null) {
+            return PermissionState.INHERIT;
+        }
+        return found.get();
+    }
+
+    /**
+     * One-view decision: the volatile config view is read exactly once, then
+     * both halves derive from it. The durable land layers add one more read
+     * of an already-immutable snapshot; config reloads never interleave
+     * between the subject and rule halves.
+     */
+    private PermissionContext provideAtomic(UUID actor, LandId landId,
+                                            ProtectionActionType action, LandRegistry snapshot) {
+        LandSnapshot land = snapshot.land(landId);
+        if (land == null) {
+            return PermissionContext.builder(action).build();
+        }
+        PermissionDefaultsCache.ConfigView view;
+        try {
+            view = views.get();
+        } catch (RuntimeException failure) {
+            view = null;
+        }
+        LandAuthorisationSnapshot landAuth;
+        try {
+            landAuth = landAuths == null ? null : landAuths.get();
+        } catch (RuntimeException failure) {
+            landAuth = null;
+        }
+        if (landAuth == null) {
+            landAuth = LandAuthorisationSnapshot.empty();
+        }
+        PermissionDefaultsSnapshot defaults = null;
+        LandRuleService rules = null;
+        if (view != null) {
+            try {
+                defaults = view.snapshot();
+            } catch (RuntimeException failure) {
+                defaults = null;
+            }
+            try {
+                rules = view.rules();
+            } catch (RuntimeException failure) {
+                rules = null;
+            }
+        }
+        SubjectPermissionLookup.Grant grants;
+        if (defaults == null) {
+            grants = SubjectPermissionLookup.Grant.empty();
+        } else {
+            PermissionDefaultsSnapshot fixedDefaults = defaults;
+            LandAuthorisationSnapshot fixedAuth = landAuth;
+            grants = new ConfigSubjectPermissionLookup(
+                    () -> fixedDefaults, () -> fixedAuth).grants(actor, landId, action, snapshot);
+            if (grants == null) {
+                grants = SubjectPermissionLookup.Grant.empty();
+            }
+        }
+        boolean owner = land.ownerRef() instanceof OwnerRef.PlayerOwnerRef player
+                && player.uuid().equals(actor);
+        boolean ruleAction = action.decisionSource() == DecisionSource.LAND_RULE;
+        return PermissionContext.builder(action)
+                .isOwner(owner)
+                .landBindings(grants.landBindings())
+                .landDefault(grants.landDefault())
+                .worldDefault(ruleAction ? PermissionState.INHERIT : grants.worldDefault())
+                .globalDefault(ruleAction ? PermissionState.INHERIT : grants.globalDefault())
+                .landRule(ruleStateAtomic(rules, landId, action, snapshot))
+                .build();
+    }
+
+    private PermissionState ruleStateAtomic(LandRuleService rules, LandId landId,
+                                            ProtectionActionType action, LandRegistry snapshot) {
+        LandRuleType rule = RULE_BY_ACTION.get(action);
+        if (rule == null || rules == null) {
+            return PermissionState.INHERIT;
+        }
+        Optional<PermissionState> found = rules.getRule(landId, rule, snapshot);
         if (found == null || found.isEmpty() || found.get() == null) {
             return PermissionState.INHERIT;
         }

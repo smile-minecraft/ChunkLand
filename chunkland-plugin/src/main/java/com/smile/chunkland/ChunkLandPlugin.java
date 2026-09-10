@@ -317,8 +317,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.permissionDefaults = buildPermissionDefaults(
                 activeConfig, snapshotWorldIdsByName(), getLogger()::warning);
         this.configService.ifPresent(service -> service.addListener(this.permissionDefaults));
-        this.protectionEngine = buildProtectionEngine(this.protectionStore,
-                this.permissionDefaults.ruleLookup(), this.permissionDefaults.subjectLookup());
+        // Atomic config view: one decision captures one immutable
+        // subject/rule pair, so a reload can never mix generations inside a
+        // single provide() call. The shared instance stays live: new
+        // decisions observe later reloads without rebuilding consumers.
+        SnapshotPermissionContextProvider atomicContexts = this.permissionDefaults.provider();
+        this.protectionEngine = buildProtectionEngine(this.protectionStore, atomicContexts);
         // Formal per-world vertical-mode read path: the lookup resolves the
         // effective depth from the live config snapshot plus the
         // startup-injected name/minimum tables, so the hot path performs only
@@ -412,9 +416,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
                         trustHandler, untrustHandler, defaultHandler),
                 null, buildManagementGateResolver(this.protectionStore,
-                        () -> new SnapshotPermissionContextProvider(
-                                this.permissionDefaults.ruleLookup(),
-                                this.permissionDefaults.subjectLookup()),
+                        () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
         // Wand safety listener: native Bukkit listener for selection wand protection
         this.wandSafetyListener = new WandSafetyListener();
@@ -1297,6 +1299,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * Builds the protection engine with explicit authorisation sources. Rule
      * lookups stay behind the {@link LandRuleLookup} interface so the rule
      * implementation can be supplied later without touching this wiring.
+     * Kept for existing callers and tests; new production wiring uses the
+     * atomic provider overload below.
      */
     static ProtectionEngine buildProtectionEngine(LandRegistryStore store,
                                                   LandRuleLookup ruleLookup,
@@ -1304,6 +1308,18 @@ public final class ChunkLandPlugin extends JavaPlugin {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
         return new ProtectionEngine(active::snapshot,
                 new SnapshotPermissionContextProvider(ruleLookup, subjectLookup));
+    }
+
+    /**
+     * Builds the protection engine over one atomic config view per decision.
+     * A {@code null} provider stays fail-closed with inherit-only layers.
+     */
+    static ProtectionEngine buildProtectionEngine(LandRegistryStore store,
+                                                  PermissionContextProvider provider) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        PermissionContextProvider activeProvider = provider == null
+                ? ProtectionEngine.inheritOnlyProvider() : provider;
+        return new ProtectionEngine(active::snapshot, activeProvider);
     }
 
     void registerWandListener(WandSafetyListener listener) {

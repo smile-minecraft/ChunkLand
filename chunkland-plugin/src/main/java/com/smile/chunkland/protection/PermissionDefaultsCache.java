@@ -15,8 +15,9 @@ import java.util.function.Supplier;
 /**
  * Reload-aware holder for the config permission defaults.
  *
- * <p>The cache owns one volatile {@link PermissionDefaultsSnapshot} plus the
- * {@link LandRuleService} derived from its rule namespace. World names are
+ * <p>The cache owns one volatile {@link ConfigView} pairing the
+ * {@link PermissionDefaultsSnapshot} with the {@link LandRuleService}
+ * derived from its rule namespace. World names are
  * resolved to UUIDs only inside {@link #refresh()} — at bootstrap and on
  * every config reload — through the injected lookup; the lookups exposed
  * below never touch Bukkit, SQL or the network. Readers observe a single
@@ -26,14 +27,27 @@ import java.util.function.Supplier;
  * (bindings and land defaults) arrive through an attached
  * {@link LandAuthorisationSnapshot} source and are read per decision.
  *
+ * <p>One decision must use one {@link ConfigView}: production enforcement
+ * goes through {@link #provider()}, which captures the volatile view once
+ * per {@code provide()} call and derives both the subject and rule halves
+ * from it. The older {@link #subjectLookup()} and {@link #ruleLookup()}
+ * each read the volatile view separately, so a reload landing between the
+ * two reads can mix generations; they stay only for existing callers and
+ * tests and must not back new production wiring.
+ *
  * <p>Refresh never throws: a failing config read or resolver degrades to an
  * empty snapshot (fail-closed) and a warning, so a misbehaving reload
  * listener can never break {@code ConfigService#reload()}.
  */
 public final class PermissionDefaultsCache implements ConfigReloadListener {
 
-    private record View(PermissionDefaultsSnapshot snapshot, LandRuleService rules) {
-        View {
+    /**
+     * Immutable pair of the config subject/rule namespaces for one generation.
+     * Published through a single volatile reference so one decision can hold
+     * both halves without mixing versions across a reload.
+     */
+    public record ConfigView(PermissionDefaultsSnapshot snapshot, LandRuleService rules) {
+        public ConfigView {
             Objects.requireNonNull(snapshot, "snapshot");
             Objects.requireNonNull(rules, "rules");
         }
@@ -42,7 +56,7 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
     private final Supplier<ChunkLandConfig> configs;
     private final Function<String, Optional<UUID>> worldIds;
     private final Consumer<String> warnings;
-    private volatile View current;
+    private volatile ConfigView current;
     private volatile Supplier<LandAuthorisationSnapshot> landAuthorisations =
             LandAuthorisationSnapshot::empty;
 
@@ -69,6 +83,26 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
     }
 
     /**
+     * Current immutable subject/rule pair. One volatile read captures both
+     * halves, so callers that derive a whole decision from the returned
+     * value can never mix generations across a reload.
+     */
+    public ConfigView view() {
+        return current;
+    }
+
+    /**
+     * Atomic production provider: each {@code provide()} call captures one
+     * {@link ConfigView} and derives both the subject and rule layers from
+     * it, paired with one durable {@link LandAuthorisationSnapshot} read.
+     * Reloads apply to new decisions; in-flight decisions finish on the
+     * view they captured. Hot path stays memory-only.
+     */
+    public SnapshotPermissionContextProvider provider() {
+        return SnapshotPermissionContextProvider.atomic(this::view, this::currentLandAuthorisation);
+    }
+
+    /**
      * Attach the durable land-layer source. Lookups created afterwards — and
      * every decision they answer — observe the attached source per call, so
      * attaching late (for example after the protection engine is built) still
@@ -80,7 +114,13 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
                 source != null ? source : LandAuthorisationSnapshot::empty;
     }
 
-    /** Subject lookup over the live snapshot plus the durable land layers. */
+    /** Subject lookup over the live snapshot plus the durable land layers.
+     *
+     * <p>Legacy split path: each decision reads the volatile view again
+     * through this lookup, separately from {@link #ruleLookup()}. Kept for
+     * existing callers and tests; new production wiring must use
+     * {@link #provider()} so one decision never spans two generations.
+     */
     public SubjectPermissionLookup subjectLookup() {
         return new ConfigSubjectPermissionLookup(this::snapshot, this::currentLandAuthorisation);
     }
@@ -98,6 +138,11 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
      * Rule lookup over the live rule service. The service reference is
      * re-read per call so reloads apply without rebuilding this cache's
      * consumers; a failing read degrades to empty (fail-closed).
+     *
+     * <p>Legacy split path: each decision reads the volatile view again
+     * through this lookup, separately from {@link #subjectLookup()}. Kept
+     * for existing callers and tests; new production wiring must use
+     * {@link #provider()}.
      */
     public LandRuleLookup ruleLookup() {
         return (landId, rule, snapshot) -> {
@@ -120,17 +165,17 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
         refresh();
     }
 
-    private View resolve() {
+    private ConfigView resolve() {
         try {
             ChunkLandConfig config = configs.get();
             PermissionDefaultsSnapshot snapshot =
                     PermissionDefaultsSnapshot.resolve(config, worldIds, warnings);
-            return new View(snapshot, LandRuleService.fromRuleSnapshot(snapshot));
+            return new ConfigView(snapshot, LandRuleService.fromRuleSnapshot(snapshot));
         } catch (RuntimeException failure) {
             warnings.accept("ChunkLand permission defaults refresh failed (fail-closed): "
                     + failure.getMessage());
             PermissionDefaultsSnapshot empty = PermissionDefaultsSnapshot.empty();
-            return new View(empty, LandRuleService.fromRuleSnapshot(empty));
+            return new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty));
         }
     }
 }
