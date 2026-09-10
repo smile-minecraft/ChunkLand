@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete|group]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -85,6 +85,17 @@ command:
       delete_required: "<yellow>That would remove the whole land. Use /land delete to remove it entirely.</yellow>"
       rejected: "<red>Shrink rejected: <reason>.</red>"
       failed: "<red>Shrink failed: <reason>.</red>"
+    group:
+      console: "<red>Only players can manage groups.</red>"
+      usage: "<yellow>Usage: /land group (create|list|add|remove|delete) [args]</yellow>"
+      created: "<green>Group <group> created.</green>"
+      listed: "<green>Groups: <groups>.</green>"
+      listed_empty: "<gray>No groups yet.</gray>"
+      added: "<green>Added <player> to group <group>.</green>"
+      removed: "<green>Removed <player> from group <group>.</green>"
+      deleted: "<green>Group <group> deleted.</green>"
+      force_deleted: "<green>Group <group> force deleted: <affected>.</green>"
+      failed: "<red>Group operation failed: <reason>.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

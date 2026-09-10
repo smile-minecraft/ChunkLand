@@ -11,7 +11,7 @@ message:
       unknown: '未知動作：<payload>'
 command:
   land:
-    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete]</gray>"
+    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete|group]</gray>"
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
@@ -85,6 +85,17 @@ command:
       delete_required: "<yellow>這會移除整個領地。請改用 /land delete 完整刪除。</yellow>"
       rejected: "<red>縮減被拒絕：<reason>。</red>"
       failed: "<red>縮減失敗：<reason>。</red>"
+    group:
+      console: "<red>只有玩家可以管理群組。</red>"
+      usage: "<yellow>用法：/land group (create|list|add|remove|delete) [參數]</yellow>"
+      created: "<green>群組 <group> 已建立。</green>"
+      listed: "<green>群組：<groups>。</green>"
+      listed_empty: "<gray>尚無群組。</gray>"
+      added: "<green>已將 <player> 加入群組 <group>。</green>"
+      removed: "<green>已將 <player> 移出群組 <group>。</green>"
+      deleted: "<green>群組 <group> 已刪除。</green>"
+      force_deleted: "<green>群組 <group> 已強制刪除：<affected>。</green>"
+      failed: "<red>群組操作失敗：<reason>。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"

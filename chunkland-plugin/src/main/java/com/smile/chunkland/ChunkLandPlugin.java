@@ -37,6 +37,7 @@ import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.DirectTrustCommandHandler;
 import com.smile.chunkland.command.EntryBanCommandHandler;
 import com.smile.chunkland.command.ExpandCommandHandler;
+import com.smile.chunkland.command.GroupCommandHandler;
 import com.smile.chunkland.command.ShrinkCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
@@ -64,7 +65,9 @@ import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
+import com.smile.chunkland.persistence.SubjectGroupRepository;
 import com.smile.chunkland.protection.EntryBanLookup;
+import com.smile.chunkland.group.SubjectGroupService;
 import com.smile.chunkland.protection.LandAuthorisationCache;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
@@ -465,13 +468,21 @@ public final class ChunkLandPlugin extends JavaPlugin {
         };
         RenameCommandHandler renameHandler = renames == null ? null
                 : new RenameCommandHandler(trustLands::resolve, renames::rename, renameStewards);
+        // Global Groups: one owner-scoped namespace on the shared store, wired
+        // behind /land group. Without a store the slot stays fail-closed with
+        // group.unavailable instead of running half-wired.
+        GroupCommandHandler groupHandler = authorisationStore == null ? null
+                : new GroupCommandHandler(
+                        GroupCommandHandler.serviceGroups(new SubjectGroupService(
+                                new SubjectGroupRepository(authorisationStore))),
+                        name -> resolveOnlinePlayerUuid(getServer(), name));
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
                          trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler,
                           expandRunner(), expandCurrentLand(this.protectionStore),
                           shrinkRunner(), expandCurrentLand(this.protectionStore),
-                          shrinkTargetOwner(this.protectionStore), renameHandler),
+                          shrinkTargetOwner(this.protectionStore), renameHandler, groupHandler),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -797,6 +808,39 @@ public final class ChunkLandPlugin extends JavaPlugin {
         base.put("rename", rename == null
                 ? (sender, args, sink) -> sink.reply("command.land.rename.failed", Map.of("reason", "rename.unavailable"))
                 : rename);
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers with the Global Group flow wired.
+     *
+     * <p>A null group handler keeps the slot fail-closed: it replies
+     * {@code command.land.group.failed} with {@code group.unavailable}
+     * instead of the not-yet stub, so an unwired server never pretends the
+     * flow is coming soon and never runs a half-wired mutation.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(
+                buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                        capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                        shrink, shrinkCurrentLand, shrinkTargetOwner, rename));
+        base.put("group", group == null
+                ? (sender, args, sink) -> sink.reply("command.land.group.failed", Map.of("reason", "group.unavailable"))
+                : group);
         return Map.copyOf(base);
     }
 
