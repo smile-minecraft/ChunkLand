@@ -1,6 +1,7 @@
 package com.smile.chunkland.protection;
 
 import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.permission.PermissionBinding;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
@@ -23,9 +24,24 @@ public interface SubjectPermissionLookup {
     Grant grants(UUID actor, LandId landId, ProtectionActionType action, LandRegistry snapshot);
 
     /**
-     * Subject layers the provider copies into the decision context. SubLand
-     * layers stay {@code INHERIT} until subland authorisation data is stored;
-     * only Land-level and above are carried here.
+     * SubLand subject layers for one position-resolved subland. The default
+     * implementation carries nothing, so lookups without subland data keep
+     * the subland layers at {@code INHERIT} and decisions fall through to
+     * the land layers below.
+     *
+     * @param sublandId the covering subland, or {@code null} when no subland
+     *                  covers the position (which also reads as empty)
+     */
+    default SublandGrant sublandGrants(UUID actor, LandId landId, SubLandId sublandId,
+            ProtectionActionType action, LandRegistry snapshot) {
+        return SublandGrant.empty();
+    }
+
+    /**
+     * Subject layers the provider copies into the decision context. The land
+     * bindings now mix the actor's own direct grants with their visible
+     * generic profile bindings (player rows for their own subject, group
+     * rows for members only); rule actions still observe none of them.
      */
     record Grant(
             List<PermissionBinding> landBindings,
@@ -43,6 +59,26 @@ public interface SubjectPermissionLookup {
         static Grant empty() {
             return new Grant(List.of(), PermissionState.INHERIT,
                     PermissionState.INHERIT, PermissionState.INHERIT);
+        }
+    }
+
+    /**
+     * SubLand subject layers the provider copies into the decision context
+     * ahead of the land layers, so the resolver's spatial precedence applies:
+     * an explicit subland value decides before any land value, and an empty
+     * subland grant falls back to the land chain.
+     */
+    record SublandGrant(
+            List<PermissionBinding> bindings,
+            PermissionState sublandDefault) {
+
+        public SublandGrant {
+            bindings = bindings == null ? List.of() : List.copyOf(bindings);
+            sublandDefault = sublandDefault == null ? PermissionState.INHERIT : sublandDefault;
+        }
+
+        static SublandGrant empty() {
+            return new SublandGrant(List.of(), PermissionState.INHERIT);
         }
     }
 

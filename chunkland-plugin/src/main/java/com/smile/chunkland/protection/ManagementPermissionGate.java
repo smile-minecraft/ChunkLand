@@ -61,17 +61,18 @@ public final class ManagementPermissionGate {
     private static final Set<ProtectionActionType> MANAGEMENT_COPY =
             EnumSet.copyOf(MANAGEMENT_ACTIONS);
 
-    private static final Map<String, ProtectionActionType> BY_SUBCOMMAND = Map.of(
-            "trust", ProtectionActionType.MANAGE_MEMBER,
-            "untrust", ProtectionActionType.MANAGE_MEMBER,
-            "default", ProtectionActionType.MANAGE_PERMISSION,
-            "ban", ProtectionActionType.MANAGE_MEMBER,
-            "unban", ProtectionActionType.MANAGE_MEMBER,
-            "subland", ProtectionActionType.MANAGE_SUBLAND,
-            "expand", ProtectionActionType.EXPAND_LAND,
-            "shrink", ProtectionActionType.EXPAND_LAND,
-            "unclaim", ProtectionActionType.EXPAND_LAND,
-            "delete", ProtectionActionType.DELETE_LAND);
+    private static final Map<String, ProtectionActionType> BY_SUBCOMMAND = Map.ofEntries(
+            Map.entry("trust", ProtectionActionType.MANAGE_MEMBER),
+            Map.entry("untrust", ProtectionActionType.MANAGE_MEMBER),
+            Map.entry("default", ProtectionActionType.MANAGE_PERMISSION),
+            Map.entry("binding", ProtectionActionType.MANAGE_PERMISSION),
+            Map.entry("ban", ProtectionActionType.MANAGE_MEMBER),
+            Map.entry("unban", ProtectionActionType.MANAGE_MEMBER),
+            Map.entry("subland", ProtectionActionType.MANAGE_SUBLAND),
+            Map.entry("expand", ProtectionActionType.EXPAND_LAND),
+            Map.entry("shrink", ProtectionActionType.EXPAND_LAND),
+            Map.entry("unclaim", ProtectionActionType.EXPAND_LAND),
+            Map.entry("delete", ProtectionActionType.DELETE_LAND));
 
     private ManagementPermissionGate() {
     }

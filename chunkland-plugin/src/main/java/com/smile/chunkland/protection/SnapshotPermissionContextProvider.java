@@ -3,6 +3,8 @@ package com.smile.chunkland.protection;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.api.land.SubLandId;
+import com.smile.chunkland.api.land.SubLandSnapshot;
 import com.smile.chunkland.api.permission.DecisionSource;
 import com.smile.chunkland.api.permission.PermissionContext;
 import com.smile.chunkland.api.permission.PermissionState;
@@ -11,6 +13,7 @@ import com.smile.chunkland.api.rule.LandRuleType;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.index.LandRegistry;
+import com.smile.chunkland.runtime.index.SubLandIndex;
 import com.smile.chunkland.runtime.rule.LandRuleService;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -170,21 +173,23 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         if (land == null) {
             return PermissionContext.builder(action).build();
         }
-        PermissionDefaultsCache.ConfigView view;
-        try {
-            view = views.get();
-        } catch (RuntimeException failure) {
-            view = null;
-        }
-        LandAuthorisationSnapshot landAuth;
-        try {
-            landAuth = landAuths == null ? null : landAuths.get();
-        } catch (RuntimeException failure) {
-            landAuth = null;
-        }
+        PermissionDefaultsCache.ConfigView view = capturedView();
+        LandAuthorisationSnapshot landAuth = capturedLandAuth();
         if (landAuth == null) {
             landAuth = LandAuthorisationSnapshot.empty();
         }
+        return buildAtomicContext(actor, landId, land, action, snapshot, view, landAuth);
+    }
+
+    /**
+     * Builds the land-chain context from one already-captured generation.
+     * Both {@link #provideAtomic} and {@link #provideAtBlockAtomic} share
+     * this so the land half and the subland half can never observe different
+     * config or durable generations inside one decision.
+     */
+    private PermissionContext buildAtomicContext(UUID actor, LandId landId, LandSnapshot land,
+            ProtectionActionType action, LandRegistry snapshot,
+            PermissionDefaultsCache.ConfigView view, LandAuthorisationSnapshot landAuth) {
         PermissionDefaultsSnapshot defaults = null;
         LandRuleService rules = null;
         if (view != null) {
@@ -222,6 +227,136 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
                 .globalDefault(ruleAction ? PermissionState.INHERIT : grants.globalDefault())
                 .landRule(ruleStateAtomic(rules, landId, action, snapshot))
                 .build();
+    }
+
+    /**
+     * Position-aware decision input: the subland covering the block position
+     * contributes its subject layers ahead of the land chain, so an explicit
+     * subland binding or default decides first. Outside every subland — or
+     * when the index lookup fails — the subland layers stay {@code INHERIT}
+     * and the decision falls back to the land chain below.
+     *
+     * <p>Memory-only like {@link #provide}: one registry index read plus the
+     * same snapshot lookups, no blocking, no storage access.
+     */
+    public PermissionContext provideAtBlock(UUID actor, LandId landId,
+            int blockX, int blockY, int blockZ,
+            ProtectionActionType action, LandRegistry snapshot) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(landId, "landId");
+        Objects.requireNonNull(action, "action");
+        Objects.requireNonNull(snapshot, "snapshot");
+        if (views != null) {
+            return provideAtBlockAtomic(actor, landId, blockX, blockY, blockZ, action, snapshot);
+        }
+        PermissionContext landOnly = provide(actor, landId, action, snapshot);
+        if (snapshot.land(landId) == null) {
+            return landOnly;
+        }
+        SubjectPermissionLookup.SublandGrant sub = sublandGrantAt(
+                subjectLookup, actor, landId, blockX, blockY, blockZ, action, snapshot);
+        return PermissionContext.builder(action)
+                .isOwner(landOnly.isOwner())
+                .adminBypass(landOnly.adminBypass())
+                .subLandBindings(sub.bindings())
+                .subLandDefault(sub.sublandDefault())
+                .landBindings(landOnly.landBindings())
+                .landDefault(landOnly.landDefault())
+                .worldDefault(landOnly.worldDefault())
+                .globalDefault(landOnly.globalDefault())
+                .subLandRule(landOnly.subLandRule())
+                .landRule(landOnly.landRule())
+                .build();
+    }
+
+    private PermissionContext provideAtBlockAtomic(UUID actor, LandId landId,
+            int blockX, int blockY, int blockZ,
+            ProtectionActionType action, LandRegistry snapshot) {
+        LandSnapshot land = snapshot.land(landId);
+        if (land == null) {
+            return PermissionContext.builder(action).build();
+        }
+        // One decision holds one generation: capture the volatile view and
+        // the durable auth once, then derive both the land chain and the
+        // subland layers from those same immutable values.
+        PermissionDefaultsCache.ConfigView view = capturedView();
+        LandAuthorisationSnapshot landAuth = capturedLandAuth();
+        if (landAuth == null) {
+            landAuth = LandAuthorisationSnapshot.empty();
+        }
+        PermissionContext landOnly = buildAtomicContext(actor, landId, land, action, snapshot, view, landAuth);
+        PermissionDefaultsSnapshot fixedDefaults;
+        try {
+            fixedDefaults = view == null ? null : view.snapshot();
+        } catch (RuntimeException failure) {
+            fixedDefaults = null;
+        }
+        PermissionDefaultsSnapshot subDefaults =
+                fixedDefaults == null ? PermissionDefaultsSnapshot.empty() : fixedDefaults;
+        LandAuthorisationSnapshot fixedAuth = landAuth;
+        SubjectPermissionLookup fixed = new ConfigSubjectPermissionLookup(
+                () -> subDefaults,
+                () -> fixedAuth);
+        SubjectPermissionLookup.SublandGrant sub = sublandGrantAt(
+                fixed, actor, landId, blockX, blockY, blockZ, action, snapshot);
+        return PermissionContext.builder(action)
+                .isOwner(landOnly.isOwner())
+                .adminBypass(landOnly.adminBypass())
+                .subLandBindings(sub.bindings())
+                .subLandDefault(sub.sublandDefault())
+                .landBindings(landOnly.landBindings())
+                .landDefault(landOnly.landDefault())
+                .worldDefault(landOnly.worldDefault())
+                .globalDefault(landOnly.globalDefault())
+                .subLandRule(landOnly.subLandRule())
+                .landRule(landOnly.landRule())
+                .build();
+    }
+
+    private static SubjectPermissionLookup.SublandGrant sublandGrantAt(
+            SubjectPermissionLookup lookup, UUID actor, LandId landId,
+            int blockX, int blockY, int blockZ,
+            ProtectionActionType action, LandRegistry snapshot) {
+        SubLandId covering = coveringSubland(snapshot, landId, blockX, blockY, blockZ);
+        try {
+            SubjectPermissionLookup.SublandGrant grant =
+                    lookup.sublandGrants(actor, landId, covering, action, snapshot);
+            return grant == null
+                    ? SubjectPermissionLookup.SublandGrant.empty()
+                    : grant;
+        } catch (RuntimeException failure) {
+            return SubjectPermissionLookup.SublandGrant.empty();
+        }
+    }
+
+    private static SubLandId coveringSubland(LandRegistry snapshot, LandId landId,
+            int blockX, int blockY, int blockZ) {
+        try {
+            SubLandIndex index = snapshot.subLandIndex(landId);
+            if (index == null) {
+                return null;
+            }
+            SubLandSnapshot covering = index.findAtBlock(blockX, blockY, blockZ);
+            return covering == null ? null : covering.id();
+        } catch (RuntimeException failure) {
+            return null;
+        }
+    }
+
+    private PermissionDefaultsCache.ConfigView capturedView() {
+        try {
+            return views == null ? null : views.get();
+        } catch (RuntimeException failure) {
+            return null;
+        }
+    }
+
+    private LandAuthorisationSnapshot capturedLandAuth() {
+        try {
+            return landAuths == null ? null : landAuths.get();
+        } catch (RuntimeException failure) {
+            return null;
+        }
     }
 
     private PermissionState ruleStateAtomic(LandRuleService rules, LandId landId,

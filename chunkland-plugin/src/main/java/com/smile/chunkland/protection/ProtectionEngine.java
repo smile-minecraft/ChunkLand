@@ -142,6 +142,51 @@ public final class ProtectionEngine {
         }
     }
 
+    /**
+     * Decides for a block position, resolving the owning land from the same
+     * snapshot used for the decision and letting the covering subland decide
+     * first. Wilderness yields vanilla {@code ALLOW}. Chunk-only callers
+     * without a block Y keep using {@link #decideAt}; every listener path
+     * with a block or location uses this so subland precedence applies.
+     */
+    public PermissionDecision decideAtBlock(UUID actor, UUID worldId,
+                                            int blockX, int blockY, int blockZ,
+                                            ProtectionActionType action) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(action, "action");
+        LandRegistry snapshot = takeSnapshot(action);
+        if (snapshot == null) {
+            return failClosed(action, "snapshot unavailable");
+        }
+        return decideAtBlockOnSnapshot(actor, worldId, blockX, blockY, blockZ, action, snapshot);
+    }
+
+    /**
+     * Decides for a block position against a caller-supplied snapshot, never
+     * touching the registry supplier. Memory-only like
+     * {@link #decideAtOnSnapshot}; a {@code null} snapshot still fails closed.
+     */
+    public PermissionDecision decideAtBlockOnSnapshot(UUID actor, UUID worldId,
+                                                      int blockX, int blockY, int blockZ,
+                                                      ProtectionActionType action, LandRegistry snapshot) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(action, "action");
+        if (snapshot == null) {
+            return failClosed(action, "snapshot unavailable");
+        }
+        try {
+            LandId landId = snapshot.findLandId(worldId, blockX >> 4, blockZ >> 4);
+            if (landId == null) {
+                return wilderness(action);
+            }
+            return resolveWithBlockSnapshot(actor, landId, blockX, blockY, blockZ, action, snapshot);
+        } catch (RuntimeException ex) {
+            return failClosed(action, "lookup failure: " + ex.getMessage());
+        }
+    }
+
     private LandRegistry takeSnapshot(ProtectionActionType action) {
         try {
             return registrySupplier.get();
@@ -155,6 +200,26 @@ public final class ProtectionEngine {
                                                    LandRegistry snapshot) {
         try {
             PermissionContext ctx = contextProvider.provide(actor, landId, action, snapshot);
+            if (ctx == null) {
+                return failClosed(action, "no decision context");
+            }
+            return PermissionResolver.resolve(ctx);
+        } catch (RuntimeException ex) {
+            return failClosed(action, "resolver failure: " + ex.getMessage());
+        }
+    }
+
+    private PermissionDecision resolveWithBlockSnapshot(UUID actor, LandId landId,
+                                                        int blockX, int blockY, int blockZ,
+                                                        ProtectionActionType action,
+                                                        LandRegistry snapshot) {
+        try {
+            PermissionContext ctx;
+            if (contextProvider instanceof SnapshotPermissionContextProvider snapshotProvider) {
+                ctx = snapshotProvider.provideAtBlock(actor, landId, blockX, blockY, blockZ, action, snapshot);
+            } else {
+                ctx = contextProvider.provide(actor, landId, action, snapshot);
+            }
             if (ctx == null) {
                 return failClosed(action, "no decision context");
             }

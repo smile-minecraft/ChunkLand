@@ -87,11 +87,13 @@ class EntryBanRepositoryTest {
     }
 
     @Test
-    void schemaUpgradesToV4WithEntryBanTable() {
+    void schemaUpgradesToLatestWithEntryBanTable() {
         try (PersistenceStore store = PersistenceStore.open(db())) {
-            assertEquals(4, store.schemaVersion());
+            assertEquals(SchemaMigrator.LATEST_VERSION, store.schemaVersion());
             assertEquals(1, count(store,
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'land_entry_bans'"));
+            assertEquals(1, count(store,
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'owner_acl_epochs'"));
         }
     }
 

@@ -263,6 +263,7 @@ public final class PermissionProfileRepository {
                 throw duplicate;
             }
             failureInjector.accept(Step.AFTER_PROFILE);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, createAudit(actor, profileId, ownerKey, display, nameKey, timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return new ProfileView(profileId, owner, display, nameKey, now, Map.of());
@@ -382,6 +383,7 @@ public final class PermissionProfileRepository {
                 }
             }
             failureInjector.accept(Step.AFTER_ENTRY);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, entryAudit(actor, before, action, storedBefore, state, timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return new EntryOutcome(profileId, action, storedBefore, state);
@@ -416,6 +418,7 @@ public final class PermissionProfileRepository {
             deleteEntries(conn, profileId);
             deleteProfile(conn, profileId);
             failureInjector.accept(Step.AFTER_PROFILE);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, deleteAudit(actor, before, false, List.of(), timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return null;
@@ -450,6 +453,7 @@ public final class PermissionProfileRepository {
             deleteEntries(conn, profileId);
             deleteProfile(conn, profileId);
             failureInjector.accept(Step.AFTER_PROFILE);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, deleteAudit(actor, before, true, affected, timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return new ForceDeleteOutcome(profileId, before.displayName(),

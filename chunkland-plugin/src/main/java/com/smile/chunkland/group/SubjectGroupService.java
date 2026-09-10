@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Supplier;
 
 /**
  * Command-facing entry for Global Groups in one player namespace.
@@ -19,30 +20,66 @@ import java.util.concurrent.CompletionStage;
  * own actor, which keeps console and foreign senders fail-closed at the
  * command layer before anything reaches here. Failed commits publish
  * nothing; there is no volatile cache to invalidate.
+ *
+ * <p>Every mutation also bumps the owner's ACL epoch inside its transaction
+ * and then rebuilds the generic binding snapshot through the attached
+ * refresh hook, so group membership changes reach live decisions without a
+ * restart. A failed refresh fails the returned stage even though the commit
+ * itself is durable; the refresh publishes the unloaded marker in that case
+ * so readers fail closed instead of trusting a stale view.
  */
 public final class SubjectGroupService {
 
     private final SubjectGroupRepository repository;
     private final Clock clock;
+    private final Supplier<CompletionStage<Void>> snapshotRefresh;
 
     public SubjectGroupService(SubjectGroupRepository repository) {
         this(repository, Clock.systemUTC());
     }
 
     public SubjectGroupService(SubjectGroupRepository repository, Clock clock) {
+        this(repository, clock, () -> CompletableFuture.completedFuture(null));
+    }
+
+    /**
+     * @param snapshotRefresh rebuilds the generic binding snapshot after
+     *                        every committed mutation using the system clock;
+     *                        null reads as a no-op
+     */
+    public SubjectGroupService(SubjectGroupRepository repository,
+            Supplier<CompletionStage<Void>> snapshotRefresh) {
+        this(repository, Clock.systemUTC(), snapshotRefresh);
+    }
+
+    /**
+     * @param snapshotRefresh rebuilds the generic binding snapshot after
+     *                        every committed mutation; null reads as a no-op
+     */
+    public SubjectGroupService(SubjectGroupRepository repository, Clock clock,
+            Supplier<CompletionStage<Void>> snapshotRefresh) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.snapshotRefresh = snapshotRefresh != null
+                ? snapshotRefresh
+                : () -> CompletableFuture.completedFuture(null);
     }
 
     /** Create one group in the caller's namespace. */
     public CompletionStage<SubjectGroupRepository.GroupView> create(UUID owner, String displayName) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(displayName, "displayName");
+        CompletionStage<SubjectGroupRepository.GroupView> committed;
         try {
-            return repository.create(owner, displayName, owner, clock.instant());
+            committed = repository.create(owner, displayName, owner, clock.instant());
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
+        if (committed == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("group repository returned null"));
+        }
+        return committed.thenCompose(view -> refresh().thenApply(ignored -> view));
     }
 
     /** List every group in the caller's namespace. */
@@ -96,11 +133,17 @@ public final class SubjectGroupService {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(groupId, "groupId");
         Objects.requireNonNull(member, "member");
+        CompletionStage<SubjectGroupRepository.MembershipOutcome> committed;
         try {
-            return repository.addMember(owner, groupId, member, owner, clock.instant());
+            committed = repository.addMember(owner, groupId, member, owner, clock.instant());
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
+        if (committed == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("group repository returned null"));
+        }
+        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
     }
 
     /** Remove one member; resends succeed. */
@@ -109,22 +152,34 @@ public final class SubjectGroupService {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(groupId, "groupId");
         Objects.requireNonNull(member, "member");
+        CompletionStage<SubjectGroupRepository.MembershipOutcome> committed;
         try {
-            return repository.removeMember(owner, groupId, member, owner, clock.instant());
+            committed = repository.removeMember(owner, groupId, member, owner, clock.instant());
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
+        if (committed == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("group repository returned null"));
+        }
+        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
     }
 
     /** Normal delete: refused while bindings reference the group. */
     public CompletionStage<Void> delete(UUID owner, UUID groupId) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(groupId, "groupId");
+        CompletionStage<Void> committed;
         try {
-            return repository.delete(owner, groupId, owner, clock.instant());
+            committed = repository.delete(owner, groupId, owner, clock.instant());
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
+        if (committed == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("group repository returned null"));
+        }
+        return committed.thenCompose(ignored -> refresh());
     }
 
     /** Force delete: removes the referencing bindings in the same transaction. */
@@ -132,8 +187,25 @@ public final class SubjectGroupService {
             UUID owner, UUID groupId) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(groupId, "groupId");
+        CompletionStage<SubjectGroupRepository.ForceDeleteOutcome> committed;
         try {
-            return repository.forceDelete(owner, groupId, owner, clock.instant());
+            committed = repository.forceDelete(owner, groupId, owner, clock.instant());
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+        if (committed == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("group repository returned null"));
+        }
+        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
+    }
+
+    private CompletionStage<Void> refresh() {
+        try {
+            CompletionStage<Void> refreshed = snapshotRefresh.get();
+            return refreshed != null
+                    ? refreshed
+                    : CompletableFuture.completedFuture(null);
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }

@@ -13,6 +13,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Supplier;
 
 /**
  * Command-facing entry for player-owned Permission Profiles.
@@ -27,19 +28,49 @@ import java.util.concurrent.CompletionStage;
  *
  * <p>Raw permission and state text parse fail-closed here: unknown names,
  * reserved words and land-rule actions never reach the repository as values.
+ *
+ * <p>Every mutation also bumps the owner's ACL epoch inside its transaction
+ * and then rebuilds the generic binding snapshot through the attached
+ * refresh hook, so profile entry changes reach live decisions without a
+ * restart. A failed refresh fails the returned stage even though the commit
+ * itself is durable; the refresh publishes the unloaded marker in that case
+ * so readers fail closed instead of trusting a stale view.
  */
 public final class PermissionProfileService {
 
     private final PermissionProfileRepository repository;
     private final Clock clock;
+    private final Supplier<CompletionStage<Void>> snapshotRefresh;
 
     public PermissionProfileService(PermissionProfileRepository repository) {
         this(repository, Clock.systemUTC());
     }
 
     public PermissionProfileService(PermissionProfileRepository repository, Clock clock) {
+        this(repository, clock, () -> CompletableFuture.completedFuture(null));
+    }
+
+    /**
+     * @param snapshotRefresh rebuilds the generic binding snapshot after
+     *                        every committed mutation using the system clock;
+     *                        null reads as a no-op
+     */
+    public PermissionProfileService(PermissionProfileRepository repository,
+            Supplier<CompletionStage<Void>> snapshotRefresh) {
+        this(repository, Clock.systemUTC(), snapshotRefresh);
+    }
+
+    /**
+     * @param snapshotRefresh rebuilds the generic binding snapshot after
+     *                        every committed mutation; null reads as a no-op
+     */
+    public PermissionProfileService(PermissionProfileRepository repository, Clock clock,
+            Supplier<CompletionStage<Void>> snapshotRefresh) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.snapshotRefresh = snapshotRefresh != null
+                ? snapshotRefresh
+                : () -> CompletableFuture.completedFuture(null);
     }
 
     /** Create one profile in the caller's namespace. */
@@ -47,11 +78,17 @@ public final class PermissionProfileService {
             UUID owner, String displayName) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(displayName, "displayName");
+        CompletionStage<PermissionProfileRepository.ProfileView> committed;
         try {
-            return repository.create(owner, displayName, owner, clock.instant());
+            committed = repository.create(owner, displayName, owner, clock.instant());
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
+        if (committed == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("profile repository returned null"));
+        }
+        return committed.thenCompose(view -> refresh().thenApply(ignored -> view));
     }
 
     /** List every profile in the caller's namespace. */
@@ -123,12 +160,18 @@ public final class PermissionProfileService {
             return CompletableFuture.failedFuture(failure);
         }
         return resolve(owner, ref).thenCompose(view -> {
+            CompletionStage<PermissionProfileRepository.EntryOutcome> committed;
             try {
-                return repository.setEntry(owner, view.id(), action, state,
+                committed = repository.setEntry(owner, view.id(), action, state,
                         owner, clock.instant());
             } catch (RuntimeException failure) {
                 return CompletableFuture.failedFuture(failure);
             }
+            if (committed == null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("profile repository returned null"));
+            }
+            return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
         });
     }
 
@@ -137,11 +180,17 @@ public final class PermissionProfileService {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(ref, "ref");
         return resolve(owner, ref).thenCompose(view -> {
+            CompletionStage<Void> committed;
             try {
-                return repository.delete(owner, view.id(), owner, clock.instant());
+                committed = repository.delete(owner, view.id(), owner, clock.instant());
             } catch (RuntimeException failure) {
                 return CompletableFuture.failedFuture(failure);
             }
+            if (committed == null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("profile repository returned null"));
+            }
+            return committed.thenCompose(ignored -> refresh());
         });
     }
 
@@ -151,12 +200,29 @@ public final class PermissionProfileService {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(ref, "ref");
         return resolve(owner, ref).thenCompose(view -> {
+            CompletionStage<PermissionProfileRepository.ForceDeleteOutcome> committed;
             try {
-                return repository.forceDelete(owner, view.id(), owner, clock.instant());
+                committed = repository.forceDelete(owner, view.id(), owner, clock.instant());
             } catch (RuntimeException failure) {
                 return CompletableFuture.failedFuture(failure);
             }
+            if (committed == null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("profile repository returned null"));
+            }
+            return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
         });
+    }
+
+    private CompletionStage<Void> refresh() {
+        try {
+            CompletionStage<Void> refreshed = snapshotRefresh.get();
+            return refreshed != null
+                    ? refreshed
+                    : CompletableFuture.completedFuture(null);
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
     }
 
     /**

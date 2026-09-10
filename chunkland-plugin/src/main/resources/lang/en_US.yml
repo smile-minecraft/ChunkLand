@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|shrink|unclaim|rename|delete|group|profile]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -106,6 +106,13 @@ command:
       deleted: "<green>Profile <profile> deleted.</green>"
       force_deleted: "<green>Profile <profile> force deleted: <affected>.</green>"
       failed: "<red>Profile operation failed: <reason>.</red>"
+    binding:
+      console: "<red>Only players can manage bindings.</red>"
+      usage: "<yellow>Usage: /land binding (bind|unbind) player <player> <profile> | group <group> <profile> [--in-subland]</yellow>"
+      created: "<green>Binding created.</green>"
+      updated: "<green>Binding updated.</green>"
+      deleted: "<green>Binding removed.</green>"
+      failed: "<red>Binding operation failed: <reason>.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

@@ -327,8 +327,8 @@ public final class ProtectionListener implements Listener {
                 if (playerId == null || at == null || at.getWorld() == null) {
                     return false;
                 }
-                return engine.decideAt(playerId, at.getWorld().getUID(),
-                        at.getBlockX() >> 4, at.getBlockZ() >> 4,
+                return engine.decideAtBlock(playerId, at.getWorld().getUID(),
+                        at.getBlockX(), at.getBlockY(), at.getBlockZ(),
                         EntryProtectionAdapter.entryAction()).outcome() != PermissionState.DENY;
             } catch (RuntimeException ex) {
                 return false;
@@ -394,11 +394,10 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            var decision = engine.decideAt(
+            var decision = engine.decideAtBlock(
                     player.getUniqueId(),
                     block.getWorld().getUID(),
-                    block.getX() >> 4,
-                    block.getZ() >> 4,
+                    block.getX(), block.getY(), block.getZ(),
                     ProtectionActionType.BLOCK_BREAK);
             if (decision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
@@ -433,11 +432,10 @@ public final class ProtectionListener implements Listener {
                 action = ProtectionActionType.ENTITY_DAMAGE;
             }
             var location = victim.getLocation();
-            var decision = engine.decideAt(
+            var decision = engine.decideAtBlock(
                     damager.getUniqueId(),
                     location.getWorld().getUID(),
-                    location.getBlockX() >> 4,
-                    location.getBlockZ() >> 4,
+                    location.getBlockX(), location.getBlockY(), location.getBlockZ(),
                     action);
             if (decision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
@@ -634,6 +632,7 @@ public final class ProtectionListener implements Listener {
             }
             if (deniedAt(ENVIRONMENT_ACTOR, block.getWorld(),
                     block.getX() + sign * direction.getModX(),
+                    block.getY() + sign * direction.getModY(),
                     block.getZ() + sign * direction.getModZ(),
                     ProtectionActionType.PISTON_MOVE)) {
                 return true;
@@ -1309,7 +1308,7 @@ public final class ProtectionListener implements Listener {
     }
 
     private boolean deniedAtBlock(UUID actor, Block block, ProtectionActionType action) {
-        return deniedAt(actor, block.getWorld(), block.getX(), block.getZ(), action);
+        return deniedAt(actor, block.getWorld(), block.getX(), block.getY(), block.getZ(), action);
     }
 
     /**
@@ -1352,23 +1351,24 @@ public final class ProtectionListener implements Listener {
 
     private PermissionDecision decideAtBlock(UUID actor, Block block,
                                              ProtectionActionType action) {
-        return engine.decideAt(actor, block.getWorld().getUID(),
-                block.getX() >> 4, block.getZ() >> 4, action);
+        return engine.decideAtBlock(actor, block.getWorld().getUID(),
+                block.getX(), block.getY(), block.getZ(), action);
     }
 
     private PermissionDecision decideAtLocation(UUID actor, Location location,
                                                 ProtectionActionType action) {
-        return engine.decideAt(actor, location.getWorld().getUID(),
-                location.getBlockX() >> 4, location.getBlockZ() >> 4, action);
+        return engine.decideAtBlock(actor, location.getWorld().getUID(),
+                location.getBlockX(), location.getBlockY(), location.getBlockZ(), action);
     }
 
     private boolean deniedAtLocation(UUID actor, Location location, ProtectionActionType action) {
-        return deniedAt(actor, location.getWorld(), location.getBlockX(), location.getBlockZ(), action);
+        return deniedAt(actor, location.getWorld(), location.getBlockX(), location.getBlockY(),
+                location.getBlockZ(), action);
     }
 
-    private boolean deniedAt(UUID actor, World world, int blockX, int blockZ,
+    private boolean deniedAt(UUID actor, World world, int blockX, int blockY, int blockZ,
                              ProtectionActionType action) {
-        return engine.decideAt(actor, world.getUID(), blockX >> 4, blockZ >> 4, action).outcome()
+        return engine.decideAtBlock(actor, world.getUID(), blockX, blockY, blockZ, action).outcome()
                 == PermissionState.DENY;
     }
 

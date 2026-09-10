@@ -187,7 +187,10 @@ public final class LandAuthorisationService {
                         cache.publish(LandAuthorisationSnapshot.unloaded());
                         throw new IllegalStateException("snapshot load returned null data");
                     }
-                    cache.publish(LandAuthorisationSnapshot.copyOf(
+                    // The direct load owns only the direct layers: merge them
+                    // over the cached generic bindings instead of wiping rows
+                    // another refresh path published.
+                    cache.publish(cache.snapshot().withDirect(
                             data.directAllows(), data.landDefaults(), data.entryBans()));
                 })
                 .whenComplete((ignored, failure) -> {

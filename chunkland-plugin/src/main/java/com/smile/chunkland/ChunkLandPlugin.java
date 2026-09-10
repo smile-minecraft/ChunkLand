@@ -30,7 +30,11 @@ import com.smile.chunkland.claim.SnapshotShrinkValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.api.land.SubLandId;
+import com.smile.chunkland.api.land.SubLandSnapshot;
+import com.smile.chunkland.binding.LandBindingService;
 import com.smile.chunkland.command.BedrockClaimFormHandler;
+import com.smile.chunkland.command.BindingCommandHandler;
 import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
@@ -61,6 +65,7 @@ import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
 import com.smile.chunkland.persistence.LandAuthorisationRepository;
+import com.smile.chunkland.persistence.LandBindingRepository;
 import com.smile.chunkland.persistence.LandRenameRepository;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
@@ -82,6 +87,7 @@ import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.api.ProtectionDepthLookup;
 import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
+import com.smile.chunkland.runtime.index.SubLandIndex;
 import com.smile.chunkland.runtime.vertical.SnapshotProtectionDepthLookup;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
 import com.smile.chunkland.runtime.rule.LandRuleService;
@@ -120,6 +126,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -471,30 +479,78 @@ public final class ChunkLandPlugin extends JavaPlugin {
         };
         RenameCommandHandler renameHandler = renames == null ? null
                 : new RenameCommandHandler(trustLands::resolve, renames::rename, renameStewards);
+        // Generic bindings: one owner-scoped flow on the shared store and
+        // the shared authorisation cache, wired behind /land binding. The
+        // service publishes into the same snapshot the trust path publishes
+        // into, so binding mutations are visible to the next decision.
+        // Without a store the slot stays fail-closed with
+        // binding.unavailable instead of running half-wired.
+        LandBindingService bindingService = authorisationStore == null ? null
+                : new LandBindingService(new LandBindingRepository(authorisationStore),
+                        this.landAuthorisationCache);
+        java.util.function.Supplier<java.util.concurrent.CompletionStage<Void>> bindingRefresh =
+                bindingService == null
+                        ? () -> java.util.concurrent.CompletableFuture.completedFuture(null)
+                        : bindingService::refresh;
         // Global Groups: one owner-scoped namespace on the shared store, wired
         // behind /land group. Without a store the slot stays fail-closed with
-        // group.unavailable instead of running half-wired.
-        GroupCommandHandler groupHandler = authorisationStore == null ? null
+        // group.unavailable instead of running half-wired. Mutations rebuild
+        // the generic binding snapshot through the binding refresh hook so
+        // membership changes reach live decisions without a restart.
+        SubjectGroupService groupService = authorisationStore == null ? null
+                : new SubjectGroupService(
+                        new SubjectGroupRepository(authorisationStore), bindingRefresh);
+        GroupCommandHandler groupHandler = groupService == null ? null
                 : new GroupCommandHandler(
-                        GroupCommandHandler.serviceGroups(new SubjectGroupService(
-                                new SubjectGroupRepository(authorisationStore))),
+                        GroupCommandHandler.serviceGroups(groupService),
                         name -> resolveOnlinePlayerUuid(getServer(), name));
         // Permission Profiles: one owner-scoped namespace on the shared
         // store, wired behind /land profile. Without a store the slot stays
         // fail-closed with profile.unavailable instead of running half-wired.
         // The handler holds no closeable, so disable needs no extra cleanup.
-        ProfileCommandHandler profileHandler = authorisationStore == null ? null
+        // Entry mutations share the same binding refresh hook as groups.
+        PermissionProfileService profileService = authorisationStore == null ? null
+                : new PermissionProfileService(
+                        new PermissionProfileRepository(authorisationStore), bindingRefresh);
+        ProfileCommandHandler profileHandler = profileService == null ? null
                 : new ProfileCommandHandler(
-                        ProfileCommandHandler.serviceProfiles(new PermissionProfileService(
-                                new PermissionProfileRepository(authorisationStore))));
+                        ProfileCommandHandler.serviceProfiles(profileService));
+        BindingCommandHandler bindingHandler = bindingService == null
+                || groupService == null || profileService == null ? null
+                : new BindingCommandHandler(
+                        BindingCommandHandler.serviceBindings(bindingService),
+                        BindingCommandHandler.serviceGroups(groupService),
+                        BindingCommandHandler.serviceProfiles(profileService),
+                        trustLands::resolve,
+                        currentLocationSublandResolver(this.protectionStore),
+                        name -> resolveOnlinePlayerUuid(getServer(), name));
+        // Generic binding preload: read the existing binding rows once at
+        // startup so restarts keep resolving them. The publish merges over
+        // the direct layers the trust preload publishes into the same
+        // snapshot, and either order converges; a failed preload publishes
+        // the unloaded marker so decisions fail closed until the next
+        // restart instead of trusting a partial view.
+        if (bindingService != null) {
+            try {
+                bindingService.refresh().whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        getLogger().warning("ChunkLand generic binding preload failed; "
+                                + "bindings stay empty until the next restart: " + failure);
+                    }
+                });
+            } catch (RuntimeException failure) {
+                getLogger().warning("ChunkLand generic binding preload failed; "
+                        + "bindings stay empty until the next restart: " + failure);
+            }
+        }
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
                          trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler,
                           expandRunner(), expandCurrentLand(this.protectionStore),
-                          shrinkRunner(), expandCurrentLand(this.protectionStore),
-                          shrinkTargetOwner(this.protectionStore), renameHandler, groupHandler,
-                          profileHandler),
+                           shrinkRunner(), expandCurrentLand(this.protectionStore),
+                           shrinkTargetOwner(this.protectionStore), renameHandler, groupHandler,
+                           profileHandler, bindingHandler),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -891,6 +947,42 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Production {@code /land} handlers with the generic binding flow wired.
+     *
+     * <p>A null binding handler keeps the slot fail-closed: it replies
+     * {@code command.land.binding.failed} with {@code binding.unavailable}
+     * instead of the not-yet stub, so an unwired server never pretends the
+     * flow is coming soon and never runs a half-wired mutation.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(
+                buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                        capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                        shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                        profile));
+        base.put("binding", binding == null
+                ? (sender, args, sink) -> sink.reply("command.land.binding.failed", Map.of("reason", "binding.unavailable"))
+                : binding);
+        return Map.copyOf(base);
+    }
+
+    /**
      * Build the durable land authorisation service on the given store. The
      * caller passes null instead when no store is available; handlers then
      * stay fail-closed without side effects and no substitute store is
@@ -940,13 +1032,55 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Resolves the affected subland for a binding attempt from the sender's
+     * current block position against the live immutable snapshot. Only the
+     * subland covering the position within the given land counts; wilderness
+     * positions, positions outside every subland, non-player senders and any
+     * unresolvable position stay empty so the caller fails closed.
+     */
+    static BindingCommandHandler.SublandResolver currentLocationSublandResolver(
+            LandRegistryStore store) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        return (sender, landId) -> {
+            try {
+                if (!(sender instanceof Player player) || landId == null) {
+                    return Optional.empty();
+                }
+                Location location = player.getLocation();
+                if (location == null) {
+                    return Optional.empty();
+                }
+                World world = location.getWorld();
+                if (world == null) {
+                    return Optional.empty();
+                }
+                LandRegistry snapshot = active.snapshot();
+                if (snapshot == null || snapshot.land(landId) == null) {
+                    return Optional.empty();
+                }
+                SubLandIndex index = snapshot.subLandIndex(landId);
+                if (index == null) {
+                    return Optional.empty();
+                }
+                SubLandSnapshot covering = index.findAtBlock(location.getBlockX(),
+                        location.getBlockY(), location.getBlockZ());
+                if (covering == null || !landId.equals(covering.parentLandId())) {
+                    return Optional.empty();
+                }
+                return Optional.of(covering.id());
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        };
+    }
+
+    /**
      * Resolves a trust target without any network query: a UUID string
      * parses directly, otherwise only an online exact (case-sensitive) name
      * match counts. Unknown, offline, console and failing lookups stay
      * empty so the caller fails closed.
      */
-    static Optional<UUID> resolveOnlinePlayerUuid(org.bukkit.Server server, String raw) {
-        if (server == null || raw == null || raw.isBlank()) {
+    static Optional<UUID> resolveOnlinePlayerUuid(org.bukkit.Server server, String raw) {        if (server == null || raw == null || raw.isBlank()) {
             return Optional.empty();
         }
         String stripped = raw.strip();

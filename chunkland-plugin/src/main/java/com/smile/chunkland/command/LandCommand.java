@@ -47,7 +47,7 @@ public final class LandCommand {
     }
 
     public static final List<String> SUBCOMMANDS = List.of(
-            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile");
+            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile");
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
@@ -109,6 +109,11 @@ public final class LandCommand {
             } else if (captured.equals("default")) {
                 m.put(captured, (sender, args, sink) ->
                         sink.reply("command.land.default.failed", Map.of("reason", "default.unavailable")));
+            } else if (captured.equals("binding")) {
+                // Generic bindings are implemented; without a wired mutation
+                // the slot stays fail-closed instead of pretending it is coming soon.
+                m.put(captured, (sender, args, sink) ->
+                        sink.reply("command.land.binding.failed", Map.of("reason", "binding.unavailable")));
             } else {
                 m.put(captured, (sender, args, sink) -> sink.reply("command.land.not_yet", Map.of("subcommand", captured)));
             }

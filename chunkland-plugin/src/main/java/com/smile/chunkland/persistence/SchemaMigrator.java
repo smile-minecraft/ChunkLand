@@ -39,7 +39,7 @@ import java.util.UUID;
  */
 final class SchemaMigrator {
 
-    static final int LATEST_VERSION = 4;
+    static final int LATEST_VERSION = 5;
 
     /**
      * Namespace prefix used by {@link #legacyWorldUuid(String)} when a legacy
@@ -273,6 +273,23 @@ final class SchemaMigrator {
             );
             CREATE INDEX idx_land_entry_bans_land ON land_entry_bans(land_id);
             CREATE INDEX idx_land_entry_bans_player ON land_entry_bans(player_uuid);
+            """,
+            // v5: durable per-owner ACL epoch plus a uniqueness backstop for
+            // generic bindings. The epoch starts at zero per owner and is
+            // bumped once per committed group, profile, membership or binding
+            // mutation in the same transaction, so a future cache generation
+            // can detect stale reads. The unique indexes make one
+            // scope-plus-subject row the only possible state even when two
+            // replaces race: the loser rolls back instead of duplicating.
+            """
+            CREATE TABLE owner_acl_epochs (
+                owner_key TEXT PRIMARY KEY,
+                epoch INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX uq_land_bindings_scope_subject
+                ON land_bindings(land_id, subject_type, subject_id);
+            CREATE UNIQUE INDEX uq_subland_bindings_scope_subject
+                ON subland_bindings(subland_id, subject_type, subject_id);
             """ );
 
     private SchemaMigrator() {

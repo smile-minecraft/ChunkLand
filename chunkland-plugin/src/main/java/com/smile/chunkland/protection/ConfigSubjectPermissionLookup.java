@@ -2,6 +2,7 @@ package com.smile.chunkland.protection;
 
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
+import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.permission.DecisionSource;
 import com.smile.chunkland.api.permission.Permission;
 import com.smile.chunkland.api.permission.PermissionBinding;
@@ -41,8 +42,10 @@ import java.util.function.Supplier;
  * Any lookup failure degrades to an empty grant (fail-closed) instead of
  * assuming access.
  *
- * <p>SubLand layers are not carried: they stay {@code INHERIT} until subland
- * authorisation data is stored.
+ * <p>SubLand layers arrive through {@link #sublandGrants}: generic profile
+ * bindings filtered to the actor plus the sparse subland default, so an
+ * explicit subland value decides ahead of the land chain and a position
+ * outside every subland falls back to it.
  */
 public final class ConfigSubjectPermissionLookup implements SubjectPermissionLookup {
 
@@ -125,6 +128,8 @@ public final class ConfigSubjectPermissionLookup implements SubjectPermissionLoo
             bindings.add(new PermissionBinding(
                     PermissionSubject.player(actor), new Permission(granted, PermissionState.ALLOW)));
         }
+        bindings.addAll(visibleGenericBindings(actor, landAuth.genericLandBindings(landId),
+                action, landAuth));
         // Per-land ENTRY bans deny through the same aggregation layer: the
         // existing flat DENY-first precedence lets this DENY win over the
         // direct trust ALLOW above without rewriting any profile row. Only
@@ -136,5 +141,82 @@ public final class ConfigSubjectPermissionLookup implements SubjectPermissionLoo
                     new Permission(ProtectionActionType.ENTRY, PermissionState.DENY)));
         }
         return List.copyOf(bindings);
+    }
+
+    @Override
+    public SublandGrant sublandGrants(UUID actor, LandId landId, SubLandId sublandId,
+            ProtectionActionType action, LandRegistry snapshot) {
+        try {
+            Objects.requireNonNull(actor, "actor");
+            Objects.requireNonNull(landId, "landId");
+            Objects.requireNonNull(action, "action");
+            Objects.requireNonNull(snapshot, "snapshot");
+            if (sublandId == null) {
+                return SublandGrant.empty();
+            }
+            if (snapshot.land(landId) == null) {
+                return SublandGrant.empty();
+            }
+            LandAuthorisationSnapshot landAuth = currentAuthorisation();
+            if (landAuth == null || !landAuth.loaded()) {
+                return SublandGrant.empty();
+            }
+            if (action.decisionSource() == DecisionSource.LAND_RULE) {
+                return SublandGrant.empty();
+            }
+            return new SublandGrant(
+                    visibleGenericBindings(actor, landAuth.genericSublandBindings(sublandId),
+                            action, landAuth),
+                    landAuth.sublandDefault(sublandId, action));
+        } catch (RuntimeException failure) {
+            return SublandGrant.empty();
+        }
+    }
+
+    private LandAuthorisationSnapshot currentAuthorisation() {
+        try {
+            LandAuthorisationSnapshot landAuth = landAuthorisations.get();
+            return landAuth != null ? landAuth : LandAuthorisationSnapshot.unloaded();
+        } catch (RuntimeException failure) {
+            return LandAuthorisationSnapshot.unloaded();
+        }
+    }
+
+    /**
+     * Keeps only the generic bindings the actor may see for one action: a
+     * player binding for its own subject id, a group binding only for
+     * members. Anything else — including corrupt subject ids — is dropped so
+     * one bad row can never grant or deny a stranger.
+     */
+    private static List<PermissionBinding> visibleGenericBindings(UUID actor,
+            List<PermissionBinding> stored, ProtectionActionType action,
+            LandAuthorisationSnapshot landAuth) {
+        List<PermissionBinding> visible = new ArrayList<>();
+        for (PermissionBinding binding : stored) {
+            if (binding == null || binding.permission() == null || binding.subject() == null) {
+                continue;
+            }
+            if (binding.permission().action() != action) {
+                continue;
+            }
+            PermissionSubject subject = binding.subject();
+            try {
+                if (subject.kind() == PermissionSubject.Kind.PLAYER) {
+                    if (!actor.toString().equals(subject.id())) {
+                        continue;
+                    }
+                } else if (subject.kind() == PermissionSubject.Kind.GROUP) {
+                    if (!landAuth.isGroupMember(subject.id(), actor)) {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            } catch (RuntimeException unexpected) {
+                continue;
+            }
+            visible.add(binding);
+        }
+        return List.copyOf(visible);
     }
 }

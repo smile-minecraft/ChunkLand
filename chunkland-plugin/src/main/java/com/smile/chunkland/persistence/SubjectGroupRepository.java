@@ -203,6 +203,7 @@ public final class SubjectGroupRepository {
                 throw duplicate;
             }
             failureInjector.accept(Step.AFTER_GROUP);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, createAudit(actor, groupId, ownerKey, display, nameKey, timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return new GroupView(groupId, owner, display, nameKey, now, Set.of());
@@ -302,6 +303,7 @@ public final class SubjectGroupRepository {
                 insert.executeUpdate();
             }
             failureInjector.accept(Step.AFTER_MEMBER);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, memberAudit(actor, groupId, before, member,
                     presentBefore, true, "group-member-add", timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
@@ -335,6 +337,7 @@ public final class SubjectGroupRepository {
                 delete.executeUpdate();
             }
             failureInjector.accept(Step.AFTER_MEMBER);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, memberAudit(actor, groupId, before, member,
                     presentBefore, false, "group-member-remove", timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
@@ -369,6 +372,7 @@ public final class SubjectGroupRepository {
             deleteMembers(conn, groupId);
             deleteGroup(conn, groupId);
             failureInjector.accept(Step.AFTER_GROUP);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, deleteAudit(actor, before, false, List.of(), timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return null;
@@ -401,6 +405,7 @@ public final class SubjectGroupRepository {
             deleteMembers(conn, groupId);
             deleteGroup(conn, groupId);
             failureInjector.accept(Step.AFTER_GROUP);
+            OwnerAclEpochs.increment(conn, ownerKey);
             insertAudit(conn, deleteAudit(actor, before, true, affected, timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return new ForceDeleteOutcome(groupId, before.displayName(),
