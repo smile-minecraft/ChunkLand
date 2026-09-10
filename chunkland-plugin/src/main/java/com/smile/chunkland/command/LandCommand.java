@@ -47,7 +47,7 @@ public final class LandCommand {
     }
 
     public static final List<String> SUBCOMMANDS = List.of(
-            "help", "confirm", "wand", "claim", "trust", "untrust", "ban", "unban", "subland", "expand", "rename", "delete");
+            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "ban", "unban", "subland", "expand", "rename", "delete");
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
@@ -98,6 +98,17 @@ public final class LandCommand {
                     // confirm may carry a revision token but stub does not validate it.
                     sink.reply("command.land.not_yet", Map.of("subcommand", captured));
                 });
+            } else if (captured.equals("trust")) {
+                // Direct trust is implemented; without a wired mutation the
+                // slot stays fail-closed instead of pretending it is coming soon.
+                m.put(captured, (sender, args, sink) ->
+                        sink.reply("command.land.trust.failed", Map.of("reason", "trust.unavailable")));
+            } else if (captured.equals("untrust")) {
+                m.put(captured, (sender, args, sink) ->
+                        sink.reply("command.land.untrust.failed", Map.of("reason", "untrust.unavailable")));
+            } else if (captured.equals("default")) {
+                m.put(captured, (sender, args, sink) ->
+                        sink.reply("command.land.default.failed", Map.of("reason", "default.unavailable")));
             } else {
                 m.put(captured, (sender, args, sink) -> sink.reply("command.land.not_yet", Map.of("subcommand", captured)));
             }

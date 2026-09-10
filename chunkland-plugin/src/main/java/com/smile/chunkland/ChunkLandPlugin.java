@@ -21,11 +21,14 @@ import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.ClaimValidator;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
+import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.command.BedrockClaimFormHandler;
 import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
+import com.smile.chunkland.command.DirectTrustCommandHandler;
 import com.smile.chunkland.command.LandCommand;
+import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.SubLandCommandHandler;
@@ -43,10 +46,12 @@ import com.smile.chunkland.limit.OwnerQuotaHydrator;
 import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import com.smile.chunkland.persistence.LandAuthorisationRepository;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
+import com.smile.chunkland.protection.LandAuthorisationCache;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.PermissionDefaultsCache;
@@ -76,6 +81,7 @@ import com.smile.chunkland.subland.DepthExtensionPort;
 import com.smile.chunkland.subland.SubLandConfirmService;
 import com.smile.chunkland.subland.SubLandDepthSource;
 import com.smile.chunkland.subland.SubLandMutationRunner;
+import com.smile.chunkland.trust.LandAuthorisationService;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandSafetyListener;
 import java.time.Clock;
@@ -94,6 +100,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -179,6 +186,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ExecutorService claimExecutor;
     private SubLandConfirmService subLandConfirm;
     private SubLandMutationRunner subLandRunner;
+    private LandAuthorisationCache landAuthorisationCache;
+    private LandAuthorisationService landAuthorisationService;
     private DepthExtendService depthExtendService;
     /**
      * Read-API lifecycle gate. Each enabled generation owns one instance;
@@ -335,6 +344,39 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     + "runtime stays empty until the next restart: " + failure.getMessage());
             this.claimStartup = null;
         }
+        // Durable land authorisation: direct trust bindings and land defaults
+        // share the recovery bootstrap store, publish into one volatile
+        // snapshot the enforcement path already reads, and load the existing
+        // rows once at startup so restarts keep resolving them. When recovery
+        // never started there is no service and the handlers stay fail-closed
+        // without side effects.
+        PersistenceStore authorisationStore = null;
+        if (this.claimStartup != null) {
+            try {
+                authorisationStore = this.claimStartup.store();
+            } catch (RuntimeException unresolved) {
+                authorisationStore = null;
+            }
+        }
+        LandAuthorisationService authorisations =
+                authorisationStore == null ? null : buildLandAuthorisations(authorisationStore);
+        this.landAuthorisationCache =
+                authorisations == null ? new LandAuthorisationCache() : authorisations.cache();
+        this.landAuthorisationService = authorisations;
+        this.permissionDefaults.attachLandAuthorisation(this.landAuthorisationCache::snapshot);
+        if (authorisations != null) {
+            try {
+                authorisations.refresh().whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        getLogger().warning("ChunkLand land authorisation preload failed; "
+                                + "trust and defaults stay empty until the next restart: " + failure);
+                    }
+                });
+            } catch (RuntimeException failure) {
+                getLogger().warning("ChunkLand land authorisation preload failed; "
+                        + "trust and defaults stay empty until the next restart: " + failure);
+            }
+        }
         // Formal claim flow: the saga shares the bootstrap ledger, Economy and
         // rebuilder so live claims and startup recovery converge on one durable
         // row and one refund cache. When recovery never started, the handler
@@ -352,9 +394,23 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // Capturing here (still ahead of the listener registration below)
         // keeps the no-leak guarantee on registration failure.
         this.capabilities = capabilityProbe.map(M0CapabilityProbe::capabilities);
+        DirectTrustCommandHandler.LandResolver trustLands =
+                currentLocationLandResolver(this.protectionStore);
+        Function<String, Optional<UUID>> trustPlayers =
+                name -> resolveOnlinePlayerUuid(getServer(), name);
+        DirectTrustCommandHandler trustHandler = new DirectTrustCommandHandler(
+                DirectTrustCommandHandler.Mode.TRUST, trustLands, trustPlayers,
+                authorisations == null ? null : authorisations::trust);
+        DirectTrustCommandHandler untrustHandler = new DirectTrustCommandHandler(
+                DirectTrustCommandHandler.Mode.UNTRUST, trustLands, trustPlayers,
+                authorisations == null ? null : authorisations::untrust);
+        LandDefaultCommandHandler defaultHandler = new LandDefaultCommandHandler(
+                trustLands::resolve,
+                authorisations == null ? null : authorisations::setDefault);
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
-                        structureRevisions, sublandHandler, this.capabilities.orElse(null)),
+                        structureRevisions, sublandHandler, this.capabilities.orElse(null),
+                        trustHandler, untrustHandler, defaultHandler),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> new SnapshotPermissionContextProvider(
                                 this.permissionDefaults.ruleLookup(),
@@ -488,6 +544,97 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 ? (sender, args, sink) -> sink.reply("command.land.subland.failed", Map.of("reason", "subland.unavailable"))
                 : subland);
         return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers with direct trust and land defaults
+     * wired.
+     *
+     * <p>A null trust, untrust or default handler keeps its slot fail-closed:
+     * it replies with the matching {@code unavailable} reason instead of the
+     * not-yet stub, so an unwired server never pretends the flow is coming
+     * soon and never runs a half-wired mutation.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(
+                buildLandHandlers(selections, runner, recoveryScan, structures, subland, capabilities));
+        base.put("trust", trust == null
+                ? (sender, args, sink) -> sink.reply("command.land.trust.failed", Map.of("reason", "trust.unavailable"))
+                : trust);
+        base.put("untrust", untrust == null
+                ? (sender, args, sink) -> sink.reply("command.land.untrust.failed", Map.of("reason", "untrust.unavailable"))
+                : untrust);
+        base.put("default", defaults == null
+                ? (sender, args, sink) -> sink.reply("command.land.default.failed", Map.of("reason", "default.unavailable"))
+                : defaults);
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Build the durable land authorisation service on the given store. The
+     * caller passes null instead when no store is available; handlers then
+     * stay fail-closed without side effects and no substitute store is
+     * opened to mask the gap.
+     */
+    static LandAuthorisationService buildLandAuthorisations(PersistenceStore store) {
+        Objects.requireNonNull(store, "store");
+        return new LandAuthorisationService(
+                new LandAuthorisationRepository(store), new LandAuthorisationCache());
+    }
+
+    /**
+     * Resolves the affected land for a trust or default attempt from the
+     * sender's current location against the live immutable snapshot.
+     * Wilderness, non-player senders and unresolvable positions stay empty
+     * so the caller fails closed.
+     */
+    static DirectTrustCommandHandler.LandResolver currentLocationLandResolver(LandRegistryStore store) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        PluginManagementGateResolver.TargetLandResolver targets =
+                PluginManagementGateResolver.TargetLandResolver.currentLocation();
+        return sender -> {
+            try {
+                return targets.resolveTarget(
+                        sender, com.smile.chunkland.api.permission.ProtectionActionType.MANAGE_MEMBER,
+                        new String[0], active.snapshot());
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        };
+    }
+
+    /**
+     * Resolves a trust target without any network query: a UUID string
+     * parses directly, otherwise only an online exact (case-sensitive) name
+     * match counts. Unknown, offline, console and failing lookups stay
+     * empty so the caller fails closed.
+     */
+    static Optional<UUID> resolveOnlinePlayerUuid(org.bukkit.Server server, String raw) {
+        if (server == null || raw == null || raw.isBlank()) {
+            return Optional.empty();
+        }
+        String stripped = raw.strip();
+        try {
+            return Optional.of(UUID.fromString(stripped));
+        } catch (IllegalArgumentException notUuid) {
+            // Fall through to the online exact-name lookup below.
+        }
+        try {
+            Player online = server.getPlayerExact(stripped);
+            if (online == null) {
+                return Optional.empty();
+            }
+            UUID uuid = online.getUniqueId();
+            return uuid == null ? Optional.empty() : Optional.of(uuid);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -1243,6 +1390,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         protectionStore = null;
         protectionDepthLookup = null;
         permissionDefaults = null;
+        // Land authorisation holds no closeable of its own: the store stays
+        // owned by claim recovery above. Dropping both references is enough
+        // to stop further trust/default mutations from reaching storage, and
+        // repeats stay no-ops.
+        landAuthorisationService = null;
+        landAuthorisationCache = null;
         // Depth extends stop before persistence closes: the service first
         // stops accepting new proposals, flushes every accepted write, and
         // only then closes the persistence handle, so no accepted extend is

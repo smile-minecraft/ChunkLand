@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|ban|unban|expand|rename|delete]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|rename|delete]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -26,6 +26,21 @@ command:
       usage: "<yellow>Usage: /land confirm <generation> <revision> <land_name></yellow>"
       no_selection: "<yellow>No active selection. Select chunks first, then confirm again.</yellow>"
       stale: "<yellow>That confirmation has expired. Please review the latest details and confirm again.</yellow>"
+    trust:
+      console: "<red>Only players can trust members.</red>"
+      usage: "<yellow>Usage: /land trust <player></yellow>"
+      success: "<green>Trusted <player> on this land.</green>"
+      failed: "<red>Trust failed: <reason>.</red>"
+    untrust:
+      console: "<red>Only players can untrust members.</red>"
+      usage: "<yellow>Usage: /land untrust <player></yellow>"
+      success: "<green>Removed <player> from this land.</green>"
+      failed: "<red>Untrust failed: <reason>.</red>"
+    default:
+      console: "<red>Only players can change land defaults.</red>"
+      usage: "<yellow>Usage: /land default <action> [ALLOW|DENY|INHERIT]</yellow>"
+      success: "<green>Land default <action> set to <state>.</green>"
+      failed: "<red>Land default change failed: <reason>.</red>"
     claim:
       console: "<red>Only players can claim land.</red>"
       no_selection: "<yellow>No active selection. Select chunks first, then run /land claim with a name.</yellow>"

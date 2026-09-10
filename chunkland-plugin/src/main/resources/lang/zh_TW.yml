@@ -11,7 +11,7 @@ message:
       unknown: '未知動作：<payload>'
 command:
   land:
-    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|ban|unban|expand|rename|delete]</gray>"
+    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|ban|unban|expand|rename|delete]</gray>"
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
@@ -26,6 +26,21 @@ command:
       usage: "<yellow>用法：/land confirm <generation> <revision> <land_name></yellow>"
       no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再重新確認。</yellow>"
       stale: "<yellow>該確認已過期。請查看最新內容後重新確認。</yellow>"
+    trust:
+      console: "<red>只有玩家可以信任成員。</red>"
+      usage: "<yellow>用法：/land trust <player></yellow>"
+      success: "<green>已在此領地信任 <player>。</green>"
+      failed: "<red>信任失敗：<reason>。</red>"
+    untrust:
+      console: "<red>只有玩家可以取消信任。</red>"
+      usage: "<yellow>用法：/land untrust <player></yellow>"
+      success: "<green>已將 <player> 移出此領地。</green>"
+      failed: "<red>取消信任失敗：<reason>。</red>"
+    default:
+      console: "<red>只有玩家可以變更領地預設。</red>"
+      usage: "<yellow>用法：/land default <action> [ALLOW|DENY|INHERIT]</yellow>"
+      success: "<green>領地預設 <action> 已設為 <state>。</green>"
+      failed: "<red>領地預設變更失敗：<reason>。</red>"
     claim:
       console: "<red>只有玩家可以圈地。</red>"
       no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再用名稱執行 /land claim。</yellow>"

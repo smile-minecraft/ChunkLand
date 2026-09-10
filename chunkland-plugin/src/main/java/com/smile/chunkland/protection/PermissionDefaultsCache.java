@@ -22,7 +22,9 @@ import java.util.function.Supplier;
  * below never touch Bukkit, SQL or the network. Readers observe a single
  * volatile view, so a reload publishes new defaults atomically and
  * previously captured snapshot references keep answering with their own
- * values instead of observing the publish.
+ * values instead of observing the publish. The durable land layers
+ * (bindings and land defaults) arrive through an attached
+ * {@link LandAuthorisationSnapshot} source and are read per decision.
  *
  * <p>Refresh never throws: a failing config read or resolver degrades to an
  * empty snapshot (fail-closed) and a warning, so a misbehaving reload
@@ -41,6 +43,8 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
     private final Function<String, Optional<UUID>> worldIds;
     private final Consumer<String> warnings;
     private volatile View current;
+    private volatile Supplier<LandAuthorisationSnapshot> landAuthorisations =
+            LandAuthorisationSnapshot::empty;
 
     /**
      * @param configs  live config source (typically {@code ConfigService::current})
@@ -64,9 +68,30 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
         return current.snapshot();
     }
 
-    /** Subject lookup over the live snapshot; land layers stay empty/INHERIT. */
+    /**
+     * Attach the durable land-layer source. Lookups created afterwards — and
+     * every decision they answer — observe the attached source per call, so
+     * attaching late (for example after the protection engine is built) still
+     * applies to new decisions without rebuilding consumers. A
+     * {@code null} source detaches back to empty (fail-closed).
+     */
+    public void attachLandAuthorisation(Supplier<LandAuthorisationSnapshot> source) {
+        this.landAuthorisations =
+                source != null ? source : LandAuthorisationSnapshot::empty;
+    }
+
+    /** Subject lookup over the live snapshot plus the durable land layers. */
     public SubjectPermissionLookup subjectLookup() {
-        return new ConfigSubjectPermissionLookup(this::snapshot);
+        return new ConfigSubjectPermissionLookup(this::snapshot, this::currentLandAuthorisation);
+    }
+
+    private LandAuthorisationSnapshot currentLandAuthorisation() {
+        try {
+            LandAuthorisationSnapshot snapshot = landAuthorisations.get();
+            return snapshot != null ? snapshot : LandAuthorisationSnapshot.empty();
+        } catch (RuntimeException failure) {
+            return LandAuthorisationSnapshot.empty();
+        }
     }
 
     /**

@@ -64,6 +64,7 @@ public final class ManagementPermissionGate {
     private static final Map<String, ProtectionActionType> BY_SUBCOMMAND = Map.of(
             "trust", ProtectionActionType.MANAGE_MEMBER,
             "untrust", ProtectionActionType.MANAGE_MEMBER,
+            "default", ProtectionActionType.MANAGE_PERMISSION,
             "ban", ProtectionActionType.MANAGE_MEMBER,
             "unban", ProtectionActionType.MANAGE_MEMBER,
             "subland", ProtectionActionType.MANAGE_SUBLAND,
