@@ -9,12 +9,12 @@ import java.util.Objects;
  * value without further coordination, so every decision thread observes a
  * complete old or complete new version. Publishers build a complete new
  * snapshot off the decision path and swap it with a single volatile write;
- * partial state is never visible. Starts empty so decisions fail closed
- * until the first durable load publishes.
+ * partial state is never visible. Starts unloaded so decisions fail closed
+ * until the first successful durable load publishes.
  */
 public final class LandAuthorisationCache {
 
-    private volatile LandAuthorisationSnapshot current = LandAuthorisationSnapshot.empty();
+    private volatile LandAuthorisationSnapshot current = LandAuthorisationSnapshot.unloaded();
 
     /** Current immutable snapshot. Lock-free volatile read. */
     public LandAuthorisationSnapshot snapshot() {

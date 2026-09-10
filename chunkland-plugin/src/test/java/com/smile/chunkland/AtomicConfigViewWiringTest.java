@@ -14,6 +14,7 @@ import com.smile.chunkland.config.ChunkLandConfig;
 import com.smile.chunkland.config.ConfigLoader;
 import com.smile.chunkland.config.ConfigSchema;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.protection.LandAuthorisationSnapshot;
 import com.smile.chunkland.protection.ManagementPermissionGate;
 import com.smile.chunkland.protection.PermissionDefaultsCache;
 import com.smile.chunkland.protection.ProtectionEngine;
@@ -80,6 +81,9 @@ class AtomicConfigViewWiringTest {
         PermissionDefaultsCache cache = new PermissionDefaultsCache(service::current,
                 name -> Optional.empty(), ignored -> {
                 });
+        // Successful empty load, so the assertions below track config
+        // generations instead of the unloaded fail-closed DENY.
+        cache.attachLandAuthorisation(LandAuthorisationSnapshot::empty);
         service.addListener(cache);
 
         var atomic = cache.provider();

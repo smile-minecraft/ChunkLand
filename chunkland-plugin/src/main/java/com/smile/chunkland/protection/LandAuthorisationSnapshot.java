@@ -6,6 +6,7 @@ import com.smile.chunkland.api.permission.ProtectionActionType;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -20,22 +21,55 @@ import java.util.UUID;
  * with their own values. Accessors only read immutable maps and never touch
  * storage, the server, or the network. Missing data answers empty or
  * {@code INHERIT} so decisions fall through fail-closed.
+ *
+ * <p>Every snapshot carries its load validity: {@link #empty()} and
+ * {@link #copyOf} are successful loads (an empty load legitimately means
+ * nobody is bound, defaulted, or banned), while {@link #unloaded()} marks a
+ * value that must never authorise — cache startup before the first durable
+ * load and every failed reload publish it so readers fail closed instead
+ * of trusting an empty or stale view.
  */
 public final class LandAuthorisationSnapshot {
 
     private final Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct;
     private final Map<LandId, Map<ProtectionActionType, PermissionState>> defaults;
+    private final Map<LandId, Set<UUID>> bans;
+    private final boolean loaded;
 
     private LandAuthorisationSnapshot(
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct,
-            Map<LandId, Map<ProtectionActionType, PermissionState>> defaults) {
+            Map<LandId, Map<ProtectionActionType, PermissionState>> defaults,
+            Map<LandId, Set<UUID>> bans,
+            boolean loaded) {
         this.direct = direct;
         this.defaults = defaults;
+        this.bans = bans;
+        this.loaded = loaded;
     }
 
-    /** Empty snapshot: no bindings, every land default {@code INHERIT}. */
+    /** Empty snapshot from a successful load: no bindings, every land default {@code INHERIT}, nobody banned. */
     public static LandAuthorisationSnapshot empty() {
-        return new LandAuthorisationSnapshot(Map.of(), Map.of());
+        return new LandAuthorisationSnapshot(Map.of(), Map.of(), Map.of(), true);
+    }
+
+    /**
+     * Unloaded marker for cache startup and failed reloads: carries no data
+     * and must never authorise. Readers check {@link #loaded()} first and
+     * fail closed on {@code false} instead of treating the empty maps as a
+     * known-unbanned answer.
+     */
+    public static LandAuthorisationSnapshot unloaded() {
+        return new LandAuthorisationSnapshot(Map.of(), Map.of(), Map.of(), false);
+    }
+
+    /**
+     * Whether this snapshot came from a successful durable load and may
+     * authorise. {@code false} means startup-before-load or a failed reload:
+     * ban lookups must answer empty and subject lookups must deny rather
+     * than fall through to world/global defaults.
+     */
+    public boolean loaded() {
+        return loaded;
     }
 
     /**
@@ -46,7 +80,20 @@ public final class LandAuthorisationSnapshot {
     public static LandAuthorisationSnapshot copyOf(
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct,
             Map<LandId, Map<ProtectionActionType, PermissionState>> defaults) {
-        return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults));
+        return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults), Map.of(), true);
+    }
+
+    /**
+     * Defensive copy of all three layers, including the per-land ENTRY ban
+     * set; {@code null} layers read as empty. Every nested map and set is
+     * copied into an unmodifiable view, so later changes to the inputs can
+     * never leak into the snapshot.
+     */
+    public static LandAuthorisationSnapshot copyOf(
+            Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct,
+            Map<LandId, Map<ProtectionActionType, PermissionState>> defaults,
+            Map<LandId, Set<UUID>> bans) {
+        return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults), copyBans(bans), true);
     }
 
     /**
@@ -65,6 +112,21 @@ public final class LandAuthorisationSnapshot {
     }
 
     /**
+     * Whether the actor is ENTRY-banned on the land. Never throws for
+     * unknown lands or actors: missing data answers {@code false} so the
+     * decision falls through to the normal trust/default chain. Callers
+     * must check {@link #loaded()} first: an unloaded snapshot also answers
+     * {@code false} here, which is why lookups fail closed on it instead of
+     * trusting this value.
+     */
+    public boolean isBanned(UUID actor, LandId landId) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(landId, "landId");
+        Set<UUID> banned = bans.get(landId);
+        return banned != null && banned.contains(actor);
+    }
+
+    /**
      * Durable land default for one action, or {@code INHERIT} when unset.
      * Never null.
      */
@@ -76,6 +138,24 @@ public final class LandAuthorisationSnapshot {
             return PermissionState.INHERIT;
         }
         return byAction.getOrDefault(action, PermissionState.INHERIT);
+    }
+
+    private static Map<LandId, Set<UUID>> copyBans(Map<LandId, Set<UUID>> source) {
+        if (source == null || source.isEmpty()) {
+            return Map.of();
+        }
+        Map<LandId, Set<UUID>> copy = new HashMap<>(source.size());
+        for (Map.Entry<LandId, Set<UUID>> entry : source.entrySet()) {
+            LandId landId = Objects.requireNonNull(entry.getKey(), "land key");
+            Set<UUID> banned = Objects.requireNonNull(
+                    entry.getValue(), "entry bans for " + landId);
+            Set<UUID> players = new HashSet<>(banned.size());
+            for (UUID player : banned) {
+                players.add(Objects.requireNonNull(player, "banned player"));
+            }
+            copy.put(landId, Collections.unmodifiableSet(players));
+        }
+        return Collections.unmodifiableMap(copy);
     }
 
     private static Map<LandId, Map<UUID, Set<ProtectionActionType>>> copyDirect(

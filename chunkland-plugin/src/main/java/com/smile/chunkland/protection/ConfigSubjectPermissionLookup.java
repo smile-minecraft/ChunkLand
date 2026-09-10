@@ -30,9 +30,16 @@ import java.util.function.Supplier;
  * default, and strangers fall through to the configured world/global
  * defaults and then to the resolver's implicit {@code DENY}. Only the
  * actor's own bindings are carried, and only for whitelisted subject
- * actions; rule actions never observe the land layers here. Any lookup
- * failure degrades to an empty grant (fail-closed) instead of assuming
- * access.
+ * actions; rule actions never observe the land layers here. A per-land
+ * ENTRY ban adds one player-scoped ENTRY DENY to the same aggregation
+ * layer, so the existing DENY-first precedence denies banned players
+ * without touching their trust profile. An unloaded land snapshot (cache
+ * startup before the first durable load, or a failed reload) denies every
+ * subject-permission action at the land layer, so world/global defaults
+ * can never admit a stranger while bans are unverifiable; land-rule
+ * actions stay on their own chain and are never touched by ban storage.
+ * Any lookup failure degrades to an empty grant (fail-closed) instead of
+ * assuming access.
  *
  * <p>SubLand layers are not carried: they stay {@code INHERIT} until subland
  * authorisation data is stored.
@@ -48,20 +55,20 @@ public final class ConfigSubjectPermissionLookup implements SubjectPermissionLoo
      *                  source reads as an empty snapshot (fail-closed)
      */
     public ConfigSubjectPermissionLookup(Supplier<PermissionDefaultsSnapshot> snapshots) {
-        this(snapshots, LandAuthorisationSnapshot::empty);
+        this(snapshots, LandAuthorisationSnapshot::unloaded);
     }
 
     /**
      * @param snapshots live config-defaults source (typically a volatile read)
      * @param landAuthorisations live durable land-layer source (typically a
      *                  volatile read); {@code null} or a throwing/
-     *                  {@code null}-returning source reads as empty (fail-closed)
+     *                  {@code null}-returning source reads as unloaded (fail-closed)
      */
     public ConfigSubjectPermissionLookup(Supplier<PermissionDefaultsSnapshot> snapshots,
             Supplier<LandAuthorisationSnapshot> landAuthorisations) {
         this.snapshots = snapshots != null ? snapshots : PermissionDefaultsSnapshot::empty;
         this.landAuthorisations = landAuthorisations != null
-                ? landAuthorisations : LandAuthorisationSnapshot::empty;
+                ? landAuthorisations : LandAuthorisationSnapshot::unloaded;
     }
 
     @Override
@@ -79,13 +86,26 @@ public final class ConfigSubjectPermissionLookup implements SubjectPermissionLoo
             if (defaults == null) {
                 return Grant.empty();
             }
-            LandAuthorisationSnapshot landAuth = landAuthorisations.get();
+            LandAuthorisationSnapshot landAuth;
+            try {
+                landAuth = landAuthorisations.get();
+            } catch (RuntimeException failure) {
+                landAuth = null;
+            }
             if (landAuth == null) {
-                landAuth = LandAuthorisationSnapshot.empty();
+                landAuth = LandAuthorisationSnapshot.unloaded();
             }
             boolean ruleAction = action.decisionSource() == DecisionSource.LAND_RULE;
+            if (!landAuth.loaded() && !ruleAction) {
+                // Bans are unverifiable while unloaded: deny at the land
+                // layer so the world/global subject defaults below can never
+                // admit anyone. Land-rule actions skip this entirely and keep
+                // their own chain below.
+                return new Grant(List.of(), PermissionState.DENY,
+                        PermissionState.INHERIT, PermissionState.INHERIT);
+            }
             return new Grant(
-                    ruleAction ? List.of() : bindingsFor(actor, landId, landAuth),
+                    ruleAction ? List.of() : bindingsFor(actor, landId, action, landAuth),
                     ruleAction ? PermissionState.INHERIT : landAuth.landDefault(landId, action),
                     defaults.subjectWorldDefault(land.worldId(), action),
                     defaults.subjectGlobalDefault(action));
@@ -95,7 +115,8 @@ public final class ConfigSubjectPermissionLookup implements SubjectPermissionLoo
     }
 
     private static List<PermissionBinding> bindingsFor(
-            UUID actor, LandId landId, LandAuthorisationSnapshot landAuth) {
+            UUID actor, LandId landId, ProtectionActionType action,
+            LandAuthorisationSnapshot landAuth) {
         List<PermissionBinding> bindings = new ArrayList<>();
         for (ProtectionActionType granted : landAuth.directAllows(actor, landId)) {
             if (!DirectTrustWhitelist.isAllowed(granted)) {
@@ -103,6 +124,16 @@ public final class ConfigSubjectPermissionLookup implements SubjectPermissionLoo
             }
             bindings.add(new PermissionBinding(
                     PermissionSubject.player(actor), new Permission(granted, PermissionState.ALLOW)));
+        }
+        // Per-land ENTRY bans deny through the same aggregation layer: the
+        // existing flat DENY-first precedence lets this DENY win over the
+        // direct trust ALLOW above without rewriting any profile row. Only
+        // ENTRY is ever denied here; other actions keep their trust grants
+        // and rule actions never observe this layer at all.
+        if (action == ProtectionActionType.ENTRY && landAuth.isBanned(actor, landId)) {
+            bindings.add(new PermissionBinding(
+                    PermissionSubject.player(actor),
+                    new Permission(ProtectionActionType.ENTRY, PermissionState.DENY)));
         }
         return List.copyOf(bindings);
     }

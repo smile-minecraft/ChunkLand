@@ -332,21 +332,34 @@ class EntryProtectionAdapterTest {
     }
 
     @Test
-    void defaultListenerWiringSkipsBannedInsideCheck() {
+    void productionWiringDeniesBannedInsideFromSnapshot() {
         UUID worldId = UUID.randomUUID();
+        LandId land = new LandId(UUID.randomUUID());
         LandRegistryStore store = new LandRegistryStore();
         store.publish(LandRegistry.from(List.of(
-                landAt(worldId, new LandId(UUID.randomUUID()), UUID.randomUUID(), 0, 0))));
+                landAt(worldId, land, UUID.randomUUID(), 0, 0))));
+        UUID bannedId = UUID.randomUUID();
+        UUID clearId = UUID.randomUUID();
+        LandAuthorisationSnapshot bans = LandAuthorisationSnapshot.copyOf(
+                java.util.Map.of(), java.util.Map.of(),
+                java.util.Map.of(land, Set.of(bannedId)));
+        ProtectionListener listener = new ProtectionListener(denyEntryEngine(store), null,
+                new EntryBanLookup(store::snapshot, () -> bans));
         World world = worldProxy(worldId, Set.of(chunkKey(0, 0)), null);
-        ProtectionListener listener = new ProtectionListener(denyEntryEngine(store));
 
-        Player insider = playerProxy(UUID.randomUUID(), world, null);
-        PlayerMoveEvent sameChunk = new PlayerMoveEvent(insider,
+        Player banned = playerProxy(bannedId, world, null);
+        PlayerMoveEvent bannedMove = new PlayerMoveEvent(banned,
                 new Location(world, 5, 64, 5), new Location(world, 6, 64, 6));
-        listener.onPlayerMove(sameChunk);
-        assertFalse(sameChunk.isCancelled(),
-                "M3-06 gate: default wiring ships no ban source, so same-chunk moves skip "
-                        + "the inside check; M3-06 must wire a real query and flip this test");
+        listener.onPlayerMove(bannedMove);
+        assertTrue(bannedMove.isCancelled(),
+                "banned player already inside must be stopped even without crossing chunks");
+
+        Player clear = playerProxy(clearId, world, null);
+        PlayerMoveEvent clearMove = new PlayerMoveEvent(clear,
+                new Location(world, 5, 64, 5), new Location(world, 6, 64, 6));
+        listener.onPlayerMove(clearMove);
+        assertFalse(clearMove.isCancelled(),
+                "unbanned player on a known land must keep moving inside one chunk");
     }
 
     @Test

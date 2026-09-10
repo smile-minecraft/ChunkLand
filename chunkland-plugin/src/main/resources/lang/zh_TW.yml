@@ -41,6 +41,16 @@ command:
       usage: "<yellow>用法：/land default <action> [ALLOW|DENY|INHERIT]</yellow>"
       success: "<green>領地預設 <action> 已設為 <state>。</green>"
       failed: "<red>領地預設變更失敗：<reason>。</red>"
+    ban:
+      console: "<red>只有玩家可以封鎖成員。</red>"
+      usage: "<yellow>用法：/land ban <player></yellow>"
+      success: "<green>已在此領地封鎖 <player>。</green>"
+      failed: "<red>封鎖失敗：<reason>。</red>"
+    unban:
+      console: "<red>只有玩家可以解除封鎖。</red>"
+      usage: "<yellow>用法：/land unban <player></yellow>"
+      success: "<green>已在此領地解除封鎖 <player>。</green>"
+      failed: "<red>解除封鎖失敗：<reason>。</red>"
     claim:
       console: "<red>只有玩家可以圈地。</red>"
       no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再用名稱執行 /land claim。</yellow>"

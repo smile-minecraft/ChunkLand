@@ -39,7 +39,7 @@ import java.util.UUID;
  */
 final class SchemaMigrator {
 
-    static final int LATEST_VERSION = 3;
+    static final int LATEST_VERSION = 4;
 
     /**
      * Namespace prefix used by {@link #legacyWorldUuid(String)} when a legacy
@@ -257,6 +257,22 @@ final class SchemaMigrator {
             // v3: durable compensation retry count for crash recovery.
             """
             ALTER TABLE operation_ledger ADD COLUMN compensation_attempts INTEGER NOT NULL DEFAULT 0;
+            """,
+            // v4: per-land per-player ENTRY bans. Independent from direct
+            // trust bindings and land defaults: a ban denies ENTRY through
+            // the existing DENY-first subject chain without rewriting any
+            // profile or default row. Land-scoped, so land deletion cascades.
+            """
+            CREATE TABLE land_entry_bans (
+                land_id BLOB(16) NOT NULL,
+                player_uuid BLOB(16) NOT NULL,
+                banned_at INTEGER NOT NULL,
+                banned_by BLOB(16),
+                PRIMARY KEY (land_id, player_uuid),
+                FOREIGN KEY (land_id) REFERENCES lands(id) ON DELETE CASCADE
+            );
+            CREATE INDEX idx_land_entry_bans_land ON land_entry_bans(land_id);
+            CREATE INDEX idx_land_entry_bans_player ON land_entry_bans(player_uuid);
             """ );
 
     private SchemaMigrator() {

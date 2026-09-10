@@ -167,6 +167,9 @@ class PermissionDefaultsRedTest {
                 name -> Optional.ofNullable("world".equals(name) ? worldId : null),
                 ignored -> {
                 });
+        // Successful empty load: nobody is bound, so the test reads the
+        // configured world default instead of the unloaded fail-closed DENY.
+        cache.attachLandAuthorisation(LandAuthorisationSnapshot::empty);
         ProtectionEngine engine = engineWithDefaults(store, cache);
         assertEquals(PermissionState.ALLOW,
                 engine.decide(UUID.randomUUID(), landId, ProtectionActionType.BLOCK_BREAK).outcome(),
@@ -258,6 +261,9 @@ class PermissionDefaultsRedTest {
                 name -> Optional.ofNullable("world".equals(name) ? worldId : null),
                 ignored -> {
                 });
+        // Successful empty load, so the reload assertions below read config
+        // generations instead of the unloaded fail-closed DENY.
+        cache.attachLandAuthorisation(LandAuthorisationSnapshot::empty);
         service.addListener(cache);
         ProtectionEngine engine = engineWithDefaults(store, cache);
         assertEquals(PermissionState.ALLOW,

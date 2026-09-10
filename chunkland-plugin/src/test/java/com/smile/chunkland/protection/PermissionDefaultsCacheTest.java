@@ -154,6 +154,9 @@ class PermissionDefaultsCacheTest {
         PermissionDefaultsCache cache = new PermissionDefaultsCache(() -> parsed,
                 name -> Optional.ofNullable("world".equals(name) ? worldId : null),
                 null);
+        // Successful empty load: the world default below is read from config,
+        // not admitted through an unverifiable land snapshot.
+        cache.attachLandAuthorisation(LandAuthorisationSnapshot::empty);
         SubjectPermissionLookup.Grant grant = cache.subjectLookup().grants(
                 UUID.randomUUID(), landId, ProtectionActionType.BLOCK_BREAK, snapshot);
         assertEquals(PermissionState.ALLOW, grant.worldDefault());

@@ -41,6 +41,16 @@ command:
       usage: "<yellow>Usage: /land default <action> [ALLOW|DENY|INHERIT]</yellow>"
       success: "<green>Land default <action> set to <state>.</green>"
       failed: "<red>Land default change failed: <reason>.</red>"
+    ban:
+      console: "<red>Only players can ban members.</red>"
+      usage: "<yellow>Usage: /land ban <player></yellow>"
+      success: "<green>Banned <player> from this land.</green>"
+      failed: "<red>Ban failed: <reason>.</red>"
+    unban:
+      console: "<red>Only players can unban members.</red>"
+      usage: "<yellow>Usage: /land unban <player></yellow>"
+      success: "<green>Unbanned <player> on this land.</green>"
+      failed: "<red>Unban failed: <reason>.</red>"
     claim:
       console: "<red>Only players can claim land.</red>"
       no_selection: "<yellow>No active selection. Select chunks first, then run /land claim with a name.</yellow>"

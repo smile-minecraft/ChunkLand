@@ -178,6 +178,9 @@ class PermissionConfigViewAtomicityTest {
         PermissionDefaultsCache cache = new PermissionDefaultsCache(service::current,
                 name -> Optional.empty(), ignored -> {
                 });
+        // Successful empty load, so the assertions below track config
+        // generations instead of the unloaded fail-closed DENY.
+        cache.attachLandAuthorisation(LandAuthorisationSnapshot::empty);
         service.addListener(cache);
         ProtectionEngine engine = new ProtectionEngine(store::snapshot, cache.provider());
 

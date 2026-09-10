@@ -37,17 +37,18 @@ import org.bukkit.event.player.PlayerTeleportEvent;
  * missing entry check verifies nothing and therefore allows nothing
  * (fail-closed, cancel-only).
  *
- * <p>Banned-inside: ban writes and storage belong to a later milestone; this
- * adapter only defines the read seam ({@link BanLookup}) and the enforcement
- * meaning. A {@code null} lookup means no ban source is wired yet, and the
- * inside check skips (the destination ENTRY decision still applies). A wired
- * lookup that answers empty, {@code null}, or throws is treated as banned
- * (fail-closed): a missing answer must not grant movement.
+ * <p>Banned-inside: ban writes and storage live in the durable ENTRY ban
+ * table; this adapter only defines the read seam ({@link BanLookup}) and
+ * the enforcement meaning. A {@code null} lookup means no ban source is
+ * wired yet, and the inside check skips (the destination ENTRY decision
+ * still applies). A wired lookup that answers empty, {@code null}, or
+ * throws is treated as banned (fail-closed): a missing answer must not
+ * grant movement.
  *
- * <p>M3-06 gate: the production listener still wires a {@code null} lookup,
- * so banned-inside enforcement is inert until ban storage lands. M3-06 must
- * replace that wiring with a real query and flip the pinned skip test; it
- * must not ship while the skip test still passes.
+ * <p>Production wiring ({@link EntryBanLookup} through
+ * {@link ProtectionListener}) always supplies a real snapshot-backed query,
+ * so banned-inside enforcement is live; the {@code null} path stays only
+ * for unit tests of this adapter itself.
  *
  * <p>Hot-path contract for every seam: memory-only reads, no blocking, no
  * cross-region calls, no chunk loads, no storage access. All state lives in a

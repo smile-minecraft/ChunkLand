@@ -43,6 +43,7 @@ public final class LandAuthorisationRepository {
         AFTER_ENTRIES,
         AFTER_BINDING,
         AFTER_DEFAULT,
+        AFTER_BAN,
         AFTER_AUDIT
     }
 
@@ -138,6 +139,84 @@ public final class LandAuthorisationRepository {
     }
 
     /**
+     * Ban one player from one land: insert their per-land ENTRY ban row,
+     * audit, and bump the land policy revision — all in one transaction.
+     * Resending while already banned still succeeds and audits. The land
+     * owner and Server Land can never be banned: both fail closed before any
+     * write, so the Owner Guarantee and steward contracts stay intact.
+     *
+     * <p>The audit before value is read from the durable ban row inside the
+     * same transaction, never from the volatile cache.
+     */
+    public CompletionStage<Void> ban(LandId landId, UUID targetPlayer, UUID actor,
+            Instant timestamp) {
+        Objects.requireNonNull(landId, "landId");
+        Objects.requireNonNull(targetPlayer, "targetPlayer");
+        Objects.requireNonNull(timestamp, "timestamp");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
+            String ownerKey = requireKnownLandOwner(conn, landId);
+            if (OwnerKey.SERVER_VALUE.equals(ownerKey)) {
+                throw new IllegalArgumentException(
+                        "cannot ban on Server Land " + landId);
+            }
+            if (ownerKey.equals(OwnerKey.PLAYER_PREFIX + targetPlayer)) {
+                throw new IllegalArgumentException(
+                        "cannot ban the land owner " + targetPlayer + " on land " + landId);
+            }
+            boolean bannedBefore = hasBan(conn, landId, targetPlayer);
+            long now = timestamp.toEpochMilli();
+            try (PreparedStatement insert = conn.prepareStatement(
+                    "INSERT INTO land_entry_bans (land_id, player_uuid, banned_at, banned_by)"
+                            + " VALUES (?, ?, ?, ?)"
+                            + " ON CONFLICT(land_id, player_uuid) DO UPDATE"
+                            + " SET banned_at=excluded.banned_at, banned_by=excluded.banned_by")) {
+                insert.setBytes(1, UuidBlob.encode(landId.value()));
+                insert.setBytes(2, UuidBlob.encode(targetPlayer));
+                insert.setLong(3, now);
+                setUuid(insert, 4, actor);
+                insert.executeUpdate();
+            }
+            failureInjector.accept(Step.AFTER_BAN);
+            insertAudit(conn, banAudit(actor, landId, targetPlayer, bannedBefore, timestamp));
+            failureInjector.accept(Step.AFTER_AUDIT);
+            bumpPolicyRevision(conn, landId, now);
+            return null;
+        }));
+    }
+
+    /**
+     * Unban one player on one land: delete only their per-land ENTRY ban row,
+     * audit, and bump the land policy revision — all in one transaction.
+     * Resending without a ban still succeeds and audits. Trust bindings and
+     * land defaults are never touched.
+     *
+     * <p>The audit before value is read from the durable ban row inside the
+     * same transaction, so a resend without a ban records no ban before it
+     * instead of repeating a stale one.
+     */
+    public CompletionStage<Void> unban(LandId landId, UUID targetPlayer, UUID actor,
+            Instant timestamp) {
+        Objects.requireNonNull(landId, "landId");
+        Objects.requireNonNull(targetPlayer, "targetPlayer");
+        Objects.requireNonNull(timestamp, "timestamp");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
+            requireKnownLand(conn, landId);
+            boolean bannedBefore = hasBan(conn, landId, targetPlayer);
+            try (PreparedStatement delete = conn.prepareStatement(
+                    "DELETE FROM land_entry_bans WHERE land_id = ? AND player_uuid = ?")) {
+                delete.setBytes(1, UuidBlob.encode(landId.value()));
+                delete.setBytes(2, UuidBlob.encode(targetPlayer));
+                delete.executeUpdate();
+            }
+            failureInjector.accept(Step.AFTER_BAN);
+            insertAudit(conn, unbanAudit(actor, landId, targetPlayer, bannedBefore, timestamp));
+            failureInjector.accept(Step.AFTER_AUDIT);
+            bumpPolicyRevision(conn, landId, timestamp.toEpochMilli());
+            return null;
+        }));
+    }
+
+    /**
      * Persist one land default. {@code ALLOW} and {@code DENY} upsert the row;
      * {@code INHERIT} deletes it. Only whitelisted subject actions are
      * accepted; management and rule actions fail closed before any SQL.
@@ -181,21 +260,24 @@ public final class LandAuthorisationRepository {
     }
 
     /**
-     * Read every durable binding, profile entry and land default into plain
-     * maps for one runtime snapshot publish. Unknown permission or state
-     * text is skipped row-wise so one corrupt row can never break the load.
+     * Read every durable binding, profile entry, land default and ENTRY ban
+     * into plain maps for one runtime snapshot publish. Unknown permission
+     * or state text is skipped row-wise so one corrupt row can never break
+     * the load.
      *
      * <p>Each binding is accepted only when its profile is the subject's own
      * implicit direct profile ({@code name_key='direct'} and {@code
      * owner_key='PLAYER:&lt;subject&gt;'}), checked on the persistence thread
      * from the joined profile row. Anything else is skipped with a warning so
      * a foreign profile can never publish another player's entries after a
-     * restart.
+     * restart. Malformed ban rows are skipped the same way, so one corrupt
+     * row can never hide or forge a ban.
      */
     public CompletionStage<SnapshotData> loadSnapshotData() {
         return store.submitAsync(connection -> {
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct = new HashMap<>();
             Map<LandId, Map<ProtectionActionType, PermissionState>> defaults = new HashMap<>();
+            Map<LandId, Set<UUID>> bans = new HashMap<>();
             try (PreparedStatement bindings = connection.prepareStatement(
                     "SELECT b.land_id, b.subject_id, b.profile_id, p.owner_key, p.name_key"
                             + " FROM land_bindings b LEFT JOIN permission_profiles p"
@@ -237,7 +319,28 @@ public final class LandAuthorisationRepository {
                     }
                 }
             }
-            return new SnapshotData(direct, defaults);
+            try (PreparedStatement entryBans = connection.prepareStatement(
+                    "SELECT land_id, player_uuid FROM land_entry_bans")) {
+                try (ResultSet rows = entryBans.executeQuery()) {
+                    while (rows.next()) {
+                        LandId landId;
+                        UUID player;
+                        try {
+                            landId = new LandId(UuidBlob.decode(rows.getBytes(1)));
+                            player = UuidBlob.decode(rows.getBytes(2));
+                        } catch (RuntimeException corrupt) {
+                            LOG.warning("Skipping land entry ban with malformed ids");
+                            continue;
+                        }
+                        if (landId == null || player == null) {
+                            LOG.warning("Skipping land entry ban with malformed ids");
+                            continue;
+                        }
+                        bans.computeIfAbsent(landId, ignored -> new HashSet<>()).add(player);
+                    }
+                }
+            }
+            return new SnapshotData(direct, defaults, bans);
         });
     }
 
@@ -247,10 +350,30 @@ public final class LandAuthorisationRepository {
      */
     public record SnapshotData(
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
-            Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults) {
+            Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults,
+            Map<LandId, Set<UUID>> entryBans) {
         public SnapshotData {
             directAllows = copyDirect(directAllows);
             landDefaults = copyDefaults(landDefaults);
+            entryBans = copyBans(entryBans);
+        }
+
+        /** Compatibility: no bans loaded yet reads as nobody banned. */
+        public SnapshotData(
+                Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
+                Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults) {
+            this(directAllows, landDefaults, Map.of());
+        }
+
+        private static Map<LandId, Set<UUID>> copyBans(Map<LandId, Set<UUID>> source) {
+            if (source == null || source.isEmpty()) {
+                return Map.of();
+            }
+            Map<LandId, Set<UUID>> copy = new HashMap<>(source.size());
+            for (Map.Entry<LandId, Set<UUID>> entry : source.entrySet()) {
+                copy.put(entry.getKey(), Set.copyOf(entry.getValue()));
+            }
+            return Map.copyOf(copy);
         }
 
         private static Map<LandId, Map<UUID, Set<ProtectionActionType>>> copyDirect(
@@ -425,6 +548,50 @@ public final class LandAuthorisationRepository {
                 return stored == null ? PermissionState.INHERIT : stored;
             }
         }
+    }
+
+    private static String requireKnownLandOwner(Connection conn, LandId landId)
+            throws SQLException {
+        try (PreparedStatement query = conn.prepareStatement(
+                "SELECT owner_key FROM lands WHERE id = ? LIMIT 1")) {
+            query.setBytes(1, UuidBlob.encode(landId.value()));
+            try (ResultSet rows = query.executeQuery()) {
+                if (!rows.next()) {
+                    throw new SQLException("unknown land " + landId);
+                }
+                return rows.getString(1);
+            }
+        }
+    }
+
+    private static boolean hasBan(Connection conn, LandId landId, UUID target)
+            throws SQLException {
+        try (PreparedStatement query = conn.prepareStatement(
+                "SELECT 1 FROM land_entry_bans WHERE land_id = ? AND player_uuid = ? LIMIT 1")) {
+            query.setBytes(1, UuidBlob.encode(landId.value()));
+            query.setBytes(2, UuidBlob.encode(target));
+            try (ResultSet rows = query.executeQuery()) {
+                return rows.next();
+            }
+        }
+    }
+
+    private static String banJson(UUID target, boolean banned) {
+        return "{\"target\":\"" + target + "\",\"banned\":" + banned + "}";
+    }
+
+    private static AuditEntry banAudit(UUID actor, LandId landId, UUID target,
+            boolean bannedBefore, Instant timestamp) {
+        return new AuditEntry(0L, timestamp, actor, "ENTRY_BAN", landId, null, null,
+                AUDIT_METADATA_VERSION, banJson(target, bannedBefore),
+                banJson(target, true), "{\"kind\":\"entry-ban\"}", List.of());
+    }
+
+    private static AuditEntry unbanAudit(UUID actor, LandId landId, UUID target,
+            boolean bannedBefore, Instant timestamp) {
+        return new AuditEntry(0L, timestamp, actor, "ENTRY_UNBAN", landId, null, null,
+                AUDIT_METADATA_VERSION, banJson(target, bannedBefore),
+                banJson(target, false), "{\"kind\":\"entry-unban\"}", List.of());
     }
 
     private static String bindingJson(UUID target, boolean bound) {

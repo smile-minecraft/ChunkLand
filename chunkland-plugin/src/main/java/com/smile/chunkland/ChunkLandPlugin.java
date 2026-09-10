@@ -27,6 +27,7 @@ import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.DirectTrustCommandHandler;
+import com.smile.chunkland.command.EntryBanCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
@@ -51,6 +52,7 @@ import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
+import com.smile.chunkland.protection.EntryBanLookup;
 import com.smile.chunkland.protection.LandAuthorisationCache;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
@@ -60,6 +62,7 @@ import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.api.ChunkLandReadApi;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.api.ProtectionDepthLookup;
+import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.vertical.SnapshotProtectionDepthLookup;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
@@ -411,16 +414,39 @@ public final class ChunkLandPlugin extends JavaPlugin {
         LandDefaultCommandHandler defaultHandler = new LandDefaultCommandHandler(
                 trustLands::resolve,
                 authorisations == null ? null : authorisations::setDefault);
+        EntryBanCommandHandler.LandView banViews = landId -> {
+            try {
+                LandRegistry snapshot = this.protectionStore.snapshot();
+                if (snapshot == null || landId == null) {
+                    return Optional.empty();
+                }
+                return Optional.ofNullable(snapshot.land(landId));
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        };
+        EntryBanCommandHandler banHandler = new EntryBanCommandHandler(
+                EntryBanCommandHandler.Mode.BAN, trustLands::resolve, trustPlayers, banViews,
+                authorisations == null ? null : authorisations::ban);
+        EntryBanCommandHandler unbanHandler = new EntryBanCommandHandler(
+                EntryBanCommandHandler.Mode.UNBAN, trustLands::resolve, trustPlayers, banViews,
+                authorisations == null ? null : authorisations::unban);
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
-                        trustHandler, untrustHandler, defaultHandler),
+                        trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
         // Wand safety listener: native Bukkit listener for selection wand protection
         this.wandSafetyListener = new WandSafetyListener();
-        this.protectionListener = new ProtectionListener(this.protectionEngine);
+        // ENTRY enforcement reads banned-inside stops from the immutable ban
+        // snapshot through a memory-only lookup: no SQL, Bukkit, chunk load
+        // or network on the event thread. Unknown or failing answers fail
+        // closed inside the adapter.
+        EntryBanLookup banLookup = new EntryBanLookup(
+                this.protectionStore::snapshot, this.landAuthorisationCache::snapshot);
+        this.protectionListener = new ProtectionListener(this.protectionEngine, null, banLookup);
         try {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
@@ -564,6 +590,26 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SubLandCommandHandler subland, Capabilities capabilities,
             DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
             LandDefaultCommandHandler defaults) {
+        return buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, null, null);
+    }
+
+    /**
+     * Production {@code /land} handlers with ENTRY bans wired.
+     *
+     * <p>A null ban or unban handler keeps its slot fail-closed: it replies
+     * with the matching {@code unavailable} reason instead of the not-yet
+     * stub, so an unwired server never pretends the flow is coming soon and
+     * never runs a half-wired mutation.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban) {
         Map<String, LandCommand.Handler> base = new HashMap<>(
                 buildLandHandlers(selections, runner, recoveryScan, structures, subland, capabilities));
         base.put("trust", trust == null
@@ -575,6 +621,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         base.put("default", defaults == null
                 ? (sender, args, sink) -> sink.reply("command.land.default.failed", Map.of("reason", "default.unavailable"))
                 : defaults);
+        base.put("ban", ban == null
+                ? (sender, args, sink) -> sink.reply("command.land.ban.failed", Map.of("reason", "ban.unavailable"))
+                : ban);
+        base.put("unban", unban == null
+                ? (sender, args, sink) -> sink.reply("command.land.unban.failed", Map.of("reason", "unban.unavailable"))
+                : unban);
         return Map.copyOf(base);
     }
 

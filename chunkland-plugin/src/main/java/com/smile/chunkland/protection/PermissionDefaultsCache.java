@@ -58,7 +58,7 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
     private final Consumer<String> warnings;
     private volatile ConfigView current;
     private volatile Supplier<LandAuthorisationSnapshot> landAuthorisations =
-            LandAuthorisationSnapshot::empty;
+            LandAuthorisationSnapshot::unloaded;
 
     /**
      * @param configs  live config source (typically {@code ConfigService::current})
@@ -107,11 +107,11 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
      * every decision they answer — observe the attached source per call, so
      * attaching late (for example after the protection engine is built) still
      * applies to new decisions without rebuilding consumers. A
-     * {@code null} source detaches back to empty (fail-closed).
+     * {@code null} source detaches back to unloaded (fail-closed).
      */
     public void attachLandAuthorisation(Supplier<LandAuthorisationSnapshot> source) {
         this.landAuthorisations =
-                source != null ? source : LandAuthorisationSnapshot::empty;
+                source != null ? source : LandAuthorisationSnapshot::unloaded;
     }
 
     /** Subject lookup over the live snapshot plus the durable land layers.
@@ -128,9 +128,9 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
     private LandAuthorisationSnapshot currentLandAuthorisation() {
         try {
             LandAuthorisationSnapshot snapshot = landAuthorisations.get();
-            return snapshot != null ? snapshot : LandAuthorisationSnapshot.empty();
+            return snapshot != null ? snapshot : LandAuthorisationSnapshot.unloaded();
         } catch (RuntimeException failure) {
-            return LandAuthorisationSnapshot.empty();
+            return LandAuthorisationSnapshot.unloaded();
         }
     }
 

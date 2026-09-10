@@ -287,11 +287,12 @@ public final class ProtectionListener implements Listener {
     /**
      * @param entryAdapter transit semantics for ENTRY denies (teleport
      *         coverage, throttled push-out, banned-inside stops); {@code null}
-     *         selects the production default (no ban source wired yet, Bukkit
-     *         loaded-check, engine ENTRY-validated targets, direct teleport,
-     *         system clock). The null ban source is a deliberate honest
-     *         downgrade: banned-inside enforcement stays inert until the ban
-     *         storage milestone wires a real query (M3-06 gate).
+     *         selects the default adapter (Bukkit loaded-check, engine
+     *         ENTRY-validated targets, direct teleport, system clock) with no
+     *         ban source wired, so the inside check skips. Production wiring
+     *         uses {@link #ProtectionListener(ProtectionEngine,
+     *         RejectionNotifier, EntryProtectionAdapter.BanLookup)} with the
+     *         snapshot-backed query instead.
      */
     public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
                               EntryProtectionAdapter entryAdapter) {
@@ -300,7 +301,26 @@ public final class ProtectionListener implements Listener {
         this.entryAdapter = entryAdapter == null ? defaultEntryAdapter(engine) : entryAdapter;
     }
 
+    /**
+     * Production listener: the default ENTRY-validated push-out path reading
+     * banned-inside stops from the given ban source. A {@code null} ban
+     * source keeps the honest downgrade (inside check skips); production
+     * wiring passes the snapshot-backed query instead.
+     *
+     * @param bans ban read seam over the immutable runtime snapshot; memory
+     *             reads only, never storage
+     */
+    public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
+                              EntryProtectionAdapter.BanLookup bans) {
+        this(engine, rejectionNotifier, defaultEntryAdapter(engine, bans));
+    }
+
     private static EntryProtectionAdapter defaultEntryAdapter(ProtectionEngine engine) {
+        return defaultEntryAdapter(engine, null);
+    }
+
+    private static EntryProtectionAdapter defaultEntryAdapter(ProtectionEngine engine,
+            EntryProtectionAdapter.BanLookup bans) {
         Objects.requireNonNull(engine, "engine");
         EntryProtectionAdapter.EntryAllowedCheck entryCheck = (playerId, at) -> {
             try {
@@ -315,9 +335,21 @@ public final class ProtectionListener implements Listener {
             }
         };
         return new EntryProtectionAdapter(Instant::now,
-                EntryProtectionAdapter.DEFAULT_PUSH_OUT_COOLDOWN, null,
+                EntryProtectionAdapter.DEFAULT_PUSH_OUT_COOLDOWN, bans,
                 EntryProtectionAdapter.ChunkLoadedCheck.bukkit(), entryCheck,
                 (player, target) -> player.teleport(target));
+    }
+
+    /**
+     * Production transit adapter: the default ENTRY-validated push-out path
+     * above, reading banned-inside stops from the given ban source.
+     *
+     * @param bans ban read seam over the immutable runtime snapshot; memory
+     *             reads only, never storage
+     */
+    public static EntryProtectionAdapter productionEntryAdapter(ProtectionEngine engine,
+            EntryProtectionAdapter.BanLookup bans) {
+        return defaultEntryAdapter(engine, bans);
     }
 
     /**
