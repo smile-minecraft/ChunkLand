@@ -11,7 +11,7 @@ message:
       unknown: '未知動作：<payload>'
 command:
   land:
-    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile]</gray>"
+    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain]</gray>"
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
@@ -113,6 +113,12 @@ command:
       updated: "<green>綁定已更新。</green>"
       deleted: "<green>綁定已移除。</green>"
       failed: "<red>綁定操作失敗：<reason>。</red>"
+    explain:
+      console: "<red>只有玩家可以查詢權限說明。</red>"
+      usage: "<yellow>用法：/land explain <action></yellow>"
+      result: "<green>說明 <action>：<outcome>，經由 <source>/<layer>。<reason> 涵蓋 <coveringSubLandId> 擁有者 <isOwner> 略過 <adminBypass> 協管 <steward></green>"
+      denied: "<red>無法說明權限。</red>"
+      failed: "<red>查詢權限說明失敗：<reason>。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"

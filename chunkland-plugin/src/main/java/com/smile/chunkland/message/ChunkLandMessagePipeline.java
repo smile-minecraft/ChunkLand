@@ -107,7 +107,8 @@ public class ChunkLandMessagePipeline {
         "min_y", "revision", "generation", "added_count", "new_name", "old_name", "refund",
         "action", "owner", "reason", "limit_type", "current", "max", "remaining",
         "subcommand", "permission", "player", "state", "group", "groups", "affected",
-        "profile", "profiles"
+        "profile", "profiles", "outcome", "source", "layer",
+        "coveringsublandid", "isowner", "adminbypass", "steward"
     );
 
     private static final MiniMessage STRICT_MINIMESSAGE = MiniMessage.builder().strict(true).build();

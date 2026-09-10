@@ -47,7 +47,7 @@ public final class LandCommand {
     }
 
     public static final List<String> SUBCOMMANDS = List.of(
-            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile");
+            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile", "explain");
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
@@ -190,12 +190,20 @@ public final class LandCommand {
         }
         String perm = LandPermissions.forSubcommand(sub);
         if (perm != null && !sender.hasPermission(perm)) {
+            if (isExplain(sub)) {
+                denyExplain(sink);
+                return true;
+            }
             sink.reply("command.land.denied", Map.of("permission", perm));
             return true;
         }
         Optional<ProtectionActionType> managed = managementActionFor(sub);
         if (managed.isPresent()) {
             if (!checkManagementGate(sender, managed.get(), args)) {
+                if (isExplain(sub)) {
+                    denyExplain(sink);
+                    return true;
+                }
                 sink.reply("command.land.denied", Map.of("permission", managed.get().name()));
                 return true;
             }
@@ -207,6 +215,25 @@ public final class LandCommand {
             sink.reply("command.land.not_yet", Map.of("subcommand", sub));
         }
         return true;
+    }
+
+    /**
+     * Whether the subcommand is the read-only permission explain. The
+     * subcommand is already lower-cased by the caller.
+     */
+    private static boolean isExplain(String sub) {
+        return "explain".equals(sub);
+    }
+
+    /**
+     * Fail-closed generic denial for the explain path. Every dispatcher-level
+     * explain refusal — missing Bukkit node, domain-gate deny, unresolvable
+     * target or resolver failure — replies with the same empty-vars denial
+     * the handler itself uses, so the response never probes whether a land
+     * exists. The operation is still refused and the handler never runs.
+     */
+    private static void denyExplain(ReplySink sink) {
+        sink.reply("command.land.explain.denied", Map.of());
     }
 
     /**
@@ -277,8 +304,13 @@ public final class LandCommand {
             }
             return out;
         }
-        // Subcommand-specific completions are not yet needed; later milestones may add revision etc.
-        // Keep deterministic: no suggestions for tail args in skeleton.
+        // Subcommand-specific completions: explain completes the legal
+        // protection action names on its second arg; every other tail stays
+        // empty. Deterministic declaration order, case-insensitive prefix.
+        if (args.length == 2 && args[0] != null
+                && args[0].equalsIgnoreCase("explain")) {
+            return ExplainCommandHandler.completeAction(args[1]);
+        }
         return List.of();
     }
 

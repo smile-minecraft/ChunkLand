@@ -303,7 +303,14 @@ class LandCommandTest {
             });
             assertTrue(cmdDeny.dispatch(denied, new String[]{sub}, null));
             assertFalse(called.get(), sub+" deny must not call handler");
-            assertTrue(keys.contains("command.land.denied"), sub+" deny must reply denied");
+            if (sub.equals("explain")) {
+                assertTrue(keys.contains("command.land.explain.denied"),
+                        sub + " deny must reply the generic explain denial");
+                assertFalse(keys.contains("command.land.denied"),
+                        sub + " deny must not leak the shared denied key");
+            } else {
+                assertTrue(keys.contains("command.land.denied"), sub+" deny must reply denied");
+            }
 
             // allow case
             called.set(false);
@@ -318,7 +325,12 @@ class LandCommandTest {
                 // No domain authorizer is wired here, so management subcommands
                 // fail closed even when the Bukkit node passes.
                 assertFalse(called.get(), sub + " without a domain authorizer must fail closed");
-                assertTrue(keys.contains("command.land.denied"), sub + " fail-closed must reply denied");
+                if (sub.equals("explain")) {
+                    assertTrue(keys.contains("command.land.explain.denied"),
+                            sub + " fail-closed must reply the generic explain denial");
+                } else {
+                    assertTrue(keys.contains("command.land.denied"), sub + " fail-closed must reply denied");
+                }
             } else {
                 assertTrue(called.get(), sub + " allow must call handler");
             }

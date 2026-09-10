@@ -41,6 +41,7 @@ import com.smile.chunkland.command.ConfirmCommandHandler;
 import com.smile.chunkland.command.DirectTrustCommandHandler;
 import com.smile.chunkland.command.EntryBanCommandHandler;
 import com.smile.chunkland.command.ExpandCommandHandler;
+import com.smile.chunkland.command.ExplainCommandHandler;
 import com.smile.chunkland.command.GroupCommandHandler;
 import com.smile.chunkland.command.ProfileCommandHandler;
 import com.smile.chunkland.command.ShrinkCommandHandler;
@@ -571,7 +572,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                           expandRunner(), expandCurrentLand(this.protectionStore),
                            shrinkRunner(), expandCurrentLand(this.protectionStore),
                            shrinkTargetOwner(this.protectionStore), renameHandler, groupHandler,
-                           profileHandler, bindingHandler),
+                           profileHandler, bindingHandler,
+                           buildExplainHandler(this.protectionStore, () -> atomicContexts)),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -1001,6 +1003,59 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 ? (sender, args, sink) -> sink.reply("command.land.binding.failed", Map.of("reason", "binding.unavailable"))
                 : binding);
         return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers with the read-only permission explain
+     * flow wired.
+     *
+     * <p>A null explain handler keeps the slot fail-closed: it replies
+     * {@code command.land.explain.failed} with {@code explain.unavailable}
+     * instead of the not-yet stub, so an unwired server never pretends the
+     * flow is coming soon and never runs a half-wired decision read.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(
+                buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                        capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                        shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                        profile, binding));
+        base.put("explain", explain == null
+                ? (sender, args, sink) -> sink.reply("command.land.explain.failed", Map.of("reason", "explain.unavailable"))
+                : explain);
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Builds the read-only explain handler over the shared protection
+     * snapshot and the same atomic context provider the enforcement path
+     * reads, so every explain observes the generation it classifies with.
+     * A null store or provider source keeps the slot fail-closed instead of
+     * running half-wired.
+     */
+    static ExplainCommandHandler buildExplainHandler(LandRegistryStore store,
+            Supplier<PermissionContextProvider> providers) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        Supplier<PermissionContextProvider> activeProviders = providers == null
+                ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
+        return new ExplainCommandHandler(active::snapshot, activeProviders);
     }
 
     /**
