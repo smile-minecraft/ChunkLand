@@ -69,6 +69,13 @@ command:
       confirm_depth: "<yellow>That subland reaches below the parent protection floor and needs an explicit depth confirmation: <reason>.</yellow>"
       failed: "<red>Subland operation failed: <reason>.</red>"
       degraded: "<yellow>Subland saved but the live map is still rebuilding. Please wait a moment and try again: <reason>.</yellow>"
+    rename:
+      console: "<red>Only players can rename land.</red>"
+      usage: "<yellow>Usage: /land rename <new_name></yellow>"
+      success: "<green>Land renamed to <new_name> (was <old_name>).</green>"
+      rejected: "<red>Rename rejected: <reason>.</red>"
+      failed: "<red>Rename failed: <reason>.</red>"
+      degraded: "<yellow>Land renamed to <new_name> but the live map is still rebuilding: <reason>.</yellow>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

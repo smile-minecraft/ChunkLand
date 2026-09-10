@@ -69,6 +69,13 @@ command:
       confirm_depth: "<yellow>該子領地超出母領地保護下限，需要明確確認深度：<reason>。</yellow>"
       failed: "<red>子領地操作失敗：<reason>。</red>"
       degraded: "<yellow>子領地已儲存，但即時地圖仍在重建中，請稍後再試：<reason>。</yellow>"
+    rename:
+      console: "<red>只有玩家可以重新命名領地。</red>"
+      usage: "<yellow>用法：/land rename <new_name></yellow>"
+      success: "<green>領地已重新命名為 <new_name>（原名 <old_name>）。</green>"
+      rejected: "<red>重新命名被拒絕：<reason>。</red>"
+      failed: "<red>重新命名失敗：<reason>。</red>"
+      degraded: "<yellow>領地已重新命名為 <new_name>，但即時地圖仍在重建中：<reason>。</yellow>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"

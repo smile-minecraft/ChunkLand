@@ -21,6 +21,7 @@ import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.ClaimValidator;
 import com.smile.chunkland.claim.ExpandSaga;
 import com.smile.chunkland.claim.ExpandValidator;
+import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
 import com.smile.chunkland.claim.SnapshotExpandValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
@@ -36,6 +37,7 @@ import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.PluginManagementGateResolver;
+import com.smile.chunkland.command.RenameCommandHandler;
 import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.config.ConfigService;
@@ -52,6 +54,7 @@ import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
 import com.smile.chunkland.persistence.LandAuthorisationRepository;
+import com.smile.chunkland.persistence.LandRenameRepository;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.SqliteLandRepository;
@@ -88,6 +91,7 @@ import com.smile.chunkland.subland.DepthExtensionPort;
 import com.smile.chunkland.subland.SubLandConfirmService;
 import com.smile.chunkland.subland.SubLandDepthSource;
 import com.smile.chunkland.subland.SubLandMutationRunner;
+import com.smile.chunkland.rename.LandRenameService;
 import com.smile.chunkland.trust.LandAuthorisationService;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandSafetyListener;
@@ -196,6 +200,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SubLandMutationRunner subLandRunner;
     private LandAuthorisationCache landAuthorisationCache;
     private LandAuthorisationService landAuthorisationService;
+    private LandRenameService landRenameService;
     private DepthExtendService depthExtendService;
     /**
      * Read-API lifecycle gate. Each enabled generation owns one instance;
@@ -436,11 +441,29 @@ public final class ChunkLandPlugin extends JavaPlugin {
         EntryBanCommandHandler unbanHandler = new EntryBanCommandHandler(
                 EntryBanCommandHandler.Mode.UNBAN, trustLands::resolve, trustPlayers, banViews,
                 authorisations == null ? null : authorisations::unban);
+        // Formal rename flow: shares the recovery bootstrap store and the
+        // shared runtime rebuilder so durable renames and the live map
+        // converge on one revision source. Assembly failure keeps the slot
+        // fail-closed instead of running half-wired.
+        this.landRenameService = buildLandRename(authorisationStore, this.protectionStore,
+                this.claimStartup == null ? null : this.claimStartup.rebuilder());
+        LandRenameService renames = this.landRenameService;
+        Function<CommandSender, Boolean> renameStewards = sender -> {
+            try {
+                return sender != null
+                        && sender.hasPermission(
+                                PluginManagementGateResolver.SERVER_LAND_STEWARD_NODE);
+            } catch (RuntimeException denied) {
+                return false;
+            }
+        };
+        RenameCommandHandler renameHandler = renames == null ? null
+                : new RenameCommandHandler(trustLands::resolve, renames::rename, renameStewards);
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
-                        trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler,
-                        expandRunner(), expandCurrentLand(this.protectionStore)),
+                         trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler,
+                         expandRunner(), expandCurrentLand(this.protectionStore), renameHandler),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -646,6 +669,29 @@ public final class ChunkLandPlugin extends JavaPlugin {
             EntryBanCommandHandler ban, EntryBanCommandHandler unban,
             ExpandCommandHandler.ExpandRunner expand,
             java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand) {
+        return buildLandHandlers(selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand, null);
+    }
+
+    /**
+     * Production {@code /land} handlers with the land rename flow wired.
+     *
+     * <p>A null rename handler keeps the slot fail-closed: it replies
+     * {@code command.land.rename.failed} with {@code rename.unavailable}
+     * instead of the not-yet stub, so an unwired server never pretends the
+     * flow is coming soon and never runs a half-wired mutation.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            RenameCommandHandler rename) {
         Map<String, LandCommand.Handler> base = new HashMap<>(
                 buildLandHandlers(selections, runner, recoveryScan, structures, subland, capabilities));
         base.put("trust", trust == null
@@ -666,6 +712,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
         base.put("expand", expand == null || selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.expand.failed", Map.of("reason", "expand.unavailable"))
                 : new ExpandCommandHandler(selections, expand, recoveryScan, currentLand));
+        base.put("rename", rename == null
+                ? (sender, args, sink) -> sink.reply("command.land.rename.failed", Map.of("reason", "rename.unavailable"))
+                : rename);
         return Map.copyOf(base);
     }
 
@@ -679,6 +728,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
         Objects.requireNonNull(store, "store");
         return new LandAuthorisationService(
                 new LandAuthorisationRepository(store), new LandAuthorisationCache());
+    }
+
+    /**
+     * Build the durable land rename service on the given store. Any missing
+     * input yields null instead so the handler slot stays fail-closed
+     * without side effects and no substitute store is opened to mask the
+     * gap. The shared recovery rebuilder publishes the renamed snapshot,
+     * so the live map converges with every other mutation path.
+     */
+    static LandRenameService buildLandRename(PersistenceStore store, LandRegistryStore registry,
+            RuntimeRegistryRebuilder rebuilder) {
+        if (store == null || registry == null || rebuilder == null) {
+            return null;
+        }
+        return new LandRenameService(
+                new LandRenameRepository(store), registry::snapshot, rebuilder);
     }
 
     /**
@@ -1650,6 +1715,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // repeats stay no-ops.
         landAuthorisationService = null;
         landAuthorisationCache = null;
+        landRenameService = null;
         // Depth extends stop before persistence closes: the service first
         // stops accepting new proposals, flushes every accepted write, and
         // only then closes the persistence handle, so no accepted extend is
