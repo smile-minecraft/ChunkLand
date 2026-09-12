@@ -9,8 +9,11 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDamageEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.persistence.PersistentDataType;
 import org.junit.jupiter.api.Test;
@@ -264,7 +267,7 @@ class WandSafetyListenerTest {
     }
 
     @Test
-    void clickSeamIsInvoked() throws Exception {
+    void damageAndBreakAreSafetyOnlyWithoutCallback() throws Exception {
         var pdc = TestWandHelpers.fakePdc();
         var meta = TestWandHelpers.fakeMeta(pdc);
         pdc.set(WandKeys.ITEM_TYPE, PersistentDataType.STRING, WandKeys.ITEM_TYPE_VALUE);
@@ -272,21 +275,166 @@ class WandSafetyListenerTest {
         FakeItemStack wand = new FakeItemStack(meta);
         Player player = playerWithMainHand(wand);
         Block block = fakeBlock();
-        int[] c = {0};
-        WandClickHandler.Context[] ctxCap = new WandClickHandler.Context[2];
-        WandSafetyListener l = new WandSafetyListener(ctx -> { ctxCap[c[0]] = ctx; c[0]++; });
+        int[] useCount = {0};
+        int[] rightCount = {0};
+        WandSafetyListener l = new WandSafetyListener(new WandClickHandler() {
+            @Override public void onWandUse(Context context) { useCount[0]++; }
+            @Override public void onWandRightClick(Player p, Block b, BlockFace face) { rightCount[0]++; }
+        });
         BlockDamageEvent ev = createDamageEvent(player, block, wand, false, false);
         l.onBlockDamage(ev);
-        assertEquals(1, c[0]);
-        assertNotNull(ctxCap[0]);
-        assertEquals(player, ctxCap[0].player());
-        assertEquals(block, ctxCap[0].block());
-        assertEquals(false, ctxCap[0].isBreak());
+        assertTrue(ev.isCancelled(), "wand damage must stay cancelled");
         BlockBreakEvent br = createBreakEvent(block, player, false);
         l.onBlockBreak(br);
-        assertEquals(2, c[0]);
-        assertNotNull(ctxCap[1]);
-        assertEquals(true, ctxCap[1].isBreak());
+        assertTrue(br.isCancelled(), "wand break must stay cancelled");
+        assertEquals(0, useCount[0], "damage/break must not call selection callback");
+        assertEquals(0, rightCount[0]);
+    }
+
+    @Test
+    void interactLeftAndRightEachCallOnce() {
+        var pdc = TestWandHelpers.fakePdc();
+        var meta = TestWandHelpers.fakeMeta(pdc);
+        pdc.set(WandKeys.ITEM_TYPE, PersistentDataType.STRING, WandKeys.ITEM_TYPE_VALUE);
+        pdc.set(WandKeys.SCHEMA_VERSION, PersistentDataType.INTEGER, 1);
+        FakeItemStack wand = new FakeItemStack(meta);
+        Player player = playerWithMainHand(wand);
+        Block block = fakeBlock();
+        int[] useCount = {0};
+        int[] rightCount = {0};
+        WandSafetyListener l = new WandSafetyListener(new WandClickHandler() {
+            @Override public void onWandUse(Context context) { useCount[0]++; }
+            @Override public void onWandRightClick(Player p, Block b, BlockFace face) { rightCount[0]++; }
+        });
+
+        PlayerInteractEvent left = new PlayerInteractEvent(
+                player, Action.LEFT_CLICK_BLOCK, wand, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(left);
+        assertTrue(left.isCancelled());
+        assertEquals(1, useCount[0], "Creative LEFT interact must call selection once");
+        assertEquals(0, rightCount[0]);
+
+        PlayerInteractEvent right = new PlayerInteractEvent(
+                player, Action.RIGHT_CLICK_BLOCK, wand, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(right);
+        assertTrue(right.isCancelled());
+        assertEquals(1, useCount[0]);
+        assertEquals(1, rightCount[0], "RIGHT interact must call selection once");
+    }
+
+    @Test
+    void interactPlusDamageDoesNotDuplicateSelection() throws Exception {
+        var pdc = TestWandHelpers.fakePdc();
+        var meta = TestWandHelpers.fakeMeta(pdc);
+        pdc.set(WandKeys.ITEM_TYPE, PersistentDataType.STRING, WandKeys.ITEM_TYPE_VALUE);
+        pdc.set(WandKeys.SCHEMA_VERSION, PersistentDataType.INTEGER, 1);
+        FakeItemStack wand = new FakeItemStack(meta);
+        Player player = playerWithMainHand(wand);
+        Block block = fakeBlock();
+        int[] useCount = {0};
+        int[] rightCount = {0};
+        WandSafetyListener l = new WandSafetyListener(new WandClickHandler() {
+            @Override public void onWandUse(Context context) { useCount[0]++; }
+            @Override public void onWandRightClick(Player p, Block b, BlockFace face) { rightCount[0]++; }
+        });
+
+        // Survival order: interact LEFT then the follow-up damage for the same hit.
+        PlayerInteractEvent left = new PlayerInteractEvent(
+                player, Action.LEFT_CLICK_BLOCK, wand, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(left);
+        BlockDamageEvent damage = createDamageEvent(player, block, wand, false, false);
+        l.onBlockDamage(damage);
+        assertTrue(left.isCancelled());
+        assertTrue(damage.isCancelled());
+        assertEquals(1, useCount[0], "one left hit must record a single corner");
+        assertEquals(0, rightCount[0]);
+    }
+
+    @Test
+    void interactIgnoresOffhandNonWandCancelledAndOtherActions() {
+        var pdc = TestWandHelpers.fakePdc();
+        var meta = TestWandHelpers.fakeMeta(pdc);
+        pdc.set(WandKeys.ITEM_TYPE, PersistentDataType.STRING, WandKeys.ITEM_TYPE_VALUE);
+        pdc.set(WandKeys.SCHEMA_VERSION, PersistentDataType.INTEGER, 1);
+        FakeItemStack wand = new FakeItemStack(meta);
+        FakeItemStack plain = new FakeItemStack(TestWandHelpers.fakeMeta(TestWandHelpers.fakePdc()));
+        Player player = playerWithMainHand(wand);
+        Block block = fakeBlock();
+        int[] useCount = {0};
+        int[] rightCount = {0};
+        WandSafetyListener l = new WandSafetyListener(new WandClickHandler() {
+            @Override public void onWandUse(Context context) { useCount[0]++; }
+            @Override public void onWandRightClick(Player p, Block b, BlockFace face) { rightCount[0]++; }
+        });
+
+        PlayerInteractEvent offhandLeft = new PlayerInteractEvent(
+                player, Action.LEFT_CLICK_BLOCK, wand, block, BlockFace.NORTH, EquipmentSlot.OFF_HAND);
+        l.onPlayerInteract(offhandLeft);
+        assertFalse(offhandLeft.isCancelled());
+
+        PlayerInteractEvent offhandRight = new PlayerInteractEvent(
+                player, Action.RIGHT_CLICK_BLOCK, wand, block, BlockFace.NORTH, EquipmentSlot.OFF_HAND);
+        l.onPlayerInteract(offhandRight);
+        assertFalse(offhandRight.isCancelled());
+
+        PlayerInteractEvent plainLeft = new PlayerInteractEvent(
+                player, Action.LEFT_CLICK_BLOCK, plain, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(plainLeft);
+        assertFalse(plainLeft.isCancelled());
+
+        PlayerInteractEvent plainRight = new PlayerInteractEvent(
+                player, Action.RIGHT_CLICK_BLOCK, plain, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(plainRight);
+        assertFalse(plainRight.isCancelled());
+
+        for (Action action : new Action[]{Action.LEFT_CLICK_AIR, Action.RIGHT_CLICK_AIR, Action.PHYSICAL}) {
+            PlayerInteractEvent other = new PlayerInteractEvent(
+                    player, action, wand, block, BlockFace.NORTH, EquipmentSlot.HAND);
+            l.onPlayerInteract(other);
+            assertFalse(other.isCancelled(), "other action must be ignored: " + action);
+        }
+
+        PlayerInteractEvent cancelledLeft = new PlayerInteractEvent(
+                player, Action.LEFT_CLICK_BLOCK, wand, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        cancelledLeft.setCancelled(true);
+        l.onPlayerInteract(cancelledLeft);
+
+        PlayerInteractEvent cancelledRight = new PlayerInteractEvent(
+                player, Action.RIGHT_CLICK_BLOCK, wand, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        cancelledRight.setCancelled(true);
+        l.onPlayerInteract(cancelledRight);
+
+        PlayerInteractEvent nullBlock = new PlayerInteractEvent(
+                player, Action.LEFT_CLICK_BLOCK, wand, null, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(nullBlock);
+        // Null block has no target: selection must stay untouched regardless of cancel flag.
+
+        assertEquals(0, useCount[0], "ignored interacts must not call selection");
+        assertEquals(0, rightCount[0]);
+    }
+
+    @Test
+    void interactFailClosedOnBackendException() {
+        Block block = fakeBlock();
+        FakeItemStack throwingStack = new FakeItemStack(null) {
+            @Override public org.bukkit.inventory.meta.ItemMeta getItemMeta() { throw new RuntimeException("boom"); }
+        };
+        Player player = playerWithMainHand(throwingStack);
+        int[] useCount = {0};
+        WandSafetyListener l = new WandSafetyListener(new WandClickHandler() {
+            @Override public void onWandUse(Context context) { useCount[0]++; }
+        });
+
+        PlayerInteractEvent left = new PlayerInteractEvent(
+                player, Action.LEFT_CLICK_BLOCK, throwingStack, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(left);
+        assertTrue(left.isCancelled(), "interact backend exception must fail closed");
+
+        PlayerInteractEvent right = new PlayerInteractEvent(
+                player, Action.RIGHT_CLICK_BLOCK, throwingStack, block, BlockFace.NORTH, EquipmentSlot.HAND);
+        l.onPlayerInteract(right);
+        assertTrue(right.isCancelled(), "interact backend exception must fail closed");
+        assertEquals(0, useCount[0]);
     }
 
     @Test

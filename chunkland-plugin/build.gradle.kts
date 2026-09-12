@@ -1,3 +1,5 @@
+import org.gradle.api.GradleException
+import org.gradle.api.Task
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.tasks.bundling.Jar
 
@@ -31,6 +33,12 @@ dependencies {
 // compileOnly (paper-api, AceLib) is server-provided and stays out.
 tasks.named<Jar>("jar") {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // runtimeClasspath embeds the :chunkland-api artifact, so the tasks that
+    // produce that configuration (notably :chunkland-api:jar) must run first.
+    // Wiring the configuration itself keeps the ordering correct on clean/CI
+    // builds, where an absent api jar would otherwise make zipTree fail or, worse,
+    // let a stale api jar be bundled silently.
+    dependsOn(configurations.runtimeClasspath)
     from({
         configurations.runtimeClasspath.get().map {
             if (it.isDirectory) it else zipTree(it)
@@ -48,3 +56,29 @@ tasks.named<ProcessResources>("processResources") {
         expand("version" to version)
     }
 }
+
+// Regression guard for the self-contained jar contract: because the jar embeds the
+// :chunkland-api artifact, it must declare :chunkland-api:jar as a task dependency.
+// Without it a clean/CI build can run this jar before the api jar exists (zipTree
+// fails) or silently bundle a stale api jar. Wired into `check`, so `build` fails
+// fast if the dependency is ever dropped again. The dependency set is captured at
+// configuration time as plain strings so the check stays configuration-cache safe.
+val pluginJarTask = tasks.named<Jar>("jar")
+val apiJarTask = project(":chunkland-api").tasks.named<Jar>("jar")
+val checkPluginJarBundlesApiJar by tasks.registering {
+    val apiJarPath = apiJarTask.get().path
+    val declaredTaskPaths = pluginJarTask.get().taskDependencies
+        .getDependencies(pluginJarTask.get())
+        .filterIsInstance<Task>()
+        .map { it.path }
+        .toSortedSet()
+    doLast {
+        if (apiJarPath !in declaredTaskPaths) {
+            throw GradleException(
+                "chunkland-plugin:jar must depend on $apiJarPath so the api artifact it " +
+                    "embeds is produced first; declared task dependencies were $declaredTaskPaths."
+            )
+        }
+    }
+}
+tasks.named("check") { dependsOn(checkPluginJarBundlesApiJar) }

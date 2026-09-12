@@ -43,17 +43,32 @@ class WandFactoryRealTest {
         // Check required ChunkLand identity is exact; allow AceLib's extra _id/_version fields
         assertTrue(pdc.has(WandKeys.ITEM_TYPE, PersistentDataType.STRING));
         assertTrue(pdc.has(WandKeys.SCHEMA_VERSION, PersistentDataType.INTEGER));
+        assertTrue(pdc.has(WandKeys.VARIANT, PersistentDataType.STRING));
+        assertTrue(pdc.has(WandKeys.CUSTOM_MODEL_DATA, PersistentDataType.INTEGER));
+        assertEquals(WandKeys.VARIANT_VALUE, pdc.get(WandKeys.VARIANT, PersistentDataType.STRING));
+        assertEquals(WandKeys.CUSTOM_MODEL_DATA_VALUE,
+                pdc.get(WandKeys.CUSTOM_MODEL_DATA, PersistentDataType.INTEGER));
         java.util.Set<String> forbiddenChunklandKeys = java.util.Set.of("selection", "player", "land", "mode", "point", "session", "auth", "authorization");
         for (var key : pdc.getKeys()) {
             String k = key.getKey();
             String ns = key.getNamespace();
             if (ns.equals("chunkland")) {
-                boolean isRequired = k.equals("item_type") || k.equals("schema_version");
+                boolean isRequired = k.equals("item_type") || k.equals("schema_version")
+                        || k.equals("variant") || k.equals("custom_model_data");
                 boolean isAceLibExtra = k.equals("_id") || k.equals("_version") || k.equals("id") || k.equals("version") || k.startsWith("_");
                 assertTrue(isRequired || isAceLibExtra, "unexpected chunkland PDC key: " + k);
                 assertFalse(forbiddenChunklandKeys.contains(k), "forbidden ChunkLand tag must not be present: " + k);
             }
         }
+        assertTrue(meta.hasDisplayName(), "wand must carry a custom display name");
+        assertNotNull(meta.displayName());
+        String plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                .serialize(meta.displayName());
+        assertTrue(plain.contains("ChunkLand"), "display name must identify ChunkLand: " + plain);
+        assertTrue(meta.hasLore(), "wand must carry lore readable without a resource pack");
+        assertFalse(meta.lore().isEmpty());
+        assertTrue(meta.hasCustomModelData(), "wand must carry a custom model value");
+        assertEquals(WandKeys.CUSTOM_MODEL_DATA_VALUE, meta.getCustomModelData());
         ItemStack second = WandFactory.createWand();
         assertNotSame(wand, second);
         // ItemMeta instances must be independent

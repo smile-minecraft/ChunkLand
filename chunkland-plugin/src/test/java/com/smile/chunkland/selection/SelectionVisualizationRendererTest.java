@@ -138,11 +138,11 @@ class SelectionVisualizationRendererTest {
 
         fixture.ticks.latest().fire();
 
-        // One chunk renders 16 samples; the default per-tick budget caps emission at 128,
+        // One chunk renders 32 samples; the default per-tick budget caps emission at 256,
         // so a single chunk fits in one tick and every point goes to the same player.
-        assertEquals(16, fixture.sink.emitted.size());
+        assertEquals(32, fixture.sink.emitted.size());
         for (double[] point : fixture.sink.emitted) {
-            assertEquals(65.0, point[1]);
+            assertEquals(68.0, point[1], "the plane is clamped into the viewer-visible band");
         }
         // The loop reschedules itself for the next refresh interval.
         assertEquals(2, fixture.ticks.handles.size());
@@ -433,6 +433,6 @@ class SelectionVisualizationRendererTest {
         fixture.sink.emitted.clear();
         budgets.add(new SelectionVisualizationBudget(256, 128, 48, 10));
         fixture.ticks.latest().fire();
-        assertEquals(16, fixture.sink.emitted.size());
+        assertEquals(32, fixture.sink.emitted.size());
     }
 }

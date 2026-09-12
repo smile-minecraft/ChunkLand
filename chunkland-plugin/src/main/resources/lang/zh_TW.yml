@@ -18,6 +18,7 @@ command:
     not_yet: "<yellow>子指令 <subcommand> 尚未實作。</yellow>"
     wand:
       given: "<green>已發放選取魔杖。</green>"
+      already_have: "<yellow>你已經有選區魔杖了。</yellow>"
       inventory_full: "<red>背包已滿，無法發放魔杖。請清出空間後重試。</red>"
       console: "<red>只有玩家可以領取魔杖。</red>"
       error: "<red>魔杖建立失敗，請稍後再試。</red>"
@@ -147,3 +148,11 @@ pricing:
   unavailable: "<red>圈地計價目前無法使用，請稍後再試。</red>"
 economy:
   unavailable: "<red>經濟服務目前無法使用，請稍後再試。</red>"
+selection:
+  wand:
+    first_point: "<yellow>已設定第一角。請再點擊一個方塊設定第二角。</yellow>"
+    second_point: "<green>選取範圍已完成：<width>×<height> 個區塊。再點擊可調整第二角大小。</green>"
+    resized: "<green>已調整選取範圍為 <width>×<height> 個區塊。可再點擊繼續調整。</green>"
+    reset: "<yellow>選取範圍已重置。請點擊方塊設定第一角。</yellow>"
+    abandoned: "<yellow>你已切換離開魔杖，選取範圍與粒子已清除。</yellow>"
+    cancelled: "<yellow>已取消選取範圍。</yellow>"

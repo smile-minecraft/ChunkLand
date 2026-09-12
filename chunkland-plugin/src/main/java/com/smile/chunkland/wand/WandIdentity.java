@@ -6,7 +6,11 @@ import org.bukkit.persistence.PersistentDataType;
 
 /**
  * Identity check for the ChunkLand selection wand.
- * Only the exact PDC contract defines identity.
+ * Only the exact PDC contract defines identity: the item type and schema
+ * version must match exactly, and the variant and custom model keys — when
+ * present — must also match exactly. Wands issued before those keys existed
+ * carry only the first two keys and still count, so earlier holders keep
+ * working and are not issued a duplicate.
  */
 public final class WandIdentity {
 
@@ -41,6 +45,26 @@ public final class WandIdentity {
         if (type == null || version == null) {
             return false;
         }
-        return WandKeys.ITEM_TYPE_VALUE.equals(type) && version == WandKeys.SCHEMA_VERSION_VALUE;
+        if (!WandKeys.ITEM_TYPE_VALUE.equals(type) || version != WandKeys.SCHEMA_VERSION_VALUE) {
+            return false;
+        }
+        if (pdc.has(WandKeys.VARIANT, PersistentDataType.STRING)) {
+            if (!WandKeys.VARIANT_VALUE.equals(pdc.get(WandKeys.VARIANT, PersistentDataType.STRING))) {
+                return false;
+            }
+        } else if (pdc.getKeys().contains(WandKeys.VARIANT)) {
+            // Present under the wrong type: not a wand we issued.
+            return false;
+        }
+        if (pdc.has(WandKeys.CUSTOM_MODEL_DATA, PersistentDataType.INTEGER)) {
+            if (!Integer.valueOf(WandKeys.CUSTOM_MODEL_DATA_VALUE)
+                    .equals(pdc.get(WandKeys.CUSTOM_MODEL_DATA, PersistentDataType.INTEGER))) {
+                return false;
+            }
+        } else if (pdc.getKeys().contains(WandKeys.CUSTOM_MODEL_DATA)) {
+            // Present under the wrong type: not a wand we issued.
+            return false;
+        }
+        return true;
     }
 }

@@ -4,6 +4,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
+import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.entity.Player;
@@ -17,6 +18,11 @@ import org.bukkit.entity.Player;
  * players. The viewer pose is the operating player's own location, read on
  * its scheduler thread (every renderer tick already runs in that context).
  *
+ * <p>Visibility rule: every point is one large gold dust mote, which reads
+ * against terrain in daylight where the previous subtle effect washed out.
+ * One mote per point keeps each emission cheap; the renderer budget still
+ * caps the per-tick total, the render distance, and the refresh interval.
+ *
  * <p>Terrain rule: no Highest Block lookup, no block data, no entity scan, no
  * Bukkit world/chunk/block query appears here. A missing player resolves to
  * empty on read and to a quiet no-op on send (the renderer stops the loop on
@@ -24,6 +30,15 @@ import org.bukkit.entity.Player;
  * explicitly).
  */
 public final class FoliaSelectionParticleSink implements SelectionParticleSink {
+    /** Boundary effect: a large gold dust mote that reads against terrain in daylight. */
+    public static final Particle PARTICLE = Particle.DUST;
+    /** One mote per planned point; the renderer budget caps the per-tick total. */
+    public static final int PARTICLE_COUNT = 1;
+    /** Warm gold chosen for contrast on grass, dirt, and stone. */
+    public static final Color DUST_COLOR = Color.fromRGB(255, 180, 0);
+    /** Larger than the default mote so the boundary stays readable at a distance. */
+    public static final float DUST_SIZE = 1.5F;
+
     private final Function<UUID, Player> playerLookup;
 
     public FoliaSelectionParticleSink(Function<UUID, Player> playerLookup) {
@@ -51,6 +66,6 @@ public final class FoliaSelectionParticleSink implements SelectionParticleSink {
         if (player == null) {
             return;
         }
-        player.spawnParticle(Particle.HAPPY_VILLAGER, x, y, z, 1);
+        player.spawnParticle(PARTICLE, x, y, z, PARTICLE_COUNT, new Particle.DustOptions(DUST_COLOR, DUST_SIZE));
     }
 }

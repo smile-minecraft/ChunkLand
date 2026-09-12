@@ -104,8 +104,10 @@ import com.smile.chunkland.runtime.vertical.VerticalDepths;
 import com.smile.chunkland.selection.FoliaSelectionTimeoutScheduler;
 import com.smile.chunkland.selection.FoliaSelectionParticleSink;
 import com.smile.chunkland.selection.FoliaVisualizationTickScheduler;
+import com.smile.chunkland.selection.SelectionClock;
+import com.smile.chunkland.selection.SelectionEditService;
+import com.smile.chunkland.selection.SelectionLandIndex;
 import com.smile.chunkland.selection.SelectionLifecycleListener;
-import com.smile.chunkland.selection.SelectionNotifier;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
 import com.smile.chunkland.selection.SelectionVisualizationRenderer;
@@ -117,7 +119,10 @@ import com.smile.chunkland.subland.SubLandMutationRunner;
 import com.smile.chunkland.rename.LandRenameService;
 import com.smile.chunkland.trust.LandAuthorisationService;
 import com.smile.chunkland.wand.WandGiveHandler;
+import com.smile.chunkland.wand.WandFeedback;
 import com.smile.chunkland.wand.WandSafetyListener;
+import com.smile.chunkland.wand.WandSelectionNotifier;
+import com.smile.chunkland.wand.SelectionWandClickHandler;
 import java.time.Clock;
 import java.util.HashMap;
 import java.util.List;
@@ -332,7 +337,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.selectionSessionManager = new SelectionSessionManager(
                 new FoliaSelectionTimeoutScheduler(this, uuid -> getServer().getPlayer(uuid)),
                 visualization,
-                SelectionNotifier.noop(),
+                new WandSelectionNotifier(uuid -> getServer().getPlayer(uuid),
+                        (player, key) -> sendWandSelectionMessage(player, key, java.util.Map.of())),
                 Clock.systemUTC()::instant,
                 () -> activeConfig.current().selection().sessionTimeout(),
                 uuid -> Optional.ofNullable(getServer().getWorld(uuid)).map(org.bukkit.World::getName),
@@ -596,8 +602,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
-        // Wand safety listener: native Bukkit listener for selection wand protection
-        this.wandSafetyListener = new WandSafetyListener();
+        // Wand safety listener: native Bukkit listener for selection wand protection.
+        // The selecting handler turns wand hits into selection corners on the
+        // same session /land claim reads; safety cancelling stays in the
+        // listener so a handler failure can never break or interact blocks.
+        this.wandSafetyListener = buildWandSafetyListener(
+                this.selectionSessionManager,
+                () -> new SelectionEditService(
+                        activeConfig.current().limits(), wandCollisionIndex(this.protectionStore)),
+                Clock.systemUTC()::instant,
+                (player, kind, vars) -> sendWandSelectionMessage(player, kind.messageKey(), vars));
         // ENTRY enforcement reads banned-inside stops from the immutable ban
         // snapshot through a memory-only lookup: no SQL, Bukkit, chunk load
         // or network on the event thread. Unknown or failing answers fail
@@ -2156,6 +2170,70 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     void registerWandListener(WandSafetyListener listener) {
         getServer().getPluginManager().registerEvents(listener, this);
+    }
+
+    /**
+     * Production wand listener: safety cancelling plus corner selection on
+     * the live session registry. Public so tests drive the same assembly
+     * the server uses and prove it is not the no-op seam.
+     */
+    public static WandSafetyListener buildWandSafetyListener(
+            SelectionSessionManager manager,
+            java.util.function.Supplier<SelectionEditService> editServices,
+            SelectionClock clock) {
+        return buildWandSafetyListener(manager, editServices, clock, WandFeedback.none());
+    }
+
+    /**
+     * Production assembly with the guidance-prompt seam. The feedback sink
+     * names each step's lang key; the listener/handler never render text.
+     */
+    public static WandSafetyListener buildWandSafetyListener(
+            SelectionSessionManager manager,
+            java.util.function.Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback) {
+        return new WandSafetyListener(new SelectionWandClickHandler(manager, editServices, clock, feedback));
+    }
+
+    /**
+     * Render one selection guidance/end prompt through the shared message
+     * pipeline. The language key and its variables are chosen by the caller;
+     * nothing here builds raw text, and a missing pipeline (AceLib not ready)
+     * stays silent.
+     */
+    private void sendWandSelectionMessage(
+            org.bukkit.entity.Player player, String messageKey, java.util.Map<String, Object> vars) {
+        if (player == null || messageKey == null) {
+            return;
+        }
+        java.util.Map<String, Object> safeVars = vars == null ? java.util.Map.of() : vars;
+        landMessagePipeline.ifPresent(pipeline -> {
+            try {
+                pipeline.sendChat(player, messageKey, safeVars, null);
+            } catch (RuntimeException ignored) {
+                // A failed prompt must never break the selection/event path.
+            }
+        });
+    }
+
+    /**
+     * Memory-only collision lookup over the volatile registry snapshot.
+     * Unknown worlds read as wilderness; a failing snapshot read propagates
+     * so the click handler fails closed instead of selecting blindly.
+     */
+    private static SelectionLandIndex wandCollisionIndex(LandRegistryStore registryStore) {
+        return (worldId, packed) -> {
+            LandRegistryStore store = registryStore;
+            if (store == null) {
+                return null;
+            }
+            LandRegistry snapshot = store.snapshot();
+            if (snapshot == null) {
+                return null;
+            }
+            return snapshot.findLandIdPacked(worldId, packed);
+        };
     }
 
     void registerSelectionListener(SelectionLifecycleListener listener) {

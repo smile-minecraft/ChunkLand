@@ -82,6 +82,39 @@ public final class TestWandHelpers {
                     }
                     if (n.equals("hasEnchant")) return extras.containsKey("enchant:" + args[0]);
                     if (n.equals("getEnchants")) return Map.of();
+                    if (n.equals("displayName") && (args == null || args.length == 0)) {
+                        return extras.get("displayName");
+                    }
+                    if (n.equals("displayName") && args != null && args.length == 1) {
+                        if (args[0] == null) extras.remove("displayName");
+                        else extras.put("displayName", args[0]);
+                        return null;
+                    }
+                    if (n.equals("hasDisplayName")) return extras.containsKey("displayName");
+                    if (n.equals("lore") && (args == null || args.length == 0)) {
+                        Object lore = extras.get("lore");
+                        if (lore == null) return null;
+                        @SuppressWarnings("unchecked")
+                        java.util.List<net.kyori.adventure.text.Component> copy =
+                                new java.util.ArrayList<>((java.util.List<net.kyori.adventure.text.Component>) lore);
+                        return copy;
+                    }
+                    if (n.equals("lore") && args != null && args.length == 1) {
+                        if (args[0] == null) extras.remove("lore");
+                        else extras.put("lore", args[0]);
+                        return null;
+                    }
+                    if (n.equals("hasLore")) return extras.containsKey("lore");
+                    if (n.equals("hasCustomModelData")) return extras.containsKey("customModelData");
+                    if (n.equals("getCustomModelData")) {
+                        Object value = extras.get("customModelData");
+                        return value == null ? 0 : value;
+                    }
+                    if (n.equals("setCustomModelData")) {
+                        if (args == null || args[0] == null) extras.remove("customModelData");
+                        else extras.put("customModelData", args[0]);
+                        return null;
+                    }
                     if (n.equals("clone")) return proxy;
                     if (n.equals("equals")) return proxy == args[0];
                     if (n.equals("hashCode")) return System.identityHashCode(proxy);

@@ -36,13 +36,15 @@ class FoliaVisualizationAdapterTest {
         final double y;
         final double z;
         final int count;
+        final Object data;
 
-        SpawnCall(Particle particle, double x, double y, double z, int count) {
+        SpawnCall(Particle particle, double x, double y, double z, int count, Object data) {
             this.particle = particle;
             this.x = x;
             this.y = y;
             this.z = z;
             this.count = count;
+            this.data = data;
         }
     }
 
@@ -61,13 +63,18 @@ class FoliaVisualizationAdapterTest {
                         return location;
                     }
                     case "spawnParticle" -> {
-                        // Player#spawnParticle(Particle, double, double, double, int).
+                        // Player#spawnParticle(Particle, double, double, double, int, T data).
+                        if (args == null || args.length != 6) {
+                            throw new UnsupportedOperationException(
+                                    "sink must use the data overload: " + java.util.Arrays.toString(args));
+                        }
                         spawns.add(new SpawnCall(
                                 (Particle) args[0],
                                 (Double) args[1],
                                 (Double) args[2],
                                 (Double) args[3],
-                                (Integer) args[4]));
+                                (Integer) args[4],
+                                args[5]));
                         return null;
                     }
                     case "getScheduler" -> {
@@ -237,11 +244,57 @@ class FoliaVisualizationAdapterTest {
         sink.emit(PLAYER_ID, 1.0, 65.0, 2.0);
 
         assertEquals(1, proxy.spawns.size());
-        assertEquals(Particle.HAPPY_VILLAGER, proxy.spawns.get(0).particle);
-        assertEquals(1.0, proxy.spawns.get(0).x);
-        assertEquals(65.0, proxy.spawns.get(0).y);
-        assertEquals(2.0, proxy.spawns.get(0).z);
-        assertEquals(1, proxy.spawns.get(0).count);
+        SpawnCall spawn = proxy.spawns.get(0);
+        assertEquals(FoliaSelectionParticleSink.PARTICLE, spawn.particle);
+        assertEquals(Particle.DUST, spawn.particle, "boundary particles must use the bright dust effect");
+        assertEquals(1.0, spawn.x);
+        assertEquals(65.0, spawn.y);
+        assertEquals(2.0, spawn.z);
+        assertEquals(FoliaSelectionParticleSink.PARTICLE_COUNT, spawn.count);
+        assertTrue(spawn.data instanceof Particle.DustOptions, "dust must carry explicit color/size options");
+        Particle.DustOptions dust = (Particle.DustOptions) spawn.data;
+        assertEquals(FoliaSelectionParticleSink.DUST_COLOR, dust.getColor());
+        assertEquals(FoliaSelectionParticleSink.DUST_SIZE, dust.getSize());
+    }
+
+    @Test
+    void particleSinkContractStaysBrightButBudgetFriendly() {
+        assertEquals(Particle.DUST, FoliaSelectionParticleSink.PARTICLE);
+        assertEquals(1, FoliaSelectionParticleSink.PARTICLE_COUNT,
+                "one particle per point; the renderer budget caps the per-tick total, not the sink");
+        assertTrue(FoliaSelectionParticleSink.DUST_SIZE >= 1.0F,
+                "dust must be larger than the default so the boundary stays readable");
+    }
+
+    @Test
+    void particleSinkSourceNeverBroadcastsOrLoadsTerrain() throws Exception {
+        java.nio.file.Path source = java.nio.file.Path.of(
+                "chunkland-plugin/src/main/java/com/smile/chunkland/selection/FoliaSelectionParticleSink.java");
+        if (!java.nio.file.Files.isRegularFile(source)) {
+            source = java.nio.file.Path.of(
+                    "src/main/java/com/smile/chunkland/selection/FoliaSelectionParticleSink.java");
+        }
+        String content = java.nio.file.Files.readString(source, java.nio.charset.StandardCharsets.UTF_8);
+        for (String forbidden : java.util.List.of(
+                "broadcast(",
+                "getWorld(",
+                "getChunk",
+                "loadChunk",
+                "getSnapshot",
+                "getBlockData",
+                "getHighestBlock",
+                "getState(",
+                "java.sql",
+                "java.net.http",
+                "HttpClient",
+                "Bukkit.get",
+                "getServer(",
+                "HAPPY_VILLAGER")) {
+            assertTrue(!content.contains(forbidden),
+                    "particle sink must stay player-scoped without terrain I/O: found '" + forbidden + "'");
+        }
+        assertTrue(content.contains("DustOptions"), "sink must use explicit dust options for visibility");
+        assertTrue(content.contains("spawnParticle"), "sink must emit through the player overload");
     }
 
     @Test

@@ -163,6 +163,118 @@ class WandGiveHandlerTest {
         assertTrue(WandIdentity.isWand(added.get(0).getItemMeta()));
     }
 
+    private static PlayerInventory inventoryWithContents(ItemStack[] contents, List<ItemStack> added) {
+        return (PlayerInventory) Proxy.newProxyInstance(
+                PlayerInventory.class.getClassLoader(),
+                new Class[]{PlayerInventory.class},
+                (proxy, method, args) -> {
+                    String n = method.getName();
+                    if (n.equals("getContents")) return contents;
+                    if (n.equals("getStorageContents")) return contents;
+                    if (n.equals("firstEmpty")) {
+                        if (contents == null) return 0;
+                        for (int i = 0; i < contents.length; i++) {
+                            if (contents[i] == null) return i;
+                        }
+                        return -1;
+                    }
+                    if (n.equals("addItem")) {
+                        if (args != null) {
+                            for (Object arg : args) {
+                                if (arg instanceof ItemStack s) added.add(s);
+                                else if (arg instanceof ItemStack[] arr) for (ItemStack s : arr) if (s != null) added.add(s);
+                            }
+                        }
+                        return new HashMap<Integer, ItemStack>();
+                    }
+                    Class<?> rt = method.getReturnType();
+                    if (rt == boolean.class) return false;
+                    if (rt == int.class) return 0;
+                    return null;
+                });
+    }
+
+    private static FakeItemStack wandItem() {
+        var pdc = TestWandHelpers.fakePdc();
+        var meta = TestWandHelpers.fakeMeta(pdc);
+        WandFactory.configure(meta);
+        return new FakeItemStack(meta);
+    }
+
+    private static FakeItemStack plainStickItem() {
+        return new FakeItemStack(TestWandHelpers.fakeMeta(TestWandHelpers.fakePdc()));
+    }
+
+    @Test
+    void existingWandIsNotDuplicated() {
+        var pdc = TestWandHelpers.fakePdc();
+        var meta = TestWandHelpers.fakeMeta(pdc);
+        WandFactory.configure(meta);
+        FakeItemStack existing = new FakeItemStack(meta);
+        List<ItemStack> added = new ArrayList<>();
+        PlayerInventory inv = inventoryWithContents(new ItemStack[]{existing, null}, added);
+        Player player = playerWithInventory(inv);
+
+        CaptureSink sink = new CaptureSink();
+        new WandGiveHandler().handle(player, new String[]{}, sink);
+
+        assertTrue(sink.keys.contains("command.land.wand.already_have"));
+        assertFalse(sink.keys.contains("command.land.wand.given"));
+        assertTrue(added.isEmpty(), "existing wand must not be duplicated");
+    }
+
+    @Test
+    void twoExistingWandsStillAddNothing() {
+        List<ItemStack> added = new ArrayList<>();
+        PlayerInventory inv = inventoryWithContents(new ItemStack[]{wandItem(), wandItem()}, added);
+        Player player = playerWithInventory(inv);
+
+        CaptureSink sink = new CaptureSink();
+        new WandGiveHandler().handle(player, new String[]{}, sink);
+
+        assertTrue(sink.keys.contains("command.land.wand.already_have"));
+        assertTrue(added.isEmpty());
+    }
+
+    @Test
+    void legacyTwoKeyWandCountsAsExisting() {
+        var pdc = TestWandHelpers.fakePdc();
+        var meta = TestWandHelpers.fakeMeta(pdc);
+        pdc.set(WandKeys.ITEM_TYPE, org.bukkit.persistence.PersistentDataType.STRING, WandKeys.ITEM_TYPE_VALUE);
+        pdc.set(WandKeys.SCHEMA_VERSION, org.bukkit.persistence.PersistentDataType.INTEGER,
+                WandKeys.SCHEMA_VERSION_VALUE);
+        List<ItemStack> added = new ArrayList<>();
+        PlayerInventory inv = inventoryWithContents(new ItemStack[]{new FakeItemStack(meta), null}, added);
+        Player player = playerWithInventory(inv);
+
+        CaptureSink sink = new CaptureSink();
+        new WandGiveHandler().handle(player, new String[]{}, sink);
+
+        assertTrue(sink.keys.contains("command.land.wand.already_have"));
+        assertTrue(added.isEmpty(), "legacy wand holders must not receive a second wand");
+    }
+
+    @Test
+    void nonWandStickStillReceivesOneWand() {
+        var pdc = TestWandHelpers.fakePdc();
+        var meta = TestWandHelpers.fakeMeta(pdc);
+        WandFactory.configure(meta);
+        FakeItemStack fresh = new FakeItemStack(meta);
+        class SeamedHandler extends WandGiveHandler {
+            @Override protected ItemStack createWand() { return fresh; }
+        }
+        List<ItemStack> added = new ArrayList<>();
+        PlayerInventory inv = inventoryWithContents(new ItemStack[]{plainStickItem(), null}, added);
+        Player player = playerWithInventory(inv);
+
+        CaptureSink sink = new CaptureSink();
+        new SeamedHandler().handle(player, new String[]{}, sink);
+
+        assertTrue(sink.keys.contains("command.land.wand.given"));
+        assertFalse(sink.keys.contains("command.land.wand.already_have"));
+        assertEquals(1, added.size());
+    }
+
     @Test
     void factoryFailureMapsToError() {
         class FailingHandler extends WandGiveHandler {

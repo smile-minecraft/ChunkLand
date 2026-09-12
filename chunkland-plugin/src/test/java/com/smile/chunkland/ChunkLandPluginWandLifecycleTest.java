@@ -2,6 +2,7 @@ package com.smile.chunkland;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.wand.FakeItemStack;
 import com.smile.chunkland.wand.TestWandHelpers;
 import com.smile.chunkland.wand.WandGiveHandler;
@@ -10,6 +11,7 @@ import com.smile.chunkland.wand.WandSafetyListener;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.Map;
 import org.bukkit.Server;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.persistence.PersistentDataType;
@@ -398,6 +400,106 @@ class ChunkLandPluginWandLifecycleTest {
             assertNull(fCmd.get(plugin), "landCommand must be cleared even when disable throws");
             assertNull(plugin.getBridge().getApi(), "bridge must be released even when disable throws");
         }
+    }
+
+    @Test
+    void sendWandSelectionMessageForwardsWidthHeightVarsThroughThePipeline() throws Exception {
+        ChunkLandPlugin plugin = allocatePlugin();
+        java.util.List<net.kyori.adventure.text.Component> sent = new java.util.ArrayList<>();
+        Map<String, Object> capturedVars = new java.util.concurrent.ConcurrentHashMap<>();
+        ChunkLandMessagePipeline.PipelineSender sender = new ChunkLandMessagePipeline.PipelineSender() {
+            @Override public void sendChat(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m) {
+                sent.add(m);
+            }
+            @Override public void sendChatWithFallback(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m, java.util.Locale l) {
+                sent.add(m);
+            }
+            @Override public void sendActionBar(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m) { }
+            @Override public void sendActionBarWithFallback(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m, java.util.Locale l) { }
+            @Override public void sendTitle(org.bukkit.entity.Player p, net.kyori.adventure.text.Component t, net.kyori.adventure.text.Component s) { }
+            @Override public void sendTitleWithFallback(org.bukkit.entity.Player p, net.kyori.adventure.text.Component t, net.kyori.adventure.text.Component s, java.util.Locale l) { }
+            @Override public void broadcastWithFallback(net.kyori.adventure.text.Component m, java.util.Locale l) { }
+        };
+        ChunkLandMessagePipeline.MessageParser parser = (template, vars) -> {
+            capturedVars.putAll(vars);
+            return net.kyori.adventure.text.Component.text("x");
+        };
+        ChunkLandMessagePipeline.LangProvider lang = (locale, key) -> java.util.Optional.of("size <width>×<height>");
+        ChunkLandMessagePipeline pipeline = pipeline(sender, parser, lang);
+
+        java.lang.reflect.Field fPipeline = ChunkLandPlugin.class.getDeclaredField("landMessagePipeline");
+        fPipeline.setAccessible(true);
+        fPipeline.set(plugin, java.util.Optional.of(pipeline));
+
+        java.lang.reflect.Method send = ChunkLandPlugin.class.getDeclaredMethod(
+                "sendWandSelectionMessage", org.bukkit.entity.Player.class, String.class, Map.class);
+        send.setAccessible(true);
+        send.invoke(plugin, fakePlayer(), "selection.wand.second_point", Map.of("width", 2, "height", 3));
+
+        assertEquals(Map.of("width", 2, "height", 3), capturedVars,
+                "the plugin helper must hand the width/height vars to the shared pipeline");
+        assertEquals(1, sent.size(), "the prompt must actually leave through the pipeline sender");
+    }
+
+    @Test
+    void sendWandSelectionMessageStaysSafeWithoutPipelineOrOnFailure() throws Exception {
+        ChunkLandPlugin plugin = allocatePlugin();
+        java.lang.reflect.Field fPipeline = ChunkLandPlugin.class.getDeclaredField("landMessagePipeline");
+        fPipeline.setAccessible(true);
+        fPipeline.set(plugin, java.util.Optional.empty());
+
+        java.lang.reflect.Method send = ChunkLandPlugin.class.getDeclaredMethod(
+                "sendWandSelectionMessage", org.bukkit.entity.Player.class, String.class, Map.class);
+        send.setAccessible(true);
+        // Missing pipeline: silent fail-closed, never throws onto the event path.
+        send.invoke(plugin, fakePlayer(), "selection.wand.second_point", Map.of("width", 2, "height", 3));
+
+        // Failing pipeline: the prompt failure must not propagate either.
+        ChunkLandMessagePipeline pipeline = pipeline(
+                new ChunkLandMessagePipeline.PipelineSender() {
+                    @Override public void sendChat(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m) {
+                        throw new IllegalStateException("boom");
+                    }
+                    @Override public void sendChatWithFallback(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m, java.util.Locale l) {
+                        throw new IllegalStateException("boom");
+                    }
+                    @Override public void sendActionBar(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m) { }
+                    @Override public void sendActionBarWithFallback(org.bukkit.entity.Player p, net.kyori.adventure.text.Component m, java.util.Locale l) { }
+                    @Override public void sendTitle(org.bukkit.entity.Player p, net.kyori.adventure.text.Component t, net.kyori.adventure.text.Component s) { }
+                    @Override public void sendTitleWithFallback(org.bukkit.entity.Player p, net.kyori.adventure.text.Component t, net.kyori.adventure.text.Component s, java.util.Locale l) { }
+                    @Override public void broadcastWithFallback(net.kyori.adventure.text.Component m, java.util.Locale l) { }
+                },
+                (template, vars) -> net.kyori.adventure.text.Component.text("x"),
+                (locale, key) -> java.util.Optional.of("size <width>×<height>"));
+        fPipeline.set(plugin, java.util.Optional.of(pipeline));
+        send.invoke(plugin, fakePlayer(), "selection.wand.second_point", Map.of("width", 2, "height", 3));
+    }
+
+    /** Package-private pipeline constructor, reached reflectively from this test package. */
+    private static ChunkLandMessagePipeline pipeline(
+            ChunkLandMessagePipeline.PipelineSender sender,
+            ChunkLandMessagePipeline.MessageParser parser,
+            ChunkLandMessagePipeline.LangProvider lang) throws Exception {
+        var ctor = ChunkLandMessagePipeline.class.getDeclaredConstructor(
+                ChunkLandMessagePipeline.PipelineSender.class,
+                ChunkLandMessagePipeline.MessageParser.class,
+                ChunkLandMessagePipeline.LangProvider.class,
+                com.smile.acelib.bedrock.BedrockService.class,
+                java.util.Locale.class);
+        ctor.setAccessible(true);
+        return ctor.newInstance(sender, parser, lang, null, java.util.Locale.US);
+    }
+
+    private static org.bukkit.entity.Player fakePlayer() {
+        return (org.bukkit.entity.Player) Proxy.newProxyInstance(
+                org.bukkit.entity.Player.class.getClassLoader(),
+                new Class[]{org.bukkit.entity.Player.class},
+                (proxy, method, args) -> {
+                    Class<?> rt = method.getReturnType();
+                    if (rt == boolean.class) return false;
+                    if (rt == int.class) return 0;
+                    return null;
+                });
     }
 
     @Test

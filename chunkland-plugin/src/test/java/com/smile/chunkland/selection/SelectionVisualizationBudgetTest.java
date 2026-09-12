@@ -14,8 +14,8 @@ class SelectionVisualizationBudgetTest {
         SelectionVisualizationBudget budget = SelectionVisualizationBudget.defaults();
 
         assertEquals(256, budget.maxSegments());
-        assertEquals(128, budget.maxParticlesPerTick());
-        assertEquals(48, budget.renderDistanceBlocks());
+        assertEquals(256, budget.maxParticlesPerTick());
+        assertEquals(64, budget.renderDistanceBlocks());
         assertEquals(10, budget.refreshIntervalTicks());
     }
 
@@ -45,12 +45,12 @@ class SelectionVisualizationBudgetTest {
     @Test
     void budgetsWithSameValuesAreEqual() {
         assertEquals(
-                new SelectionVisualizationBudget(256, 128, 48, 10),
+                new SelectionVisualizationBudget(256, 256, 64, 10),
                 SelectionVisualizationBudget.defaults());
         assertFalse(
-                new SelectionVisualizationBudget(255, 128, 48, 10).equals(SelectionVisualizationBudget.defaults()));
+                new SelectionVisualizationBudget(255, 256, 64, 10).equals(SelectionVisualizationBudget.defaults()));
         assertEquals(
-                List.of(new SelectionVisualizationBudget(256, 128, 48, 10)).get(0),
+                List.of(new SelectionVisualizationBudget(256, 256, 64, 10)).get(0),
                 SelectionVisualizationBudget.defaults());
     }
 }

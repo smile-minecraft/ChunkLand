@@ -16,8 +16,11 @@ import java.util.Set;
  * stored block heights of its points) plus pure chunk math. This class never
  * queries a Highest Block, block data, an entity, or any Bukkit world/chunk/block
  * object — there is intentionally no code path here that could load terrain.
- * The render plane is the highest stored point height plus one; sessions without
- * points fall back to the viewer height passed in by the caller.
+ * The render plane follows the highest stored point height plus one, clamped
+ * into the viewer's visible band ({@link #PLANE_BELOW_VIEWER} blocks below to
+ * {@link #PLANE_ABOVE_VIEWER} blocks above the viewer) so a click into a cave
+ * or floating in the sky still gets a visible boundary. Sessions without points
+ * fall back to the viewer height.
  *
  * <p>Planning is deterministic: segments are sorted by chunk then direction, the
  * segment cap keeps a prefix, each edge is sampled at fixed fractions, and the
@@ -27,7 +30,15 @@ import java.util.Set;
 public final class SelectionVisualizationGeometry {
 
     /** Samples per boundary edge, at fixed fractions that avoid shared corners. */
-    static final double[] SAMPLE_FRACTIONS = {0.125, 0.375, 0.625, 0.875};
+    static final double[] SAMPLE_FRACTIONS = {
+            0.0625, 0.1875, 0.3125, 0.4375, 0.5625, 0.6875, 0.8125, 0.9375
+    };
+
+    /** The render plane is never pushed more than this far below the viewer. */
+    static final double PLANE_BELOW_VIEWER = 2.0;
+
+    /** The render plane is never pushed more than this far above the viewer. */
+    static final double PLANE_ABOVE_VIEWER = 8.0;
 
     private SelectionVisualizationGeometry() {
         // static utility only
@@ -145,9 +156,18 @@ public final class SelectionVisualizationGeometry {
         if (session.pointB().isPresent()) {
             highest = Math.max(highest, session.pointB().orElseThrow().blockY());
         }
-        if (highest == Integer.MIN_VALUE) {
-            return viewerY;
+        double candidate = highest == Integer.MIN_VALUE ? viewerY : (double) highest + 1.0;
+        // Keep the plane where the viewer can actually see it: a click deep
+        // underground raises it to just below eye level, a click high in the sky
+        // lowers it to just above. Pure arithmetic — never a world/block read.
+        double min = viewerY - PLANE_BELOW_VIEWER;
+        double max = viewerY + PLANE_ABOVE_VIEWER;
+        if (candidate < min) {
+            return min;
         }
-        return (double) highest + 1.0;
+        if (candidate > max) {
+            return max;
+        }
+        return candidate;
     }
 }

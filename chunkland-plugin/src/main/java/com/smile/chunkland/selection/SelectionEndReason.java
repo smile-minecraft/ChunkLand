@@ -11,5 +11,7 @@ public enum SelectionEndReason {
     LAND_DELETED,
     LAND_STRUCTURE_CHANGED,
     SUBLAND_DELETED,
-    REPLACED
+    REPLACED,
+    /** The main hand stopped holding the wand, so the range and its particles are dropped. */
+    ITEM_CHANGED
 }

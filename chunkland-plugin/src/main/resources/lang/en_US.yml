@@ -18,6 +18,7 @@ command:
     not_yet: "<yellow>Subcommand <subcommand> is not yet implemented.</yellow>"
     wand:
       given: "<green>Wand given.</green>"
+      already_have: "<yellow>You already have the selection wand.</yellow>"
       inventory_full: "<red>Inventory full — cannot give wand. Clear space and try again.</red>"
       console: "<red>Only players can receive the wand.</red>"
       error: "<red>Could not create wand. Please try again later.</red>"
@@ -147,3 +148,11 @@ pricing:
   unavailable: "<red>Land pricing is currently unavailable. Please try again later.</red>"
 economy:
   unavailable: "<red>The economy service is currently unavailable. Please try again later.</red>"
+selection:
+  wand:
+    first_point: "<yellow>First corner set. Click another block to pick the second corner.</yellow>"
+    second_point: "<green>Selection ready: <width>×<height> chunks. Click again to resize the second corner.</green>"
+    resized: "<green>Selection resized to <width>×<height> chunks. Click again to adjust it further.</green>"
+    reset: "<yellow>Selection reset. Click a block to set the first corner.</yellow>"
+    abandoned: "<yellow>Selection cleared because you switched away from the wand.</yellow>"
+    cancelled: "<yellow>Selection cancelled.</yellow>"
