@@ -157,6 +157,13 @@ land:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"
     success: "<green>領地 <land_name> 已建立：<chunk_count> 個區塊，花費 <price>（最低高度 <min_y>）。</green>"
     expanded: "<green>領地 <land_name> 已擴張 <added_count> 個區塊（現為 <chunk_count>），花費 <price>。</green>"
+  enter:
+    message: "<green>已進入 <land_name></green>"
+  leave:
+    message: "<gray>已離開 <land_name></gray>"
+  subland:
+    enter: "<green>已進入 <land_name> › <sub_name></green>"
+    leave: "<gray>已離開 <land_name> › <sub_name></gray>"
   rename:
     success: "<green>領地已重新命名為 <new_name>（原名 <old_name>）。</green>"
   delete:

@@ -115,7 +115,7 @@ public class ChunkLandMessagePipeline {
 
     /** Allowed placeholders — must stay in sync with lang resources. */
     static final Set<String> ALLOWED_PLACEHOLDERS = Set.of(
-        "value", "payload", "land_name", "chunk_count", "price", "conflict_count",
+        "value", "payload", "land_name", "sub_name", "chunk_count", "price", "conflict_count",
         "min_y", "revision", "generation", "added_count", "new_name", "old_name", "refund",
         "action", "owner", "reason", "limit_type", "current", "max", "remaining",
         "subcommand", "permission", "player", "state", "group", "groups", "affected",

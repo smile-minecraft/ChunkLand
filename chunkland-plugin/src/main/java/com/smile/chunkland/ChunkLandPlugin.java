@@ -88,6 +88,10 @@ import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
 import com.smile.chunkland.message.PlayerPreferredLocaleService;
 import com.smile.chunkland.message.PlayerSettingsLocaleListener;
+import com.smile.chunkland.enterleave.EnterLeaveListener;
+import com.smile.chunkland.enterleave.EnterLeaveNotifier;
+import com.smile.chunkland.enterleave.EnterLeavePreferenceService;
+import com.smile.chunkland.enterleave.EnterLeaveTracker;
 import com.smile.chunkland.persistence.LandAuthorisationRepository;
 import com.smile.chunkland.persistence.LandBindingRepository;
 import com.smile.chunkland.persistence.LandRenameRepository;
@@ -248,6 +252,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private PlayerPreferredLocaleService playerLocaleService;
     private PlayerSettingsRepository playerSettingsRepository;
     private PlayerSettingsLocaleListener playerSettingsLocaleListener;
+    private EnterLeavePreferenceService enterLeavePreferences;
+    private EnterLeaveTracker enterLeaveTracker;
+    private EnterLeaveListener enterLeaveListener;
     private LandCommand landCommand;
     private WandSafetyListener wandSafetyListener;
     private SelectionSessionManager selectionSessionManager;
@@ -768,6 +775,20 @@ public final class ChunkLandPlugin extends JavaPlugin {
         } else {
             this.playerSettingsLocaleListener = null;
         }
+        // Enter-leave prompts: the tracker and the prompt switch share the
+        // recovery bootstrap store through the same repository (no new
+        // connection, no schema change). Movement only reads the bounded
+        // memory snapshot; join loads run on the persistence executor.
+        EnterLeavePreferenceService enterLeaveService = new EnterLeavePreferenceService();
+        this.enterLeavePreferences = enterLeaveService;
+        EnterLeaveTracker enterLeaveMemory = new EnterLeaveTracker();
+        this.enterLeaveTracker = enterLeaveMemory;
+        ChunkLandMessagePipeline enterLeavePipeline = this.landMessagePipeline.orElse(null);
+        EnterLeaveNotifier enterLeaveNotifier = new EnterLeaveNotifier(
+                enterLeavePipeline, enterLeaveService, buildPlayerScheduler(this));
+        this.enterLeaveListener = new EnterLeaveListener(
+                this.protectionStore::snapshot, enterLeaveMemory, enterLeaveService,
+                settingsRepository, enterLeaveNotifier);
         // Formal claim flow: the saga shares the bootstrap ledger, Economy and
         // rebuilder so live claims and startup recovery converge on one durable
         // row and one refund cache. When recovery never started, the handler
@@ -1004,6 +1025,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     getLogger().warning("ChunkLand player locale listener registration failed; "
                             + "preferred-locale stays empty: " + localeListenerFailure.getMessage());
                     this.playerSettingsLocaleListener = null;
+                }
+            }
+            if (this.enterLeaveListener != null) {
+                try {
+                    registerEnterLeaveListener(this.enterLeaveListener);
+                } catch (RuntimeException enterLeaveFailure) {
+                    getLogger().warning("ChunkLand enter-leave listener registration failed; "
+                            + "boundary prompts stay silent: " + enterLeaveFailure.getMessage());
+                    this.enterLeaveListener = null;
                 }
             }
         } catch (RuntimeException ex) {
@@ -3482,6 +3512,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 
+    void registerEnterLeaveListener(EnterLeaveListener listener) {
+        getServer().getPluginManager().registerEvents(listener, this);
+    }
+
     void performFullCleanup() {
         // Immediate read invalidation comes before every cleanup step and
         // before the test start hook: cached holders gate on this volatile
@@ -3585,6 +3619,29 @@ public final class ChunkLandPlugin extends JavaPlugin {
             } catch (RuntimeException ignored) {
             }
             playerSettingsLocaleListener = null;
+        }
+        // Enter-leave prompts: unregister first so no move repopulates the
+        // tracker, then drop the boundary memory and the switch snapshot.
+        if (enterLeaveListener != null) {
+            try {
+                HandlerList.unregisterAll(enterLeaveListener);
+            } catch (RuntimeException ignored) {
+            }
+            enterLeaveListener = null;
+        }
+        if (enterLeaveTracker != null) {
+            try {
+                enterLeaveTracker.clear();
+            } catch (RuntimeException ignored) {
+            }
+            enterLeaveTracker = null;
+        }
+        if (enterLeavePreferences != null) {
+            try {
+                enterLeavePreferences.clear();
+            } catch (RuntimeException ignored) {
+            }
+            enterLeavePreferences = null;
         }
         try {
             this.landMessagePipeline.ifPresent(pipeline -> pipeline.setPreferredLocaleLookup(null));

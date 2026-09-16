@@ -157,6 +157,13 @@ land:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"
     success: "<green>Land <land_name> claimed: <chunk_count> chunks for <price> (minY <min_y>).</green>"
     expanded: "<green>Land <land_name> expanded by <added_count> chunks (now <chunk_count>) for <price>.</green>"
+  enter:
+    message: "<green>Entered <land_name></green>"
+  leave:
+    message: "<gray>Left <land_name></gray>"
+  subland:
+    enter: "<green>Entered <land_name> › <sub_name></green>"
+    leave: "<gray>Left <land_name> › <sub_name></gray>"
   rename:
     success: "<green>Land renamed to <new_name> (was <old_name>).</green>"
   delete:
