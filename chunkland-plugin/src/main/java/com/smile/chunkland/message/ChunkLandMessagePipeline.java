@@ -97,6 +97,17 @@ public class ChunkLandMessagePipeline {
     private final BedrockService bedrock;
     private final Locale defaultLocale;
 
+    /**
+     * Memory-only preferred-locale source backed by the player settings
+     * snapshot. Null means no stored override. The lookup must never do
+     * SQL or blocking I/O; render calls it per message.
+     */
+    public interface PreferredLocaleLookup {
+        Locale lookup(UUID playerId);
+    }
+
+    private volatile PreferredLocaleLookup preferredLocaleLookup;
+
     /** Cache key for template reuse. */
     private record CacheKey(String messageKey, Locale locale) {}
 
@@ -188,6 +199,14 @@ public class ChunkLandMessagePipeline {
     // Locale chain: override -> player.locale() -> Bedrock languageCode -> default
     // -----------------------------------------------------------------
 
+    /**
+     * Attach the memory-only stored-override source. Null clears it and
+     * restores the legacy chain. The lookup must never block.
+     */
+    public void setPreferredLocaleLookup(PreferredLocaleLookup lookup) {
+        this.preferredLocaleLookup = lookup;
+    }
+
     static Locale resolveLocaleChain(Locale override, Locale playerLocale, String bedrockLanguageCode, Locale defaultLocale) {
         if (override != null) {
             return override;
@@ -205,6 +224,20 @@ public class ChunkLandMessagePipeline {
     }
 
     Locale resolveLocale(Player player, Locale override) {
+        Locale storedOverride = null;
+        PreferredLocaleLookup lookup = this.preferredLocaleLookup;
+        if (override == null && lookup != null && player != null) {
+            try {
+                UUID playerId = player.getUniqueId();
+                Locale stored = playerId == null ? null : lookup.lookup(playerId);
+                if (stored != null && !stored.getLanguage().isEmpty()) {
+                    storedOverride = stored;
+                }
+            } catch (RuntimeException ignored) {
+                // A snapshot failure must never break rendering; fall through.
+            }
+        }
+        Locale effectiveOverride = override != null ? override : storedOverride;
         Locale playerLocale = null;
         if (player != null) {
             try {
@@ -223,7 +256,7 @@ public class ChunkLandMessagePipeline {
                 // fall through
             }
         }
-        return resolveLocaleChain(override, playerLocale, bedrockTag, defaultLocale);
+        return resolveLocaleChain(effectiveOverride, playerLocale, bedrockTag, defaultLocale);
     }
 
     static boolean useBedrockFallback(BedrockService bedrock, UUID uuid) {

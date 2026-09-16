@@ -86,11 +86,14 @@ import com.smile.chunkland.limit.OwnerQuotaHydrator;
 import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import com.smile.chunkland.message.PlayerPreferredLocaleService;
+import com.smile.chunkland.message.PlayerSettingsLocaleListener;
 import com.smile.chunkland.persistence.LandAuthorisationRepository;
 import com.smile.chunkland.persistence.LandBindingRepository;
 import com.smile.chunkland.persistence.LandRenameRepository;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
+import com.smile.chunkland.persistence.PlayerSettingsRepository;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.AuditRepository;
 import com.smile.chunkland.persistence.SqliteAuditRepository;
@@ -242,6 +245,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private BedrockFormNavigator bedrockFormNavigator;
     private Optional<ConfigService> configService = Optional.empty();
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
+    private PlayerPreferredLocaleService playerLocaleService;
+    private PlayerSettingsRepository playerSettingsRepository;
+    private PlayerSettingsLocaleListener playerSettingsLocaleListener;
     private LandCommand landCommand;
     private WandSafetyListener wandSafetyListener;
     private SelectionSessionManager selectionSessionManager;
@@ -742,6 +748,26 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         + "trust and defaults stay empty until the next restart: " + failure);
             }
         }
+        // Player preferred-locale: the repository shares the recovery
+        // bootstrap store (no new connection, no schema change) and the
+        // service keeps a bounded in-memory snapshot. Join loads run on the
+        // persistence executor; rendering only reads the snapshot, so the
+        // region/render path never blocks on SQL. Without a store every
+        // lookup stays empty and messaging keeps the legacy chain.
+        PlayerPreferredLocaleService localeService = new PlayerPreferredLocaleService();
+        this.playerLocaleService = localeService;
+        PlayerSettingsRepository settingsRepository =
+                authorisationStore == null ? null : new PlayerSettingsRepository(authorisationStore);
+        this.playerSettingsRepository = settingsRepository;
+        this.landMessagePipeline.ifPresent(pipeline ->
+                pipeline.setPreferredLocaleLookup(
+                        uuid -> localeService.preferred(uuid).orElse(null)));
+        if (settingsRepository != null) {
+            this.playerSettingsLocaleListener =
+                    new PlayerSettingsLocaleListener(localeService, settingsRepository);
+        } else {
+            this.playerSettingsLocaleListener = null;
+        }
         // Formal claim flow: the saga shares the bootstrap ledger, Economy and
         // rebuilder so live claims and startup recovery converge on one durable
         // row and one refund cache. When recovery never started, the handler
@@ -971,6 +997,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
             registerProtectionListener(this.protectionListener);
+            if (this.playerSettingsLocaleListener != null) {
+                try {
+                    registerPlayerSettingsListener(this.playerSettingsLocaleListener);
+                } catch (RuntimeException localeListenerFailure) {
+                    getLogger().warning("ChunkLand player locale listener registration failed; "
+                            + "preferred-locale stays empty: " + localeListenerFailure.getMessage());
+                    this.playerSettingsLocaleListener = null;
+                }
+            }
         } catch (RuntimeException ex) {
             getLogger().warning("ChunkLand wand safety listener registration failed; disabling plugin: " + ex.getMessage());
             boolean disableThrew = false;
@@ -3443,6 +3478,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 
+    void registerPlayerSettingsListener(PlayerSettingsLocaleListener listener) {
+        getServer().getPluginManager().registerEvents(listener, this);
+    }
+
     void performFullCleanup() {
         // Immediate read invalidation comes before every cleanup step and
         // before the test start hook: cached holders gate on this volatile
@@ -3536,6 +3575,29 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
             protectionListener = null;
         }
+        // Preferred-locale snapshot: unregister first so no join repopulates
+        // the cache, detach the pipeline lookup, then drop the snapshot. The
+        // repository holds no closeable of its own; the store stays owned by
+        // claim recovery below.
+        if (playerSettingsLocaleListener != null) {
+            try {
+                HandlerList.unregisterAll(playerSettingsLocaleListener);
+            } catch (RuntimeException ignored) {
+            }
+            playerSettingsLocaleListener = null;
+        }
+        try {
+            this.landMessagePipeline.ifPresent(pipeline -> pipeline.setPreferredLocaleLookup(null));
+        } catch (RuntimeException ignored) {
+        }
+        if (playerLocaleService != null) {
+            try {
+                playerLocaleService.clear();
+            } catch (RuntimeException ignored) {
+            }
+            playerLocaleService = null;
+        }
+        playerSettingsRepository = null;
         protectionEngine = null;
         protectionStore = null;
         protectionDepthLookup = null;
