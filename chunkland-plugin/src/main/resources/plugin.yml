@@ -4,14 +4,14 @@ main: com.smile.chunkland.ChunkLandPlugin
 api-version: '26.1.2'
 folia-supported: true
 depend: [AceLib]
-softdepend: [Vault, LuckPerms]
+softdepend: [Vault, LuckPerms, CoreProtect]
 commands:
   chunkland:
     description: ChunkLand debug commands (M0 message + capability smoke probes, selection visualization)
     usage: /chunkland m0message [locale] | /chunkland m0test [scheduler|gui|form|cancelall] | /chunkland viz <start|stop|status>
   land:
     description: ChunkLand land management commands
-    usage: /land <help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|subland|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|manage|admin>
+    usage: /land <help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|subland|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|history|manage|admin>
 permissions:
   chunkland.admin.serverland:
     default: op
@@ -62,6 +62,8 @@ permissions:
   chunkland.command.land.inspect:
     default: op
   chunkland.command.land.log:
+    default: op
+  chunkland.command.land.history:
     default: op
   chunkland.command.land.manage:
     default: op

@@ -84,6 +84,9 @@ import com.smile.chunkland.gui.ManagementGuiModel;
 import com.smile.chunkland.gui.ManagementGuiPages;
 import com.smile.chunkland.api.limit.ExternalLimitProvider;
 import com.smile.chunkland.api.limit.LimitResult;
+import com.smile.chunkland.api.history.WorldHistoryProvider;
+import com.smile.chunkland.history.CoreProtectDiscovery;
+import com.smile.chunkland.history.HistoryCommandHandler;
 import com.smile.chunkland.limit.LimitResolver;
 import com.smile.chunkland.limit.LuckPermsDiscovery;
 import com.smile.chunkland.limit.OwnerQuotaHydrator;
@@ -286,6 +289,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * inspect; absent stays empty and every limit falls back to config.
      */
     private volatile Optional<ExternalLimitProvider> limitProvider = Optional.empty();
+    /**
+     * Optional world block-history provider (CoreProtect when present).
+     * Discovered once per enable generation and shared by
+     * {@code /land history} only; absent stays unavailable and the slot
+     * replies the generic unavailable message. Never consulted by the
+     * protection hot path.
+     */
+    private volatile WorldHistoryProvider historyProvider = WorldHistoryProvider.empty();
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
     private ExecutorService resolveExecutor;
@@ -972,6 +983,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // per enable generation and shared by the claim/expand quotas and
         // inspect. Absent stays empty and every limit falls back to config.
         this.limitProvider = discoverLimitProvider();
+        // Optional world block-history (CoreProtect when present):
+        // discovered once per enable generation and shared by /land history
+        // only. Absent stays unavailable and never touches protection.
+        this.historyProvider =
+                discoverHistoryProvider().orElse(WorldHistoryProvider.empty());
         Supplier<ChunkLandConfig> inspectConfigs = this.configService
                 .map(service -> (Supplier<ChunkLandConfig>) service::current)
                 .orElse(null);
@@ -993,7 +1009,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                     buildOfflinePlayerResolver(getServer(),
                                             this.resolveExecutor),
                                     buildPlayerScheduler(this)),
-                            ledgerAdminHandler));
+                            ledgerAdminHandler,
+                            buildHistoryHandler(() -> this.historyProvider,
+                                    buildPlayerScheduler(this))));
         ManagementGateResolver landGateResolver = buildManagementGateResolver(this.protectionStore,
                 () -> atomicContexts,
                 PluginManagementGateResolver.TargetLandResolver.currentLocation());
@@ -1790,6 +1808,53 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Production {@code /land} handlers with the read-only optional
+     * block-history flow wired behind {@code /land history}.
+     *
+     * <p>A null history handler keeps the slot fail-closed on the generic
+     * unavailable reply instead of the not-yet stub, so an unwired server
+     * never pretends the lookup is coming soon. Every other overload stays
+     * untouched so the focused assembly tests pinning them stay valid.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks,
+            Currency shrinkRefundCurrency,
+            LandDeleteCommandHandler delete,
+            AuditLogCommandHandler logs,
+            ManageGuiCommandHandler manage,
+            InspectCommandHandler inspect,
+            LedgerAdminCommandHandler admin,
+            HistoryCommandHandler history) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain, targetChunks, shrinkRefundCurrency,
+                delete, logs, manage, inspect, admin));
+        base.put("history", history == null
+                ? (sender, args, sink) -> sink.reply("command.land.history.unavailable", Map.of())
+                : history);
+        return Map.copyOf(base);
+    }
+
+    /**
      * Builds the operator ledger handler over the claim bootstrap ledger and
      * the shared audit history. A null bootstrap, ledger, audit source or
      * scheduler keeps the admin slot fail-closed instead of running
@@ -1862,6 +1927,70 @@ public final class ChunkLandPlugin extends JavaPlugin {
         } catch (RuntimeException | LinkageError unavailable) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * Presence-gated discovery for the optional CoreProtect history provider.
+     * Absent, disabled or failing CoreProtect yields empty and
+     * {@code /land history} stays on the generic unavailable reply. Never
+     * throws: every failure degrades to empty. Backend lookups share the
+     * offline-resolution executor, so they run off every command and region
+     * thread; a missing executor keeps history unavailable instead of
+     * running a blocking lookup inline.
+     */
+    private Optional<WorldHistoryProvider> discoverHistoryProvider() {
+        try {
+            Executor executor = this.resolveExecutor;
+            return CoreProtectDiscovery.discover(() -> {
+                try {
+                    return getServer().getPluginManager().getPlugin("CoreProtect") != null;
+                } catch (RuntimeException unavailable) {
+                    return false;
+                }
+            }, executor, this::coreProtectApiHandle, getServer());
+        } catch (RuntimeException | LinkageError unavailable) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Resolves the optional backend API handle by reflective name only, so
+     * this class never links against backend types. Runs once at discovery;
+     * any failure degrades to an empty provider.
+     */
+    private Object coreProtectApiHandle() {
+        try {
+            org.bukkit.plugin.Plugin backend =
+                    getServer().getPluginManager().getPlugin("CoreProtect");
+            if (backend == null) {
+                throw new IllegalStateException("backend plugin absent");
+            }
+            Object api = backend.getClass().getMethod("getAPI").invoke(backend);
+            if (api == null) {
+                throw new IllegalStateException("backend handle unavailable");
+            }
+            return api;
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            throw new IllegalStateException("backend handle unavailable", failure);
+        }
+    }
+
+    /**
+     * Builds the read-only history handler over the shared optional
+     * provider. A null source keeps the slot fail-closed on the generic
+     * unavailable reply instead of running half-wired.
+     */
+    static HistoryCommandHandler buildHistoryHandler(
+            Supplier<WorldHistoryProvider> providers) {
+        return buildHistoryHandler(providers,
+                com.smile.chunkland.command.PlayerScheduler.direct());
+    }
+
+    static HistoryCommandHandler buildHistoryHandler(
+            Supplier<WorldHistoryProvider> providers,
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
+        return new HistoryCommandHandler(
+                providers == null ? WorldHistoryProvider::empty : providers, scheduler);
     }
 
     /**

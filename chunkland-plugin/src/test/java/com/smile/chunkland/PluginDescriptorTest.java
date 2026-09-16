@@ -52,6 +52,24 @@ class PluginDescriptorTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void coreProtectStaysOptionalSoftDepend() {
+        Map<String, Object> yml = loadDescriptor();
+        Object depend = yml.get("depend");
+        assertFalse(depend instanceof List<?> list && list.contains("CoreProtect"),
+                "CoreProtect must stay optional, never a hard dependency");
+        Object softDepend = yml.get("softdepend");
+        assertInstanceOf(List.class, softDepend, "softdepend must be a list");
+        assertTrue(((List<?>) softDepend).contains("CoreProtect"),
+                "CoreProtect must be softdepend so ChunkLand loads after it when present");
+        Object permissions = yml.get("permissions");
+        assertInstanceOf(Map.class, permissions, "permissions must be a map");
+        Object node = ((Map<String, Object>) permissions).get("chunkland.command.land.history");
+        assertInstanceOf(Map.class, node, "chunkland.command.land.history permission must exist");
+        assertEquals("op", String.valueOf(((Map<String, Object>) node).get("default")));
+    }
+
+    @Test
     void versionIsExpandedNotPlaceholder() {
         Map<String, Object> yml = loadDescriptor();
         Object version = yml.get("version");

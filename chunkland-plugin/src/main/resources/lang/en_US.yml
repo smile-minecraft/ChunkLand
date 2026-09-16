@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|manage|admin]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|history|manage|admin]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -147,6 +147,11 @@ command:
       empty: "<gray>No audit entries match those filters.</gray>"
       line: "<gray><value></gray>"
       failed: "<red>Audit log lookup failed: <reason>.</red>"
+    history:
+      usage: "<yellow>Usage: /land history</yellow>"
+      empty: "<gray>No block history around your position.</gray>"
+      line: "<gray><value></gray>"
+      unavailable: "<red>Block history unavailable.</red>"
     manage:
       console: "<red>Only players can open the management GUI.</red>"
       denied: "<red>Management GUI unavailable.</red>"
