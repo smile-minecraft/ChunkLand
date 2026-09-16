@@ -124,6 +124,56 @@ public final class SqliteAuditRepository implements AuditRepository {
         });
     }
 
+    @Override
+    public CompletionStage<List<AuditEntry>> search(AuditSearchQuery query) {
+        Objects.requireNonNull(query, "query");
+        return store.submitAsync(conn -> {
+            SearchPlan plan = buildSearch(query, false);
+            List<AuditEntry> out = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(plan.sql())) {
+                plan.bind(ps);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) out.add(mapRow(conn, rs));
+                }
+            }
+            return List.copyOf(out);
+        });
+    }
+
+    @Override
+    public CompletionStage<List<String>> explainSearch(AuditSearchQuery query) {
+        Objects.requireNonNull(query, "query");
+        return store.submitAsync(conn -> {
+            SearchPlan plan = buildSearch(query, true);
+            List<String> details = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(plan.sql())) {
+                plan.bind(ps);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) details.add(rs.getString(4));
+                }
+            }
+            return List.copyOf(details);
+        });
+    }
+
+    @Override
+    public CompletionStage<Integer> purgeOlderThan(Instant cutoff) {
+        Objects.requireNonNull(cutoff, "cutoff");
+        return store.submitAsync(conn -> {
+            long cutoffMillis = cutoff.toEpochMilli();
+            try (PreparedStatement chunks = conn.prepareStatement(
+                    "DELETE FROM audit_chunks WHERE audit_id IN (SELECT id FROM audit_log WHERE timestamp < ?)")) {
+                chunks.setLong(1, cutoffMillis);
+                chunks.executeUpdate();
+            }
+            try (PreparedStatement logs = conn.prepareStatement(
+                    "DELETE FROM audit_log WHERE timestamp < ?")) {
+                logs.setLong(1, cutoffMillis);
+                return logs.executeUpdate();
+            }
+        });
+    }
+
     private Optional<AuditEntry> findByIdInternal(Connection conn, long id) throws SQLException {
         String sql = "SELECT id, timestamp, actor_uuid, action, land_id, world_uuid, single_chunk_packed, metadata_schema_version, before_json, after_json, metadata_json FROM audit_log WHERE id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -132,6 +182,69 @@ public final class SqliteAuditRepository implements AuditRepository {
                 if (!rs.next()) return Optional.empty();
                 return Optional.of(mapRow(conn, rs));
             }
+        }
+    }
+
+    /**
+     * Builds the search statement for {@code query}. Filters are appended in
+     * a fixed order (actor, time, action, land, world) so the binder and the
+     * SQL always agree; every filter is a bound parameter, never string
+     * concatenation. With at least one filter the planner resolves a
+     * dedicated audit index; the unfiltered page orders by the timestamp
+     * index.
+     */
+    private static SearchPlan buildSearch(AuditSearchQuery query, boolean explain) {
+        StringBuilder sql = new StringBuilder();
+        if (explain) {
+            sql.append("EXPLAIN QUERY PLAN ");
+        }
+        sql.append("SELECT id, timestamp, actor_uuid, action, land_id, world_uuid,"
+                + " single_chunk_packed, metadata_schema_version, before_json, after_json, metadata_json"
+                + " FROM audit_log");
+        List<String> terms = new ArrayList<>(5);
+        if (query.hasActor()) {
+            terms.add("actor_uuid = ?");
+        }
+        if (query.hasSince()) {
+            terms.add("timestamp >= ?");
+        }
+        if (query.hasAction()) {
+            terms.add("action = ?");
+        }
+        if (query.hasLandId()) {
+            terms.add("land_id = ?");
+        }
+        if (query.hasWorldId()) {
+            terms.add("world_uuid = ?");
+        }
+        if (!terms.isEmpty()) {
+            sql.append(" WHERE ").append(String.join(" AND ", terms));
+        }
+        sql.append(" ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?");
+        return new SearchPlan(sql.toString(), query);
+    }
+
+    /** Prepared-statement binder paired with {@link #buildSearch}. */
+    private record SearchPlan(String sql, AuditSearchQuery query) {
+        void bind(PreparedStatement ps) throws SQLException {
+            int index = 1;
+            if (query.hasActor()) {
+                ps.setBytes(index++, UuidBlob.encode(query.actor()));
+            }
+            if (query.hasSince()) {
+                ps.setLong(index++, query.since().toEpochMilli());
+            }
+            if (query.hasAction()) {
+                ps.setString(index++, query.action());
+            }
+            if (query.hasLandId()) {
+                ps.setBytes(index++, UuidBlob.encode(query.landId().value()));
+            }
+            if (query.hasWorldId()) {
+                ps.setBytes(index++, UuidBlob.encode(query.worldId()));
+            }
+            ps.setInt(index++, query.limit());
+            ps.setInt(index, query.offset());
         }
     }
 

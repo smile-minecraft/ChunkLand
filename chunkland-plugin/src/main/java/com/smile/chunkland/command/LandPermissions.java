@@ -29,9 +29,10 @@ public final class LandPermissions {
     public static final String PROFILE = "chunkland.command.land.profile";
     public static final String BINDING = "chunkland.command.land.binding";
     public static final String EXPLAIN = "chunkland.command.land.explain";
+    public static final String LOG = "chunkland.command.land.log";
 
     public static final List<String> ALL_ORDERED = List.of(
-            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, EXPLAIN);
+            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, EXPLAIN, LOG);
 
     private static final Map<String, String> BY_SUBCOMMAND = Map.ofEntries(
             Map.entry("help", HELP),
@@ -52,7 +53,8 @@ public final class LandPermissions {
             Map.entry("group", GROUP),
             Map.entry("profile", PROFILE),
             Map.entry("binding", BINDING),
-            Map.entry("explain", EXPLAIN)
+            Map.entry("explain", EXPLAIN),
+            Map.entry("log", LOG)
     );
 
     private LandPermissions() {}

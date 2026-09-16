@@ -509,7 +509,9 @@ class LandBindingRepositoryTest {
         try (PersistenceStore reopened = PersistenceStore.open(path)) {
             LandBindingRepository bindings = new LandBindingRepository(reopened);
             assertEquals(2L, bindings.epochOf(owner).toCompletableFuture().join());
-            assertEquals(5, reopened.schemaVersion());
+            // Schema v6 adds the world-scoped audit index; fresh databases
+            // migrate to the latest version on open.
+            assertEquals(6, reopened.schemaVersion());
         }
     }
 

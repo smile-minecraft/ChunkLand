@@ -15,7 +15,7 @@ class LandBindingRedTest {
 
     @Test
     void schemaHasOwnerAclEpochTable() {
-        assertEquals(5, SchemaMigrator.LATEST_VERSION);
+        assertEquals(6, SchemaMigrator.LATEST_VERSION);
     }
 
     @Test

@@ -5,6 +5,7 @@
 # consolidated block:
 #   limits            -> typed land quotas
 #   messages          -> message settings
+#   audit             -> audit history retention
 #   selection         -> selection sessions and particle budgets
 #   economy           -> claim currency + owner-total price-per-chunk tiers
 #   worlds.<name>     -> per-world claim-enabled + vertical-mode
@@ -24,6 +25,16 @@
 messages:
   default-locale: en_US
   cooldown-seconds: 2
+
+# Audit history (operator-tunable, reloadable).
+#
+# `retention-days` bounds how long audit history is kept (default 180).
+# `0` means retain forever and no purge runs. Purge deletes only audit rows
+# strictly older than the cutoff in batches on the persistence thread;
+# land, chunk and ledger rows are never touched, and deleted-land history
+# stays readable until its own cutoff expires.
+audit:
+  retention-days: 180
 
 # Claim economy (operator-tunable, reloadable).
 #

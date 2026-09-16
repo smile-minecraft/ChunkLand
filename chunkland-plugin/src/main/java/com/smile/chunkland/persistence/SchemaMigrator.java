@@ -39,7 +39,7 @@ import java.util.UUID;
  */
 final class SchemaMigrator {
 
-    static final int LATEST_VERSION = 5;
+    static final int LATEST_VERSION = 6;
 
     /**
      * Namespace prefix used by {@link #legacyWorldUuid(String)} when a legacy
@@ -290,6 +290,13 @@ final class SchemaMigrator {
                 ON land_bindings(land_id, subject_type, subject_id);
             CREATE UNIQUE INDEX uq_subland_bindings_scope_subject
                 ON subland_bindings(subland_id, subject_type, subject_id);
+            """,
+            // v6: world-scoped audit index so world-filtered history reads
+            // resolve through an index like the other audit filters instead
+            // of scanning the table. Audit rows stay append-only; no data
+            // moves.
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_world_ts ON audit_log(world_uuid, timestamp);
             """ );
 
     private SchemaMigrator() {

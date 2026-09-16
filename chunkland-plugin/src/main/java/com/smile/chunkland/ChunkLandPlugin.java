@@ -36,8 +36,8 @@ import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.land.SubLandSnapshot;
 import com.smile.chunkland.binding.LandBindingService;
-import com.smile.chunkland.command.BedrockClaimFormHandler;
-import com.smile.chunkland.command.BindingCommandHandler;
+import com.smile.chunkland.command.AuditLogCommandHandler;
+import com.smile.chunkland.command.BedrockClaimFormHandler;import com.smile.chunkland.command.BindingCommandHandler;
 import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
@@ -78,6 +78,8 @@ import com.smile.chunkland.persistence.LandRenameRepository;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.SqliteLandRepository;
+import com.smile.chunkland.persistence.AuditRepository;
+import com.smile.chunkland.persistence.SqliteAuditRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
 import com.smile.chunkland.persistence.PermissionProfileRepository;
 import com.smile.chunkland.persistence.SubjectGroupRepository;
@@ -607,6 +609,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         trustLands::resolve,
                         currentLocationSublandResolver(this.protectionStore),
                         name -> resolveOnlinePlayerUuid(getServer(), name));
+        // Audit history reads: the shared recovery store holds audit_log, so
+        // /land log searches the same durable rows the sagas wrote, newest
+        // first with paging. Without a store the slot stays fail-closed with
+        // log.unavailable instead of running half-wired.
+        AuditRepository auditReads = authorisationStore == null ? null
+                : new SqliteAuditRepository(authorisationStore);
+        AuditLogCommandHandler logHandler = auditReads == null ? null
+                : new AuditLogCommandHandler(() -> auditReads, Clock.systemUTC()::instant);
         // Generic binding preload: read the existing binding rows once at
         // startup so restarts keep resolving them. The publish merges over
         // the direct layers the trust preload publishes into the same
@@ -637,7 +647,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                            buildExplainHandler(this.protectionStore, () -> atomicContexts),
                            expandTargetChunks(this.protectionStore, registryReadiness),
                            economyCurrency(activeConfig.current()),
-                           deleteHandler()),
+                           deleteHandler(), logHandler),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -1243,7 +1253,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
             ExplainCommandHandler explain,
             ExpandCommandHandler.TargetChunkLookup targetChunks,
             Currency shrinkRefundCurrency,
-            LandDeleteCommandHandler delete) {
+            LandDeleteCommandHandler delete,
+            AuditLogCommandHandler logs) {
         Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
                 selections, runner, recoveryScan, structures, subland,
                 capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
@@ -1253,6 +1264,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 ? (sender, args, sink) -> sink.reply("command.land.delete.failed",
                         Map.of("reason", "delete.unavailable"))
                 : delete);
+        base.put("log", logs == null
+                ? (sender, args, sink) -> sink.reply("command.land.log.failed",
+                        Map.of("reason", "log.unavailable"))
+                : logs);
         return Map.copyOf(base);
     }
 

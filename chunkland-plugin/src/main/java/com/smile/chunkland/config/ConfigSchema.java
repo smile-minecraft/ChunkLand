@@ -95,11 +95,11 @@ public final class ConfigSchema {
         // loud failures instead of silent runtime bugs.
         for (String key : root.keySet()) {
             if (!"worlds".equals(key) && !"limits".equals(key) && !"messages".equals(key)
-                    && !"selection".equals(key) && !"economy".equals(key)
+                    && !"selection".equals(key) && !"economy".equals(key) && !"audit".equals(key)
                     && !"subject-defaults".equals(key) && !"rule-defaults".equals(key)) {
                 throw new ConfigValidationException(
                         "unknown top-level key '" + key
-                                + "' (only 'worlds', 'limits', 'messages', 'selection', 'economy', "
+                                + "' (only 'worlds', 'limits', 'messages', 'selection', 'economy', 'audit', "
                                 + "'subject-defaults' and 'rule-defaults' are supported in the current schema)");
             }
         }
@@ -157,8 +157,9 @@ public final class ConfigSchema {
         int decisionCacheMaxEntries = parseDecisionCacheMaxEntries(root.get("limits"));
         EconomySettings economy = parseEconomyOptional(root.get("economy"), "economy",
                 root.containsKey("economy"));
+        AuditSettings audit = parseAuditOptional(root.get("audit"), "audit", root.containsKey("audit"));
         return new ChunkLandConfig(worlds, limits, messages, selection,
-                subjectDefaults, ruleDefaults, economy, 0L, deriveWorldEpochs(worlds),
+                subjectDefaults, ruleDefaults, economy, audit, 0L, deriveWorldEpochs(worlds),
                 decisionCacheMaxEntries);
     }
 
@@ -248,6 +249,37 @@ public final class ConfigSchema {
         PricingTable pricing = parseEconomyPricing(map.get("pricing"), path + ".pricing", currency);
         try {
             return new EconomySettings(currency, pricing);
+        } catch (IllegalArgumentException e) {
+            throw new ConfigValidationException(path + " is inconsistent: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Optional {@code audit} section: only {@code retention-days} is
+     * supported. Absent means the default history window; an explicit
+     * {@code 0} means retain forever. Negative or non-integer values fail
+     * closed so a bad edit can never silently shrink or wipe history.
+     */
+    static AuditSettings parseAuditOptional(Object raw, String path, boolean present) {
+        if (!present) {
+            return AuditSettings.defaults();
+        }
+        if (raw == null) {
+            throw new ConfigValidationException(
+                    path + " must not be null; remove the key or provide 'retention-days'");
+        }
+        Map<String, Object> map = requireMapping(raw, path, "'retention-days'");
+        rejectUnknownKeys(map, path, Set.of("retention-days"));
+        int retentionDays = AuditSettings.DEFAULT_RETENTION_DAYS;
+        if (map.containsKey("retention-days")) {
+            Object rawRetention = map.get("retention-days");
+            if (rawRetention == null) {
+                throw new ConfigValidationException(path + ".retention-days must not be null");
+            }
+            retentionDays = parseIntLimit(rawRetention, path + ".retention-days");
+        }
+        try {
+            return new AuditSettings(retentionDays);
         } catch (IllegalArgumentException e) {
             throw new ConfigValidationException(path + " is inconsistent: " + e.getMessage());
         }
