@@ -1,9 +1,18 @@
 package com.smile.chunkland.enterleave;
 
+import com.smile.chunkland.api.event.LandEnterEvent;
+import com.smile.chunkland.api.event.LandLeaveEvent;
+import com.smile.chunkland.api.event.SubLandEnterEvent;
+import com.smile.chunkland.api.event.SubLandLeaveEvent;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.SubLandSnapshot;
 import com.smile.chunkland.command.PlayerScheduler;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.LandEnterBukkitEvent;
+import com.smile.chunkland.event.bukkit.LandLeaveBukkitEvent;
+import com.smile.chunkland.event.bukkit.SubLandEnterBukkitEvent;
+import com.smile.chunkland.event.bukkit.SubLandLeaveBukkitEvent;
 import com.smile.chunkland.persistence.PlayerSettingsRepository;
 import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.SubLandIndex;
@@ -53,6 +62,7 @@ public final class EnterLeaveListener implements Listener {
     private final EnterLeavePreferenceService preferences;
     private final PlayerSettingsRepository repository;
     private final EnterLeaveNotifier notifier;
+    private final PublicEvents events;
 
     /**
      * @param snapshots single volatile snapshot source (the protection
@@ -65,11 +75,26 @@ public final class EnterLeaveListener implements Listener {
             EnterLeavePreferenceService preferences,
             PlayerSettingsRepository repository,
             EnterLeaveNotifier notifier) {
+        this(snapshots, tracker, preferences, repository, notifier, PublicEvents.noop());
+    }
+
+    /**
+     * @param events public Post dispatch for committed boundary transitions;
+     *         {@code null} means no public events (prompts still work exactly
+     *         as before)
+     */
+    public EnterLeaveListener(Supplier<LandRegistry> snapshots,
+            EnterLeaveTracker tracker,
+            EnterLeavePreferenceService preferences,
+            PlayerSettingsRepository repository,
+            EnterLeaveNotifier notifier,
+            PublicEvents events) {
         this.snapshots = snapshots;
         this.tracker = Objects.requireNonNull(tracker, "tracker");
         this.preferences = Objects.requireNonNull(preferences, "preferences");
         this.repository = repository;
         this.notifier = Objects.requireNonNull(notifier, "notifier");
+        this.events = events == null ? PublicEvents.noop() : events;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -192,11 +217,60 @@ public final class EnterLeaveListener implements Listener {
         if (notices.isEmpty()) {
             return;
         }
+        // Public Post: one event per actual transition, on the movement
+        // thread without I/O. Emission never touches the Player object —
+        // only identities — and never throws, so it cannot disturb the
+        // prompt path or its player-scheduler hop below.
+        fireTransitionEvents(playerId, notices);
         try {
             notifier.notify(player, notices);
         } catch (RuntimeException ignored) {
             // The notifier already drops retired-scheduler sends; this
             // guards the preference read itself.
+        }
+    }
+
+    /**
+     * Publish one public event per tracker notice. Never throws: per-notice
+     * guards isolate construction and listener failures without breaking
+     * movement handling.
+     */
+    private void fireTransitionEvents(UUID playerId, List<EnterLeaveNotice> notices) {
+        for (EnterLeaveNotice notice : notices) {
+            if (notice == null || notice.position() == null || notice.kind() == null) {
+                continue;
+            }
+            try {
+                switch (notice.kind()) {
+                    case ENTER_LAND -> {
+                        LandEnterEvent event = new LandEnterEvent(playerId,
+                                notice.position().landId(), notice.position().worldId());
+                        events.firePost(event, () -> new LandEnterBukkitEvent(event.playerId(),
+                                event.landId(), event.worldId(), false));
+                    }
+                    case LEAVE_LAND -> {
+                        LandLeaveEvent event = new LandLeaveEvent(playerId,
+                                notice.position().landId(), notice.position().worldId());
+                        events.firePost(event, () -> new LandLeaveBukkitEvent(event.playerId(),
+                                event.landId(), event.worldId(), false));
+                    }
+                    case ENTER_SUB -> {
+                        SubLandEnterEvent event = new SubLandEnterEvent(playerId,
+                                notice.position().landId(), notice.position().subLandId());
+                        events.firePost(event, () -> new SubLandEnterBukkitEvent(event.playerId(),
+                                event.landId(), event.subLandId(), false));
+                    }
+                    case LEAVE_SUB -> {
+                        SubLandLeaveEvent event = new SubLandLeaveEvent(playerId,
+                                notice.position().landId(), notice.position().subLandId());
+                        events.firePost(event, () -> new SubLandLeaveBukkitEvent(event.playerId(),
+                                event.landId(), event.subLandId(), false));
+                    }
+                }
+            } catch (Throwable ignored) {
+                // One bad notice (or listener) must never silence the rest
+                // of the batch or the prompt path.
+            }
         }
     }
 

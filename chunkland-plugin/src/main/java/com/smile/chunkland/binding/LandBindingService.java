@@ -1,5 +1,8 @@
 package com.smile.chunkland.binding;
 
+import com.smile.chunkland.api.event.PermissionChangedEvent;
+import com.smile.chunkland.api.event.PermissionChangedEvent.ChangeKind;
+import com.smile.chunkland.api.event.PermissionChangedEvent.SubjectKind;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.permission.Permission;
@@ -7,6 +10,8 @@ import com.smile.chunkland.api.permission.PermissionBinding;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.PermissionSubject;
 import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.PermissionChangedBukkitEvent;
 import com.smile.chunkland.persistence.LandBindingRepository;
 import com.smile.chunkland.protection.LandAuthorisationCache;
 import com.smile.chunkland.protection.LandAuthorisationSnapshot;
@@ -40,6 +45,7 @@ public final class LandBindingService {
     private final LandBindingRepository repository;
     private final LandAuthorisationCache cache;
     private final Clock clock;
+    private final PublicEvents events;
 
     public LandBindingService(LandBindingRepository repository,
             LandAuthorisationCache cache) {
@@ -48,9 +54,20 @@ public final class LandBindingService {
 
     public LandBindingService(LandBindingRepository repository,
             LandAuthorisationCache cache, Clock clock) {
+        this(repository, cache, clock, PublicEvents.noop());
+    }
+
+    /**
+     * @param events public Post dispatch for committed binding changes;
+     *         {@code null} means no public events (mutations still commit
+     *         exactly as before)
+     */
+    public LandBindingService(LandBindingRepository repository,
+            LandAuthorisationCache cache, Clock clock, PublicEvents events) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.cache = Objects.requireNonNull(cache, "cache");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.events = events == null ? PublicEvents.noop() : events;
     }
 
     /** Live runtime snapshot holder fed by every publish here. */
@@ -79,7 +96,13 @@ public final class LandBindingService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("bind repository returned null"));
         }
-        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
+        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> {
+            // Public Post: exactly once, after the durable commit plus the
+            // snapshot publish. Listener failures are isolated and never
+            // roll back the committed binding.
+            firePermissionChanged(actor, outcome, ChangeKind.BIND);
+            return outcome;
+        }));
     }
 
     /**
@@ -101,7 +124,10 @@ public final class LandBindingService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("unbind repository returned null"));
         }
-        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
+        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> {
+            firePermissionChanged(actor, outcome, ChangeKind.UNBIND);
+            return outcome;
+        }));
     }
 
     /**
@@ -125,7 +151,10 @@ public final class LandBindingService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("bind repository returned null"));
         }
-        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
+        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> {
+            firePermissionChanged(actor, outcome, ChangeKind.BIND);
+            return outcome;
+        }));
     }
 
     /**
@@ -147,7 +176,50 @@ public final class LandBindingService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("unbind repository returned null"));
         }
-        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> outcome));
+        return committed.thenCompose(outcome -> refresh().thenApply(ignored -> {
+            firePermissionChanged(actor, outcome, ChangeKind.UNBIND);
+            return outcome;
+        }));
+    }
+
+    /**
+     * Fire the public permission Post after commit plus publish. Never
+     * throws: construction and listener failures are isolated by the
+     * facade, so the committed mutation still stands.
+     */
+    private void firePermissionChanged(UUID actor, LandBindingRepository.BindOutcome outcome,
+            ChangeKind kind) {
+        firePermissionChanged(actor, outcome.landId(), outcome.sublandId(), outcome.subject(),
+                kind, outcome.profileId());
+    }
+
+    /**
+     * Fire the public permission Post after commit plus publish. Never
+     * throws: construction and listener failures are isolated by the
+     * facade, so the committed mutation still stands.
+     */
+    private void firePermissionChanged(UUID actor, LandBindingRepository.UnbindOutcome outcome,
+            ChangeKind kind) {
+        firePermissionChanged(actor, outcome.landId(), outcome.sublandId(), outcome.subject(),
+                kind, outcome.removedProfileId());
+    }
+
+    private void firePermissionChanged(UUID actor, UUID landUuid, UUID sublandUuid,
+            LandBindingRepository.Subject subject, ChangeKind kind, UUID profileId) {
+        try {
+            LandId landId = sublandUuid == null && landUuid != null ? new LandId(landUuid) : null;
+            SubLandId sublandId = sublandUuid != null ? new SubLandId(sublandUuid) : null;
+            SubjectKind subjectKind = subject.kind()
+                    == LandBindingRepository.SubjectKind.GROUP ? SubjectKind.GROUP
+                            : SubjectKind.PLAYER;
+            PermissionChangedEvent event = new PermissionChangedEvent(actor, landId, sublandId,
+                    kind, subjectKind, subject.id(), null, null, profileId);
+            events.firePost(event, () -> new PermissionChangedBukkitEvent(event.actorUuid(),
+                    event.landId(), event.subLandId(), event.kind(), event.subjectKind(),
+                    event.subjectId(), event.action(), event.state(), event.profileId(), true));
+        } catch (Throwable ignored) {
+            // Post dispatch must never break the committed binding path.
+        }
     }
 
     /**

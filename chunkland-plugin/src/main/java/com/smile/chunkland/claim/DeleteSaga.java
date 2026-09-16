@@ -1,7 +1,14 @@
 package com.smile.chunkland.claim;
 
+import com.smile.chunkland.api.event.LandDeletePostEvent;
+import com.smile.chunkland.api.event.LandDeletePreEvent;
 import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.event.PublicEventCancelledException;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.LandDeletePostBukkitEvent;
+import com.smile.chunkland.event.bukkit.LandDeletePreBukkitEvent;
 import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.persistence.AuditEntry;
 import com.smile.chunkland.persistence.ChunkRepository;
@@ -84,6 +91,7 @@ public final class DeleteSaga {
     private final Clock clock;
     private final Executor asyncExecutor;
     private final int compensationRetryLimit;
+    private final PublicEvents events;
 
     public DeleteSaga(
             DeleteValidator validator,
@@ -97,6 +105,27 @@ public final class DeleteSaga {
             Clock clock,
             Executor asyncExecutor,
             int compensationRetryLimit) {
+        this(validator, chunks, reservations, ledger, economy, rebuilder, quotas, selections,
+                clock, asyncExecutor, compensationRetryLimit, PublicEvents.noop());
+    }
+
+    /**
+     * @param events public Pre/Post dispatch; {@code null} means no public
+     *         events (the mutation still commits exactly as before)
+     */
+    public DeleteSaga(
+            DeleteValidator validator,
+            ChunkRepository chunks,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            RuntimeRegistryRebuilder rebuilder,
+            OwnerQuotaService quotas,
+            SelectionSessionManager selections,
+            Clock clock,
+            Executor asyncExecutor,
+            int compensationRetryLimit,
+            PublicEvents events) {
         this.validator = Objects.requireNonNull(validator, "validator");
         this.chunks = Objects.requireNonNull(chunks, "chunks");
         this.reservations = Objects.requireNonNull(reservations, "reservations");
@@ -111,6 +140,7 @@ public final class DeleteSaga {
             throw new IllegalArgumentException("compensationRetryLimit must be positive");
         }
         this.compensationRetryLimit = compensationRetryLimit;
+        this.events = events == null ? PublicEvents.noop() : events;
     }
 
     /**
@@ -144,6 +174,12 @@ public final class DeleteSaga {
             if (!available) {
                 return completed(DeleteOutcome.rejected("delete.economy_unavailable"));
             }
+        }
+        // Public Pre: synchronous veto before reservations, the ledger row,
+        // the domain commit and any Economy refund. A veto (or any dispatch
+        // failure, which fails closed) rejects with zero side effects.
+        if (fireDeletePre(plan)) {
+            return completed(DeleteOutcome.rejected(PublicEventCancelledException.DIAGNOSTIC_KEY));
         }
         final UUID operationId = UUID.randomUUID();
         final Set<String> reservationKeys = reservationKeys(plan);
@@ -255,7 +291,7 @@ public final class DeleteSaga {
                     }
                     clearSessions(plan);
                     return publishThenRefund(operationId, materials.refundAmount(),
-                            plan.targetLandId());
+                            plan.targetLandId(), plan.actorUuid());
                 }, asyncExecutor)
                 .exceptionally(failure -> DeleteOutcome.failed("delete.commit_failed"));
     }
@@ -295,7 +331,7 @@ public final class DeleteSaga {
     // ---- Step 5: publish from authoritative state before any money moves. ----
 
     private CompletionStage<DeleteOutcome> publishThenRefund(UUID operationId, long refundAmount,
-            com.smile.chunkland.api.land.LandId landId) {
+            LandId landId, UUID actorUuid) {
         CompletionStage<?> rebuilt;
         try {
             rebuilt = rebuilder.rebuild();
@@ -313,6 +349,11 @@ public final class DeleteSaga {
                         return completed(DeleteOutcome.degraded(
                                 landId, refundAmount, "delete.publish_failed"));
                     }
+                    // Public Post: exactly once, after the durable commit
+                    // plus the runtime publish and before the refund attempt.
+                    // Listener failures are isolated and never roll back the
+                    // committed delete.
+                    fireDeletePost(landId, actorUuid, refundAmount);
                     return depositAfterPublish(operationId, refundAmount, landId);
                 }, asyncExecutor)
                 .exceptionally(failure -> DeleteOutcome.degraded(
@@ -433,6 +474,39 @@ public final class DeleteSaga {
     }
 
     // ---- Builders. ----
+
+    /**
+     * Fire the public delete Pre on the caller thread. Any dispatch failure
+     * fails closed to cancelled so the delete produces zero side effects.
+     */
+    private boolean fireDeletePre(ValidatedDelete plan) {
+        final LandDeletePreEvent pre;
+        try {
+            pre = new LandDeletePreEvent(plan.actorUuid(), plan.worldId(), plan.targetLandId());
+        } catch (RuntimeException failure) {
+            return true;
+        }
+        try {
+            return events.firePre(pre, () -> new LandDeletePreBukkitEvent(pre.actorUuid(),
+                    pre.worldId(), pre.targetLandId(), false));
+        } catch (Throwable failure) {
+            return true;
+        }
+    }
+
+    /**
+     * Fire the public delete Post after commit plus publish. Never throws:
+     * listener failures are isolated by the facade.
+     */
+    private void fireDeletePost(LandId landId, UUID actorUuid, long refundAmount) {
+        try {
+            LandDeletePostEvent post = new LandDeletePostEvent(landId, actorUuid, refundAmount);
+            events.firePost(post, () -> new LandDeletePostBukkitEvent(post.landId(),
+                    post.actorUuid(), post.refundMinorUnits(), true));
+        } catch (Throwable ignored) {
+            // Post dispatch must never break the committed delete path.
+        }
+    }
 
     private DeleteMaterials buildMaterials(ValidatedDelete plan, UUID operationId,
             Map<ChunkKey, ChunkRepository.ChunkFact> all, boolean serverOwned) {

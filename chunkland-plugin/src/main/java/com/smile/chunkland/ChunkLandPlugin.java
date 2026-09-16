@@ -95,10 +95,14 @@ import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
 import com.smile.chunkland.message.PlayerPreferredLocaleService;
 import com.smile.chunkland.message.PlayerSettingsLocaleListener;
+import com.smile.chunkland.api.event.ChunkLandEventBus;
 import com.smile.chunkland.enterleave.EnterLeaveListener;
 import com.smile.chunkland.enterleave.EnterLeaveNotifier;
 import com.smile.chunkland.enterleave.EnterLeavePreferenceService;
 import com.smile.chunkland.enterleave.EnterLeaveTracker;
+import com.smile.chunkland.event.BukkitEventCaller;
+import com.smile.chunkland.event.PublicEventBus;
+import com.smile.chunkland.event.PublicEvents;
 import com.smile.chunkland.persistence.LandAuthorisationRepository;
 import com.smile.chunkland.persistence.LandBindingRepository;
 import com.smile.chunkland.persistence.LandRenameRepository;
@@ -304,6 +308,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SubLandMutationRunner subLandRunner;
     private LandAuthorisationCache landAuthorisationCache;
     private LandAuthorisationService landAuthorisationService;
+    /**
+     * Shared public-event dispatch owned by this enable generation: one
+     * {@link PublicEventBus} plus the Bukkit bridge, passed to every
+     * mutation seam that emits public Pre/Post events (claim, expand,
+     * shrink, delete, SubLand, trust/default/ban, bindings, enter/leave).
+     * External plugins listen through the Bukkit event views or the bus
+     * below; the bus never performs I/O and never blocks.
+     */
+    private PublicEventBus publicEventBus;
+    private PublicEvents publicEvents;
     private LandRenameService landRenameService;
     private DepthExtendService depthExtendService;
     /**
@@ -743,6 +757,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // closed instead of treating unhydrated durable land as wilderness.
         RegistryReadiness registryReadiness =
                 this.claimStartup == null ? null : this.claimStartup.readiness();
+        // Public events: one shared synchronous bus plus the Bukkit bridge
+        // for this enable generation. Every mutation seam below receives the
+        // same facade, so external listeners observe each Pre/Post exactly
+        // once. The Bukkit call runs synchronously on the publishing thread;
+        // Pre calls happen before any Economy or durable side effect, Post
+        // calls after the durable commit plus the runtime publish.
+        PublicEventBus sharedBus = new PublicEventBus();
+        this.publicEventBus = sharedBus;
+        this.publicEvents = PublicEvents.create(sharedBus,
+                bridgeCaller(getServer().getPluginManager()));
         // Durable land authorisation: direct trust bindings and land defaults
         // share the recovery bootstrap store, publish into one volatile
         // snapshot the enforcement path already reads, and load the existing
@@ -758,7 +782,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         }
         LandAuthorisationService authorisations =
-                authorisationStore == null ? null : buildLandAuthorisations(authorisationStore);
+                authorisationStore == null ? null
+                        : buildLandAuthorisations(authorisationStore, this.publicEvents);
         this.landAuthorisationCache =
                 authorisations == null ? new LandAuthorisationCache() : authorisations.cache();
         this.landAuthorisationService = authorisations;
@@ -809,7 +834,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 enterLeavePipeline, enterLeaveService, buildPlayerScheduler(this));
         this.enterLeaveListener = new EnterLeaveListener(
                 this.protectionStore::snapshot, enterLeaveMemory, enterLeaveService,
-                settingsRepository, enterLeaveNotifier);
+                settingsRepository, enterLeaveNotifier, this.publicEvents);
         // Formal claim flow: the saga shares the bootstrap ledger, Economy and
         // rebuilder so live claims and startup recovery converge on one durable
         // row and one refund cache. When recovery never started, the handler
@@ -891,7 +916,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // binding.unavailable instead of running half-wired.
         LandBindingService bindingService = authorisationStore == null ? null
                 : new LandBindingService(new LandBindingRepository(authorisationStore),
-                        this.landAuthorisationCache);
+                        this.landAuthorisationCache, Clock.systemUTC(), this.publicEvents);
         java.util.function.Supplier<java.util.concurrent.CompletionStage<Void>> bindingRefresh =
                 bindingService == null
                         ? () -> java.util.concurrent.CompletableFuture.completedFuture(null)
@@ -2201,10 +2226,43 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * stay fail-closed without side effects and no substitute store is
      * opened to mask the gap.
      */
+    /**
+     * The shared public-event bus of this enable generation, for external
+     * plugins that prefer the API channel over the Bukkit event views.
+     * Dispatch is synchronous on the publishing thread; listeners must obey
+     * the no-blocking, no-I/O, Folia-thread rules documented on the API
+     * events. Never {@code null} after enable; {@code null} before the
+     * first enable or after disable.
+     */
+    public ChunkLandEventBus publicEventBus() {
+        return publicEventBus;
+    }
+
+    /**
+     * Production Bukkit bridge: dispatches one Bukkit view through the given
+     * plugin manager, synchronously on the publishing thread. Pre bridges run
+     * on the mutation caller thread before any Economy or durable side
+     * effect; Post bridges run on the async continuation after the durable
+     * commit plus the runtime publish, so Post views carry the async flag
+     * and their listeners must hop to the matching Folia thread before
+     * touching world state. Package visible so bridge dispatch is covered by
+     * an executable test with a fake manager.
+     */
+    static BukkitEventCaller bridgeCaller(org.bukkit.plugin.PluginManager pluginManager) {
+        Objects.requireNonNull(pluginManager, "pluginManager");
+        return pluginManager::callEvent;
+    }
+
     static LandAuthorisationService buildLandAuthorisations(PersistenceStore store) {
+        return buildLandAuthorisations(store, null);
+    }
+
+    static LandAuthorisationService buildLandAuthorisations(PersistenceStore store,
+            PublicEvents events) {
         Objects.requireNonNull(store, "store");
         return new LandAuthorisationService(
-                new LandAuthorisationRepository(store), new LandAuthorisationCache());
+                new LandAuthorisationRepository(store), new LandAuthorisationCache(),
+                Clock.systemUTC(), events);
     }
 
     /**
@@ -2550,6 +2608,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SubLandDepthSource depths,
             LimitSettings limits,
             Clock clock) {
+        return buildSubLandRunner(persistence, registry, selections, confirm, depths, limits,
+                clock, null);
+    }
+
+    static SubLandMutationRunner buildSubLandRunner(
+            PersistenceStore persistence,
+            LandRegistryStore registry,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            LimitSettings limits,
+            Clock clock,
+            PublicEvents events) {
         if (persistence == null || registry == null || selections == null
                 || confirm == null || depths == null || limits == null || clock == null) {
             return null;
@@ -2563,7 +2634,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 depths,
                 DepthExtensionPort.denyAll(),
                 limits,
-                clock);
+                clock,
+                events);
     }
 
     /**
@@ -2706,6 +2778,29 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Executor asyncExecutor,
             SelectionStructureRevisionLookup structures,
             WorldClaimPolicy worldPolicy) {
+        return buildClaimSaga(registryStore, selections, quotas, pricing, reservations,
+                ledger, economy, rebuilder, asyncExecutor, structures, worldPolicy, null);
+    }
+
+    /**
+     * Production claim saga with public Pre/Post events on the shared bus.
+     *
+     * @param events shared public-event facade; {@code null} disables public
+     *         events while the saga still commits exactly as before
+     */
+    static ClaimSaga buildClaimSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            WorldClaimPolicy worldPolicy,
+            PublicEvents events) {
         OwnerQuotaService activeQuotas = Objects.requireNonNull(quotas, "quotas");
         SelectionStructureRevisionLookup activeStructures = structures == null
                 ? SelectionStructureRevisionLookup.unavailable()
@@ -2733,7 +2828,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 Objects.requireNonNull(rebuilder, "rebuilder"),
                 Clock.systemUTC(),
                 Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
-                CLAIM_COMPENSATION_RETRIES);
+                CLAIM_COMPENSATION_RETRIES,
+                events);
     }
 
     /**
@@ -2791,6 +2887,29 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Executor asyncExecutor,
             SelectionStructureRevisionLookup structures,
             WorldClaimPolicy worldPolicy) {
+        return buildExpandSaga(registryStore, selections, quotas, pricing, reservations,
+                ledger, economy, rebuilder, asyncExecutor, structures, worldPolicy, null);
+    }
+
+    /**
+     * Production expansion saga with public Pre/Post events on the shared bus.
+     *
+     * @param events shared public-event facade; {@code null} disables public
+     *         events while the saga still commits exactly as before
+     */
+    static ExpandSaga buildExpandSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            WorldClaimPolicy worldPolicy,
+            PublicEvents events) {
         OwnerQuotaService activeQuotas = Objects.requireNonNull(quotas, "quotas");
         SelectionStructureRevisionLookup activeStructures = structures == null
                 ? SelectionStructureRevisionLookup.unavailable()
@@ -2818,7 +2937,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 Objects.requireNonNull(rebuilder, "rebuilder"),
                 Clock.systemUTC(),
                 Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
-                CLAIM_COMPENSATION_RETRIES);
+                CLAIM_COMPENSATION_RETRIES,
+                events);
     }
 
     /**
@@ -3097,7 +3217,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
-                                    .map(org.bukkit.World::getName)));
+                                    .map(org.bukkit.World::getName)),
+                    this.publicEvents);
             return this.claimSaga::claim;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand claim flow assembly failed; "
@@ -3146,7 +3267,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
-                                    .map(org.bukkit.World::getName)));
+                                    .map(org.bukkit.World::getName)),
+                    this.publicEvents);
             return this.expandSaga::expand;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand expand flow assembly failed; "
@@ -3177,6 +3299,29 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SelectionStructureRevisionLookup structures,
             com.smile.chunkland.persistence.ChunkRepository chunkRepository,
             com.smile.chunkland.api.money.Currency currency) {
+        return buildShrinkSaga(registryStore, selections, quotas, reservations, ledger,
+                economy, rebuilder, asyncExecutor, structures, chunkRepository, currency, null);
+    }
+
+    /**
+     * Shrink saga with public Pre/Post events on the shared bus.
+     *
+     * @param events shared public-event facade; {@code null} disables public
+     *         events while the saga still commits exactly as before
+     */
+    static ShrinkSaga buildShrinkSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            com.smile.chunkland.persistence.ChunkRepository chunkRepository,
+            com.smile.chunkland.api.money.Currency currency,
+            PublicEvents events) {
         ShrinkValidator validator = new SnapshotShrinkValidator(
                 Objects.requireNonNull(registryStore, "registryStore"),
                 actorUuid -> selections.sessionFor(actorUuid)
@@ -3198,7 +3343,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 Objects.requireNonNull(quotas, "quotas"),
                 Clock.systemUTC(),
                 Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
-                CLAIM_COMPENSATION_RETRIES);
+                CLAIM_COMPENSATION_RETRIES,
+                events);
     }
 
     /**
@@ -3233,7 +3379,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
                     this.selectionStructureRevisions,
                     new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()),
-                    shrinkCurrency);
+                    shrinkCurrency, this.publicEvents);
             return this.shrinkSaga::shrink;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand shrink flow assembly failed; "
@@ -3265,6 +3411,28 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Executor asyncExecutor,
             SelectionStructureRevisionLookup structures,
             com.smile.chunkland.persistence.ChunkRepository chunkRepository) {
+        return buildDeleteSaga(registryStore, selections, quotas, reservations, ledger,
+                economy, rebuilder, asyncExecutor, structures, chunkRepository, null);
+    }
+
+    /**
+     * Delete saga with public Pre/Post events on the shared bus.
+     *
+     * @param events shared public-event facade; {@code null} disables public
+     *         events while the saga still commits exactly as before
+     */
+    static DeleteSaga buildDeleteSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            com.smile.chunkland.persistence.ChunkRepository chunkRepository,
+            PublicEvents events) {
         DeleteValidator validator = new SnapshotDeleteValidator(
                 Objects.requireNonNull(registryStore, "registryStore"),
                 targetLandId -> (structures == null
@@ -3280,7 +3448,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 Objects.requireNonNull(selections, "selections"),
                 Clock.systemUTC(),
                 Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
-                CLAIM_COMPENSATION_RETRIES);
+                CLAIM_COMPENSATION_RETRIES,
+                events);
     }
 
     /**
@@ -3310,7 +3479,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     quotas, reservations,
                     bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
                     this.selectionStructureRevisions,
-                    new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()));
+                    new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()),
+                    this.publicEvents);
             return this.deleteSaga::delete;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand delete flow assembly failed; "
@@ -3392,7 +3562,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SelectionStructureRevisionLookup lookup = buildSubLandStructureLookup(registry);
             SubLandMutationRunner runner = buildSubLandRunner(
                     bootstrap.store(), registry, selections, confirm, depths,
-                    activeConfig.current().limits(), Clock.systemUTC());
+                    activeConfig.current().limits(), Clock.systemUTC(), this.publicEvents);
             if (runner == null) {
                 getLogger().warning("ChunkLand subland flow assembly failed; "
                         + "/land subland stays fail-closed: runner unavailable");

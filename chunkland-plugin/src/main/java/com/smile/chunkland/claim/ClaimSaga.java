@@ -1,11 +1,17 @@
 package com.smile.chunkland.claim;
 
+import com.smile.chunkland.api.event.LandCreatePostEvent;
+import com.smile.chunkland.api.event.LandCreatePreEvent;
 import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandName;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.money.ChunkCoordinate;
+import com.smile.chunkland.event.PublicEventCancelledException;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.LandCreatePostBukkitEvent;
+import com.smile.chunkland.event.bukkit.LandCreatePreBukkitEvent;
 import com.smile.chunkland.api.money.CostBasisAllocation;
 import com.smile.chunkland.api.money.CostBasisCalculator;
 import com.smile.chunkland.api.money.Money;
@@ -77,6 +83,7 @@ public final class ClaimSaga {
     private final Clock clock;
     private final Executor asyncExecutor;
     private final int compensationRetryLimit;
+    private final PublicEvents events;
     private final PublishSideEffects publishSideEffects;
 
     /**
@@ -104,7 +111,27 @@ public final class ClaimSaga {
             Executor asyncExecutor,
             int compensationRetryLimit) {
         this(validator, quotas, pricing, reservations, ledger, economy, rebuilder,
-                clock, asyncExecutor, compensationRetryLimit, null);
+                clock, asyncExecutor, compensationRetryLimit, PublicEvents.noop(), null);
+    }
+
+    /**
+     * @param events public Pre/Post dispatch; {@code null} means no public
+     *         events (the mutation still commits exactly as before)
+     */
+    public ClaimSaga(
+            ClaimValidator validator,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            RuntimeRegistryRebuilder rebuilder,
+            Clock clock,
+            Executor asyncExecutor,
+            int compensationRetryLimit,
+            PublicEvents events) {
+        this(validator, quotas, pricing, reservations, ledger, economy, rebuilder,
+                clock, asyncExecutor, compensationRetryLimit, events, null);
     }
 
     ClaimSaga(
@@ -119,6 +146,23 @@ public final class ClaimSaga {
             Executor asyncExecutor,
             int compensationRetryLimit,
             PublishSideEffects publishSideEffects) {
+        this(validator, quotas, pricing, reservations, ledger, economy, rebuilder,
+                clock, asyncExecutor, compensationRetryLimit, PublicEvents.noop(), publishSideEffects);
+    }
+
+    private ClaimSaga(
+            ClaimValidator validator,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            RuntimeRegistryRebuilder rebuilder,
+            Clock clock,
+            Executor asyncExecutor,
+            int compensationRetryLimit,
+            PublicEvents events,
+            PublishSideEffects publishSideEffects) {
         this.validator = Objects.requireNonNull(validator, "validator");
         this.quotas = Objects.requireNonNull(quotas, "quotas");
         this.pricing = Objects.requireNonNull(pricing, "pricing");
@@ -132,6 +176,7 @@ public final class ClaimSaga {
             throw new IllegalArgumentException("compensationRetryLimit must be positive");
         }
         this.compensationRetryLimit = compensationRetryLimit;
+        this.events = events == null ? PublicEvents.noop() : events;
         this.publishSideEffects =
                 publishSideEffects != null ? publishSideEffects : this::releasePublishGuards;
     }
@@ -182,6 +227,12 @@ public final class ClaimSaga {
             if (price.isZero()) {
                 return completed(ClaimOutcome.rejected("pricing.unavailable"));
             }
+        }
+        // Public Pre: synchronous veto before quota, reservations, ledger
+        // and Economy. A veto (or any dispatch failure, which fails closed)
+        // rejects with zero side effects.
+        if (fireCreatePre(plan)) {
+            return completed(ClaimOutcome.rejected(PublicEventCancelledException.DIAGNOSTIC_KEY));
         }
         final OwnerQuotaService.QuotaReservation landReservation;
         final OwnerQuotaService.QuotaReservation chunkReservation;
@@ -511,7 +562,13 @@ public final class ClaimSaga {
         }
         CompletionStage<ClaimOutcome> activated;
         try {
-            activated = rebuilt.thenComposeAsync(ignored -> activateStep(attempt), asyncExecutor);
+            activated = rebuilt.thenComposeAsync(ignored -> {
+                // Public Post: exactly once, after the durable commit plus
+                // the runtime publish. Listener failures are isolated and
+                // never roll back the committed claim.
+                fireCreatePost(attempt);
+                return activateStep(attempt);
+            }, asyncExecutor);
         } catch (RuntimeException failure) {
             return completed(degraded(attempt, "claim.publish_failed"));
         }
@@ -550,6 +607,47 @@ public final class ClaimSaga {
     }
 
     // ---- Helpers. ----
+
+    /**
+     * Fire the public claim Pre on the caller thread. Any dispatch failure
+     * fails closed to cancelled so the claim produces zero side effects.
+     */
+    private boolean fireCreatePre(ValidatedClaim plan) {
+        final LandCreatePreEvent pre;
+        try {
+            Set<ChunkKey> chunks = new HashSet<>();
+            for (ValidatedClaim.ChunkDetail detail : plan.chunks()) {
+                chunks.add(detail.chunk());
+            }
+            pre = new LandCreatePreEvent(plan.actorUuid(), plan.worldId(), plan.owner(),
+                    chunks, plan.displayName());
+        } catch (RuntimeException failure) {
+            return true;
+        }
+        try {
+            return events.firePre(pre, () -> new LandCreatePreBukkitEvent(pre.actorUuid(),
+                    pre.worldId(), pre.owner(), pre.chunks(), pre.displayName(), false));
+        } catch (Throwable failure) {
+            return true;
+        }
+    }
+
+    /**
+     * Fire the public claim Post after commit plus publish. Never throws:
+     * listener failures are isolated by the facade.
+     */
+    private void fireCreatePost(ClaimAttempt attempt) {
+        try {
+            LandCreatePostEvent post = new LandCreatePostEvent(attempt.plan().landId(),
+                    attempt.plan().actorUuid(), attempt.plan().worldId(),
+                    attempt.plan().chunks().size(), attempt.price().minorUnits());
+            events.firePost(post, () -> new LandCreatePostBukkitEvent(post.landId(),
+                    post.actorUuid(), post.worldId(), post.chunkCount(),
+                    post.priceMinorUnits(), true));
+        } catch (Throwable ignored) {
+            // Post dispatch must never break the committed claim path.
+        }
+    }
 
     private Optional<OwnerQuotaService.QuotaReservation> tryReserveLand(OwnerRef owner) {
         try {

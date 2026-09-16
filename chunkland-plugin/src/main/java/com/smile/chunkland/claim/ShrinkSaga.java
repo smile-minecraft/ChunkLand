@@ -1,8 +1,15 @@
 package com.smile.chunkland.claim;
 
+import com.smile.chunkland.api.event.LandChunkRemovePostEvent;
+import com.smile.chunkland.api.event.LandChunkRemovePreEvent;
 import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.money.CostBasisCalculator;
+import com.smile.chunkland.event.PublicEventCancelledException;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.LandChunkRemovePostBukkitEvent;
+import com.smile.chunkland.event.bukkit.LandChunkRemovePreBukkitEvent;
 import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.api.money.Money;
 import com.smile.chunkland.limit.OwnerQuotaService;
@@ -90,6 +97,7 @@ public final class ShrinkSaga {
     private final Clock clock;
     private final Executor asyncExecutor;
     private final int compensationRetryLimit;
+    private final PublicEvents events;
 
     public ShrinkSaga(
             ShrinkValidator validator,
@@ -103,6 +111,27 @@ public final class ShrinkSaga {
             Clock clock,
             Executor asyncExecutor,
             int compensationRetryLimit) {
+        this(validator, chunks, currency, reservations, ledger, economy, rebuilder, quotas,
+                clock, asyncExecutor, compensationRetryLimit, PublicEvents.noop());
+    }
+
+    /**
+     * @param events public Pre/Post dispatch; {@code null} means no public
+     *         events (the mutation still commits exactly as before)
+     */
+    public ShrinkSaga(
+            ShrinkValidator validator,
+            ChunkRepository chunks,
+            Currency currency,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            RuntimeRegistryRebuilder rebuilder,
+            OwnerQuotaService quotas,
+            Clock clock,
+            Executor asyncExecutor,
+            int compensationRetryLimit,
+            PublicEvents events) {
         this.validator = Objects.requireNonNull(validator, "validator");
         this.chunks = Objects.requireNonNull(chunks, "chunks");
         this.currency = Objects.requireNonNull(currency, "currency");
@@ -117,6 +146,7 @@ public final class ShrinkSaga {
             throw new IllegalArgumentException("compensationRetryLimit must be positive");
         }
         this.compensationRetryLimit = compensationRetryLimit;
+        this.events = events == null ? PublicEvents.noop() : events;
     }
 
     /**
@@ -150,6 +180,12 @@ public final class ShrinkSaga {
             if (!available) {
                 return completed(ShrinkOutcome.rejected("shrink.economy_unavailable"));
             }
+        }
+        // Public Pre: synchronous veto before reservations, the ledger row,
+        // the domain commit and any Economy refund. A veto (or any dispatch
+        // failure, which fails closed) rejects with zero side effects.
+        if (fireChunkRemovePre(plan)) {
+            return completed(ShrinkOutcome.rejected(PublicEventCancelledException.DIAGNOSTIC_KEY));
         }
         final UUID operationId = UUID.randomUUID();
         final Set<String> reservationKeys = reservationKeys(plan);
@@ -254,7 +290,7 @@ public final class ShrinkSaga {
                         // counters never block the refund or the publish.
                     }
                     return depositThenPublish(operationId, materials.refundAmount(),
-                            plan.targetLandId());
+                            plan.targetLandId(), plan.actorUuid(), deltaKeys(materials));
                 }, asyncExecutor)
                 .exceptionally(failure -> ShrinkOutcome.failed("shrink.commit_failed"));
     }
@@ -289,7 +325,7 @@ public final class ShrinkSaga {
     // ---- Step 5: Economy deposit outside any SQL transaction. ----
 
     private CompletionStage<ShrinkOutcome> depositThenPublish(UUID operationId, long refundAmount,
-            com.smile.chunkland.api.land.LandId landId) {
+            LandId landId, UUID actorUuid, Set<ChunkKey> delta) {
         CompletionStage<LedgerEntry> found;
         try {
             found = ledger.find(operationId);
@@ -314,7 +350,7 @@ public final class ShrinkSaga {
                 return completed(ShrinkOutcome.failed("shrink.unexpected_state"));
             }
             if (refundAmount == 0L) {
-                return settleCompensated(entry, committed, ZERO_VALUE_TRANSACTION_REF);
+                return settleCompensated(entry, committed, ZERO_VALUE_TRANSACTION_REF, actorUuid, delta);
             }
             CompletionStage<RefundOutcome> deposit;
             try {
@@ -327,7 +363,7 @@ public final class ShrinkSaga {
             }
             return deposit.thenComposeAsync(outcome -> {
                 if (outcome == RefundOutcome.REFUNDED) {
-                    return settleCompensated(entry, committed, "shrink:" + operationId);
+                    return settleCompensated(entry, committed, "shrink:" + operationId, actorUuid, delta);
                 }
                 return depositUnconfirmed(entry, committed);
             }, asyncExecutor).exceptionally(failure -> depositUnconfirmedSync(entry));
@@ -346,7 +382,7 @@ public final class ShrinkSaga {
     }
 
     private CompletionStage<ShrinkOutcome> settleCompensated(LedgerEntry entry, LedgerState committed,
-            String transactionRef) {
+            String transactionRef, UUID actorUuid, Set<ChunkKey> delta) {
         CompletionStage<Void> settled;
         try {
             settled = ledger.settleRefundCompensated(
@@ -359,7 +395,7 @@ public final class ShrinkSaga {
             return completed(ShrinkOutcome.degraded(
                     entry.targetLandId(), amountOf(entry), "shrink.finalize_failed"));
         }
-        return settled.thenComposeAsync(ignored -> publishAndSucceed(entry), asyncExecutor)
+        return settled.thenComposeAsync(ignored -> publishAndSucceed(entry, actorUuid, delta), asyncExecutor)
                 .exceptionally(failure -> ShrinkOutcome.degraded(
                         entry.targetLandId(), amountOf(entry), "shrink.finalize_failed"));
     }
@@ -400,7 +436,8 @@ public final class ShrinkSaga {
 
     // ---- Steps 6-7: publish from authoritative state, then report. ----
 
-    private CompletionStage<ShrinkOutcome> publishAndSucceed(LedgerEntry entry) {
+    private CompletionStage<ShrinkOutcome> publishAndSucceed(LedgerEntry entry, UUID actorUuid,
+            Set<ChunkKey> delta) {
         CompletionStage<?> rebuilt;
         try {
             rebuilt = rebuilder.rebuild();
@@ -412,10 +449,61 @@ public final class ShrinkSaga {
             return completed(ShrinkOutcome.degraded(
                     entry.targetLandId(), amountOf(entry), "shrink.publish_failed"));
         }
-        return rebuilt.thenApplyAsync(ignored ->
-                ShrinkOutcome.success(entry.targetLandId(), amountOf(entry)), asyncExecutor)
+        return rebuilt.thenApplyAsync(ignored -> {
+                    // Public Post: exactly once, and only because the refund
+                    // above was confirmed successful — failed or unconfirmed
+                    // refunds park for compensation and never reach this
+                    // publish step. Listener failures are isolated and never
+                    // roll back the committed shrink.
+                    fireChunkRemovePost(entry.targetLandId(), actorUuid, delta, amountOf(entry));
+                    return ShrinkOutcome.success(entry.targetLandId(), amountOf(entry));
+                }, asyncExecutor)
                 .exceptionally(failure -> ShrinkOutcome.degraded(
                         entry.targetLandId(), amountOf(entry), "shrink.publish_failed"));
+    }
+
+    /**
+     * Fire the public shrink Pre on the caller thread. Any dispatch failure
+     * fails closed to cancelled so the shrink produces zero side effects.
+     */
+    private boolean fireChunkRemovePre(ValidatedShrink plan) {
+        final LandChunkRemovePreEvent pre;
+        try {
+            pre = new LandChunkRemovePreEvent(plan.actorUuid(), plan.worldId(),
+                    plan.targetLandId(), Set.copyOf(plan.delta()));
+        } catch (RuntimeException failure) {
+            return true;
+        }
+        try {
+            return events.firePre(pre, () -> new LandChunkRemovePreBukkitEvent(pre.actorUuid(),
+                    pre.worldId(), pre.targetLandId(), pre.chunks(), false));
+        } catch (Throwable failure) {
+            return true;
+        }
+    }
+
+    /**
+     * Fire the public shrink Post after commit, a confirmed refund, and
+     * publish. Never throws: listener failures are isolated by the facade.
+     */
+    private void fireChunkRemovePost(LandId landId, UUID actorUuid, Set<ChunkKey> delta,
+            long refundAmount) {
+        try {
+            LandChunkRemovePostEvent post =
+                    new LandChunkRemovePostEvent(landId, actorUuid, delta, refundAmount);
+            events.firePost(post, () -> new LandChunkRemovePostBukkitEvent(post.landId(),
+                    post.actorUuid(), post.removedChunks(), post.refundMinorUnits(), true));
+        } catch (Throwable ignored) {
+            // Post dispatch must never break the committed shrink path.
+        }
+    }
+
+    private static Set<ChunkKey> deltaKeys(ShrinkMaterials materials) {
+        Set<ChunkKey> keys = new HashSet<>();
+        for (OperationPayload.Chunk chunk : materials.commit().chunks()) {
+            keys.add(chunk.chunk());
+        }
+        return Set.copyOf(keys);
     }
 
     // ---- Builders. ----

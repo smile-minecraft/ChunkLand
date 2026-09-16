@@ -1,8 +1,14 @@
 package com.smile.chunkland.claim;
 
+import com.smile.chunkland.api.event.LandChunkAddPostEvent;
+import com.smile.chunkland.api.event.LandChunkAddPreEvent;
 import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.money.ChunkCoordinate;
+import com.smile.chunkland.event.PublicEventCancelledException;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.LandChunkAddPostBukkitEvent;
+import com.smile.chunkland.event.bukkit.LandChunkAddPreBukkitEvent;
 import com.smile.chunkland.api.money.CostBasisAllocation;
 import com.smile.chunkland.api.money.CostBasisCalculator;
 import com.smile.chunkland.api.money.Money;
@@ -71,6 +77,7 @@ public final class ExpandSaga {
     private final Clock clock;
     private final Executor asyncExecutor;
     private final int compensationRetryLimit;
+    private final PublicEvents events;
     private final PublishSideEffects publishSideEffects;
 
     /**
@@ -94,7 +101,27 @@ public final class ExpandSaga {
             Executor asyncExecutor,
             int compensationRetryLimit) {
         this(validator, quotas, pricing, reservations, ledger, economy, rebuilder,
-                clock, asyncExecutor, compensationRetryLimit, null);
+                clock, asyncExecutor, compensationRetryLimit, PublicEvents.noop(), null);
+    }
+
+    /**
+     * @param events public Pre/Post dispatch; {@code null} means no public
+     *         events (the mutation still commits exactly as before)
+     */
+    public ExpandSaga(
+            ExpandValidator validator,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            RuntimeRegistryRebuilder rebuilder,
+            Clock clock,
+            Executor asyncExecutor,
+            int compensationRetryLimit,
+            PublicEvents events) {
+        this(validator, quotas, pricing, reservations, ledger, economy, rebuilder,
+                clock, asyncExecutor, compensationRetryLimit, events, null);
     }
 
     ExpandSaga(
@@ -109,6 +136,23 @@ public final class ExpandSaga {
             Executor asyncExecutor,
             int compensationRetryLimit,
             PublishSideEffects publishSideEffects) {
+        this(validator, quotas, pricing, reservations, ledger, economy, rebuilder,
+                clock, asyncExecutor, compensationRetryLimit, PublicEvents.noop(), publishSideEffects);
+    }
+
+    private ExpandSaga(
+            ExpandValidator validator,
+            OwnerQuotaService quotas,
+            PricingTable pricing,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            RuntimeRegistryRebuilder rebuilder,
+            Clock clock,
+            Executor asyncExecutor,
+            int compensationRetryLimit,
+            PublicEvents events,
+            PublishSideEffects publishSideEffects) {
         this.validator = Objects.requireNonNull(validator, "validator");
         this.quotas = Objects.requireNonNull(quotas, "quotas");
         this.pricing = Objects.requireNonNull(pricing, "pricing");
@@ -122,6 +166,7 @@ public final class ExpandSaga {
             throw new IllegalArgumentException("compensationRetryLimit must be positive");
         }
         this.compensationRetryLimit = compensationRetryLimit;
+        this.events = events == null ? PublicEvents.noop() : events;
         this.publishSideEffects =
                 publishSideEffects != null ? publishSideEffects : this::releasePublishGuards;
     }
@@ -169,6 +214,12 @@ public final class ExpandSaga {
             if (price.isZero()) {
                 return completed(ClaimOutcome.rejected("pricing.unavailable"));
             }
+        }
+        // Public Pre: synchronous veto before quota, reservations, ledger
+        // and Economy. A veto (or any dispatch failure, which fails closed)
+        // rejects with zero side effects.
+        if (fireChunkAddPre(plan)) {
+            return completed(ClaimOutcome.rejected(PublicEventCancelledException.DIAGNOSTIC_KEY));
         }
         final OwnerQuotaService.QuotaReservation chunkReservation;
         if (serverOwned) {
@@ -453,7 +504,13 @@ public final class ExpandSaga {
         }
         CompletionStage<ClaimOutcome> activated;
         try {
-            activated = rebuilt.thenComposeAsync(ignored -> activateStep(attempt), asyncExecutor);
+            activated = rebuilt.thenComposeAsync(ignored -> {
+                // Public Post: exactly once, after the durable commit plus
+                // the runtime publish. Listener failures are isolated and
+                // never roll back the committed expansion.
+                fireChunkAddPost(attempt);
+                return activateStep(attempt);
+            }, asyncExecutor);
         } catch (RuntimeException failure) {
             return completed(degraded(attempt, "claim.publish_failed"));
         }
@@ -490,6 +547,50 @@ public final class ExpandSaga {
     }
 
     // ---- Helpers. ----
+
+    /**
+     * Fire the public expansion Pre on the caller thread. Any dispatch
+     * failure fails closed to cancelled so the expansion produces zero side
+     * effects.
+     */
+    private boolean fireChunkAddPre(ValidatedExpand plan) {
+        final LandChunkAddPreEvent pre;
+        try {
+            Set<ChunkKey> chunks = new HashSet<>();
+            for (ValidatedExpand.ChunkDetail detail : plan.delta()) {
+                chunks.add(detail.chunk());
+            }
+            pre = new LandChunkAddPreEvent(plan.actorUuid(), plan.worldId(),
+                    plan.targetLandId(), chunks);
+        } catch (RuntimeException failure) {
+            return true;
+        }
+        try {
+            return events.firePre(pre, () -> new LandChunkAddPreBukkitEvent(pre.actorUuid(),
+                    pre.worldId(), pre.targetLandId(), pre.chunks(), false));
+        } catch (Throwable failure) {
+            return true;
+        }
+    }
+
+    /**
+     * Fire the public expansion Post after commit plus publish. Never throws:
+     * listener failures are isolated by the facade.
+     */
+    private void fireChunkAddPost(ExpandAttempt attempt) {
+        try {
+            Set<ChunkKey> added = new HashSet<>();
+            for (ValidatedExpand.ChunkDetail detail : attempt.plan().delta()) {
+                added.add(detail.chunk());
+            }
+            LandChunkAddPostEvent post = new LandChunkAddPostEvent(attempt.plan().targetLandId(),
+                    attempt.plan().actorUuid(), added, attempt.price().minorUnits());
+            events.firePost(post, () -> new LandChunkAddPostBukkitEvent(post.landId(),
+                    post.actorUuid(), post.addedChunks(), post.priceMinorUnits(), true));
+        } catch (Throwable ignored) {
+            // Post dispatch must never break the committed expansion path.
+        }
+    }
 
     private Optional<OwnerQuotaService.QuotaReservation> tryReserveChunks(OwnerRef owner, int chunks) {
         try {

@@ -1,10 +1,17 @@
 package com.smile.chunkland.subland;
 
+import com.smile.chunkland.api.event.SubLandPostEvent;
+import com.smile.chunkland.api.event.SubLandPreEvent;
+import com.smile.chunkland.api.event.SubLandPreEvent.Operation;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.land.SubLandSnapshot;
 import com.smile.chunkland.config.LimitSettings;
+import com.smile.chunkland.event.PublicEventCancelledException;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.SubLandPostBukkitEvent;
+import com.smile.chunkland.event.bukkit.SubLandPreBukkitEvent;
 import com.smile.chunkland.persistence.LandRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
 import com.smile.chunkland.runtime.index.LandRegistry;
@@ -101,6 +108,7 @@ public final class SubLandMutationRunner {
     private final DepthExtensionPort depthPort;
     private final LimitSettings limits;
     private final Clock clock;
+    private final PublicEvents events;
     private final RuntimePublisher publisher;
     private final AtomicReference<CompletableFuture<LandRegistry>> inflight = new AtomicReference<>();
 
@@ -138,6 +146,45 @@ public final class SubLandMutationRunner {
             LimitSettings limits,
             Clock clock,
             RuntimePublisher publisher) {
+        this(lands, atomic, store, selections, confirm, depths, depthPort, limits, clock,
+                PublicEvents.noop(), publisher);
+    }
+
+    /**
+     * @param events public Pre/Post dispatch; {@code null} means no public
+     *         events (the mutation still commits exactly as before)
+     */
+    public SubLandMutationRunner(
+            LandRepository lands,
+            SubLandAtomicCommit atomic,
+            LandRegistryStore store,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            DepthExtensionPort depthPort,
+            LimitSettings limits,
+            Clock clock,
+            PublicEvents events) {
+        this(lands, atomic, store, selections, confirm, depths, depthPort, limits, clock,
+                events, defaultPublisher(lands, store));
+    }
+
+    /**
+     * @param events public Pre/Post dispatch; {@code null} means no public
+     *         events (the mutation still commits exactly as before)
+     */
+    public SubLandMutationRunner(
+            LandRepository lands,
+            SubLandAtomicCommit atomic,
+            LandRegistryStore store,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            DepthExtensionPort depthPort,
+            LimitSettings limits,
+            Clock clock,
+            PublicEvents events,
+            RuntimePublisher publisher) {
         this.lands = Objects.requireNonNull(lands, "lands");
         this.atomic = Objects.requireNonNull(atomic, "atomic");
         this.store = Objects.requireNonNull(store, "store");
@@ -147,6 +194,7 @@ public final class SubLandMutationRunner {
         this.depthPort = Objects.requireNonNull(depthPort, "depthPort");
         this.limits = Objects.requireNonNull(limits, "limits");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.events = events == null ? PublicEvents.noop() : events;
         this.publisher = Objects.requireNonNull(publisher, "publisher");
     }
 
@@ -167,6 +215,13 @@ public final class SubLandMutationRunner {
             return failed(new ConfirmRejectedException(
                     "candidate parent " + candidate.parentLandId()
                             + " does not match confirmed parent " + accepted.parentId()));
+        }
+        // Public Pre: synchronous veto after confirm accept but before any
+        // durable write. A veto (or any dispatch failure, which fails closed)
+        // releases the confirmation for retry and writes nothing.
+        if (fireSubLandPre(actor, accepted.parentId(), candidate.id(), Operation.CREATE)) {
+            confirm.releaseIfNotSuccess(actor, accepted);
+            return failed(new PublicEventCancelledException());
         }
         return lands.findById(accepted.parentId()).thenCompose(parentOpt -> {
             if (parentOpt.isEmpty()) {
@@ -207,6 +262,11 @@ public final class SubLandMutationRunner {
                                     depthConfirmed, effectiveMinY, clock.instant()))
                     .thenCompose(ignored -> rebuildRuntime()
                             .thenApply(ignoredRegistry -> {
+                                // Public Post: exactly once, after the atomic
+                                // commit plus the runtime publish. Listener
+                                // failures are isolated and never roll back.
+                                fireSubLandPost(actor, accepted.parentId(), candidate.id(),
+                                        Operation.CREATE);
                                 clearActorSession(actor);
                                 return candidate;
                             })
@@ -242,6 +302,13 @@ public final class SubLandMutationRunner {
             return failed(new ConfirmRejectedException(
                     "candidate parent " + candidate.parentLandId()
                             + " does not match confirmed parent " + accepted.parentId()));
+        }
+        // Public Pre: synchronous veto after confirm accept but before any
+        // durable write. A veto (or any dispatch failure, which fails closed)
+        // releases the confirmation for retry and writes nothing.
+        if (fireSubLandPre(actor, accepted.parentId(), candidate.id(), Operation.UPDATE)) {
+            confirm.releaseIfNotSuccess(actor, accepted);
+            return failed(new PublicEventCancelledException());
         }
         return lands.findById(accepted.parentId()).thenCompose(parentOpt -> {
             if (parentOpt.isEmpty()) {
@@ -281,6 +348,11 @@ public final class SubLandMutationRunner {
                                     depthConfirmed, effectiveMinY, clock.instant()))
                     .thenCompose(ignored -> rebuildRuntime()
                             .thenApply(ignoredRegistry -> {
+                                // Public Post: exactly once, after the atomic
+                                // commit plus the runtime publish. Listener
+                                // failures are isolated and never roll back.
+                                fireSubLandPost(actor, accepted.parentId(), candidate.id(),
+                                        Operation.UPDATE);
                                 clearActorSession(actor);
                                 return candidate;
                             })
@@ -310,6 +382,13 @@ public final class SubLandMutationRunner {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(accepted, "accepted");
         Objects.requireNonNull(target, "target");
+        // Public Pre: synchronous veto after confirm accept but before any
+        // durable write. A veto (or any dispatch failure, which fails closed)
+        // releases the confirmation for retry and writes nothing.
+        if (fireSubLandPre(actor, accepted.parentId(), target, Operation.DELETE)) {
+            confirm.releaseIfNotSuccess(actor, accepted);
+            return failed(new PublicEventCancelledException());
+        }
         return lands.findById(accepted.parentId()).thenCompose(parentOpt -> {
             if (parentOpt.isEmpty()) {
                 confirm.releaseIfNotSuccess(actor, accepted);
@@ -337,6 +416,11 @@ public final class SubLandMutationRunner {
                                     accepted.session().selectionRevision(), clock.instant()))
                     .thenCompose(ignored -> rebuildRuntime()
                             .thenApply(ignoredRegistry -> {
+                                // Public Post: exactly once, after the atomic
+                                // commit plus the runtime publish. Listener
+                                // failures are isolated and never roll back.
+                                fireSubLandPost(actor, accepted.parentId(), target,
+                                        Operation.DELETE);
                                 clearSubLandSelections(target);
                                 clearActorSession(actor);
                                 return (Void) null;
@@ -475,6 +559,41 @@ public final class SubLandMutationRunner {
             current = next;
         }
         return false;
+    }
+
+    /**
+     * Fire the public SubLand Pre on the caller thread. Any dispatch failure
+     * fails closed to cancelled so the mutation writes nothing.
+     */
+    private boolean fireSubLandPre(UUID actor, LandId parentLandId, SubLandId subLandId,
+            Operation operation) {
+        final SubLandPreEvent pre;
+        try {
+            pre = new SubLandPreEvent(actor, parentLandId, subLandId, operation);
+        } catch (RuntimeException failure) {
+            return true;
+        }
+        try {
+            return events.firePre(pre, () -> new SubLandPreBukkitEvent(pre.actorUuid(),
+                    pre.parentLandId(), pre.subLandId(), pre.operation(), false));
+        } catch (Throwable failure) {
+            return true;
+        }
+    }
+
+    /**
+     * Fire the public SubLand Post after the atomic commit plus the runtime
+     * publish. Never throws: listener failures are isolated by the facade.
+     */
+    private void fireSubLandPost(UUID actor, LandId parentLandId, SubLandId subLandId,
+            Operation operation) {
+        try {
+            SubLandPostEvent post = new SubLandPostEvent(actor, parentLandId, subLandId, operation);
+            events.firePost(post, () -> new SubLandPostBukkitEvent(post.actorUuid(),
+                    post.parentLandId(), post.subLandId(), post.operation(), true));
+        } catch (Throwable ignored) {
+            // Post dispatch must never break the committed SubLand path.
+        }
     }
 
     private void clearActorSession(UUID actor) {

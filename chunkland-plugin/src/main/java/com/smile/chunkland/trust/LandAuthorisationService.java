@@ -1,8 +1,13 @@
 package com.smile.chunkland.trust;
 
+import com.smile.chunkland.api.event.PermissionChangedEvent;
+import com.smile.chunkland.api.event.PermissionChangedEvent.ChangeKind;
+import com.smile.chunkland.api.event.PermissionChangedEvent.SubjectKind;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.event.PublicEvents;
+import com.smile.chunkland.event.bukkit.PermissionChangedBukkitEvent;
 import com.smile.chunkland.persistence.LandAuthorisationRepository;
 import com.smile.chunkland.protection.DirectTrustWhitelist;
 import com.smile.chunkland.protection.LandAuthorisationCache;
@@ -33,6 +38,7 @@ public final class LandAuthorisationService {
     private final LandAuthorisationRepository repository;
     private final LandAuthorisationCache cache;
     private final Clock clock;
+    private final PublicEvents events;
 
     public LandAuthorisationService(LandAuthorisationRepository repository,
             LandAuthorisationCache cache) {
@@ -41,9 +47,20 @@ public final class LandAuthorisationService {
 
     public LandAuthorisationService(LandAuthorisationRepository repository,
             LandAuthorisationCache cache, Clock clock) {
+        this(repository, cache, clock, PublicEvents.noop());
+    }
+
+    /**
+     * @param events public Post dispatch for committed permission changes;
+     *         {@code null} means no public events (mutations still commit
+     *         exactly as before)
+     */
+    public LandAuthorisationService(LandAuthorisationRepository repository,
+            LandAuthorisationCache cache, Clock clock, PublicEvents events) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.cache = Objects.requireNonNull(cache, "cache");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.events = events == null ? PublicEvents.noop() : events;
     }
 
     /** Live runtime snapshot holder fed by every publish here. */
@@ -69,7 +86,14 @@ public final class LandAuthorisationService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("trust repository returned null"));
         }
-        return committed.thenCompose(ignored -> refresh());
+        return committed.thenCompose(ignored -> refresh()).thenApply(ignored -> {
+            // Public Post: exactly once, after the durable commit plus the
+            // snapshot publish. Listener failures are isolated and never
+            // roll back the committed trust.
+            firePermissionChanged(actor, landId, ChangeKind.TRUST, SubjectKind.PLAYER, target,
+                    null, null, null);
+            return null;
+        });
     }
 
     /**
@@ -91,7 +115,11 @@ public final class LandAuthorisationService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("untrust repository returned null"));
         }
-        return committed.thenCompose(ignored -> refresh());
+        return committed.thenCompose(ignored -> refresh()).thenApply(ignored -> {
+            firePermissionChanged(actor, landId, ChangeKind.UNTRUST, SubjectKind.PLAYER, target,
+                    null, null, null);
+            return null;
+        });
     }
 
     /**
@@ -116,7 +144,11 @@ public final class LandAuthorisationService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("default repository returned null"));
         }
-        return committed.thenCompose(ignored -> refresh());
+        return committed.thenCompose(ignored -> refresh()).thenApply(ignored -> {
+            firePermissionChanged(actor, landId, ChangeKind.DEFAULT_SET, null, null,
+                    action, state, null);
+            return null;
+        });
     }
 
     /**
@@ -138,7 +170,11 @@ public final class LandAuthorisationService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("ban repository returned null"));
         }
-        return committed.thenCompose(ignored -> refresh());
+        return committed.thenCompose(ignored -> refresh()).thenApply(ignored -> {
+            firePermissionChanged(actor, landId, ChangeKind.BAN, SubjectKind.PLAYER, target,
+                    null, null, null);
+            return null;
+        });
     }
 
     /**
@@ -160,7 +196,30 @@ public final class LandAuthorisationService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("unban repository returned null"));
         }
-        return committed.thenCompose(ignored -> refresh());
+        return committed.thenCompose(ignored -> refresh()).thenApply(ignored -> {
+            firePermissionChanged(actor, landId, ChangeKind.UNBAN, SubjectKind.PLAYER, target,
+                    null, null, null);
+            return null;
+        });
+    }
+
+    /**
+     * Fire the public permission Post after commit plus publish. Never
+     * throws: construction and listener failures are isolated by the
+     * facade, so the committed mutation still stands.
+     */
+    private void firePermissionChanged(UUID actor, LandId landId, ChangeKind kind,
+            SubjectKind subjectKind, UUID subjectId, ProtectionActionType action,
+            PermissionState state, UUID profileId) {
+        try {
+            PermissionChangedEvent event = new PermissionChangedEvent(actor, landId, null,
+                    kind, subjectKind, subjectId, action, state, profileId);
+            events.firePost(event, () -> new PermissionChangedBukkitEvent(event.actorUuid(),
+                    event.landId(), event.subLandId(), event.kind(), event.subjectKind(),
+                    event.subjectId(), event.action(), event.state(), event.profileId(), true));
+        } catch (Throwable ignored) {
+            // Post dispatch must never break the committed permission path.
+        }
     }
 
     /**
