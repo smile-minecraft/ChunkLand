@@ -164,6 +164,13 @@ command:
         line: "<gray><value></gray>"
         resolved: "<green>Ledger operation resolved: <value>.</green>"
         failed: "<red>Ledger admin failed: <reason>.</red>"
+      orphan:
+        usage: "<yellow>Usage: /land admin orphan list | purge [world-uuid] | purge [world-uuid] confirm [nonce]</yellow>"
+        empty: "<gray>No orphan worlds.</gray>"
+        line: "<gray><value></gray>"
+        confirm: "<yellow>Orphan world <world> holds <count> land(s). Run /land admin orphan purge <world> confirm <nonce> within <expiry>s to delete them permanently. This cannot be undone and never refunds.</yellow>"
+        purged: "<green>Orphan world <world> purged: <count> land(s) deleted with no refund.</green>"
+        failed: "<red>Orphan admin failed: <reason>.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

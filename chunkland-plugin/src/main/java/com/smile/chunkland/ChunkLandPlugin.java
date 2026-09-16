@@ -52,9 +52,11 @@ import com.smile.chunkland.command.EntryBanCommandHandler;
 import com.smile.chunkland.command.ExpandCommandHandler;
 import com.smile.chunkland.command.ExplainCommandHandler;
 import com.smile.chunkland.command.GroupCommandHandler;
+import com.smile.chunkland.command.AdminCommandRouter;
 import com.smile.chunkland.command.InspectCommandHandler;
 import com.smile.chunkland.command.LandDeleteCommandHandler;
 import com.smile.chunkland.command.LedgerAdminCommandHandler;
+import com.smile.chunkland.command.OrphanAdminCommandHandler;
 import com.smile.chunkland.command.ProfileCommandHandler;
 import com.smile.chunkland.command.ShrinkCommandHandler;
 import com.smile.chunkland.command.LandCommand;
@@ -66,6 +68,7 @@ import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.RenameCommandHandler;
 import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
+import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.config.ConfigService;
 import com.smile.chunkland.config.ConfigReloadListener;
 import com.smile.chunkland.config.ChunkLandConfig;
@@ -107,7 +110,9 @@ import com.smile.chunkland.persistence.LandAuthorisationRepository;
 import com.smile.chunkland.persistence.LandBindingRepository;
 import com.smile.chunkland.persistence.LandRenameRepository;
 import com.smile.chunkland.persistence.OperationLedger;
+import com.smile.chunkland.persistence.OrphanPurgeRepository;
 import com.smile.chunkland.persistence.PersistenceStore;
+import com.smile.chunkland.runtime.storage.OrphanWorldGuard;
 import com.smile.chunkland.persistence.PlayerSettingsRepository;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.AuditRepository;
@@ -180,6 +185,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -282,6 +288,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SnapshotProtectionDepthLookup protectionDepthLookup;
     private ProtectionListener protectionListener;
     private ClaimStartupBootstrap claimStartup;
+    private OrphanWorldGuard orphanWorldGuard;
+    private OrphanWorldCatalogListener orphanCatalogListener;
     private ClaimSaga claimSaga;
     private ExpandSaga expandSaga;
     private ShrinkSaga shrinkSaga;
@@ -985,6 +993,27 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // stays fail-closed instead of running half-wired.
         LedgerAdminCommandHandler ledgerAdminHandler =
                 buildLedgerAdminHandler(this.claimStartup, auditReads, buildPlayerScheduler(this));
+        // Orphan-world administration: irreversible per-world purges behind
+        // the independent orphan node, sharing the claim bootstrap store and
+        // rebuilder so the durable delete and the runtime refresh converge.
+        // The guard carries the versioned world catalog the purge generation
+        // check binds against. The initial publish reads the live catalog
+        // once; when that read fails the guard stays unverified and every
+        // orphan verb fails closed until a world load republishes it.
+        // Without the store, the guard, the rebuilder or the scheduler the
+        // orphan branch stays fail-closed instead of running half-wired.
+        OrphanWorldGuard orphanGuard = new OrphanWorldGuard();
+        Set<UUID> initialWorlds = snapshotLoadedWorldIds();
+        if (initialWorlds == null) {
+            getLogger().warning("ChunkLand world catalog snapshot failed; "
+                    + "orphan administration stays unavailable until a world loads.");
+        } else {
+            orphanGuard.publish(initialWorlds);
+        }
+        this.orphanWorldGuard = orphanGuard;
+        OrphanAdminCommandHandler orphanAdminHandler =
+                buildOrphanAdminHandler(this.claimStartup, orphanGuard,
+                        buildPlayerScheduler(this));
         // Generic binding preload: read the existing binding rows once at
         // startup so restarts keep resolving them. The publish merges over
         // the direct layers the trust preload publishes into the same
@@ -1035,6 +1064,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                             this.resolveExecutor),
                                     buildPlayerScheduler(this)),
                             ledgerAdminHandler,
+                            orphanAdminHandler,
                             buildHistoryHandler(() -> this.historyProvider,
                                     buildPlayerScheduler(this))));
         ManagementGateResolver landGateResolver = buildManagementGateResolver(this.protectionStore,
@@ -1100,6 +1130,17 @@ public final class ChunkLandPlugin extends JavaPlugin {
                             + "boundary prompts stay silent: " + enterLeaveFailure.getMessage());
                     this.enterLeaveListener = null;
                 }
+            }
+            try {
+                this.orphanCatalogListener =
+                        new OrphanWorldCatalogListener(orphanGuard, this::snapshotServerWorlds);
+                registerOrphanCatalogListener(this.orphanCatalogListener);
+            } catch (RuntimeException catalogListenerFailure) {
+                getLogger().warning("ChunkLand orphan catalog listener registration failed; "
+                        + "orphan administration stays unavailable: "
+                        + catalogListenerFailure.getMessage());
+                orphanGuard.invalidate();
+                this.orphanCatalogListener = null;
             }
         } catch (RuntimeException ex) {
             getLogger().warning("ChunkLand wand safety listener registration failed; disabling plugin: " + ex.getMessage());
@@ -1787,12 +1828,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     /**
      * Production {@code /land} handlers with the operator ledger flow wired
-     * behind {@code /land admin ledger}.
+     * behind {@code /land admin ledger} and the orphan branch fail-closed.
      *
-     * <p>A null admin handler keeps the slot fail-closed on the ledger usage
-     * reply instead of the not-yet stub, so an unwired server never pretends
-     * operator verdicts are coming soon. Every other overload stays untouched
-     * so the focused assembly tests pinning them stay valid.
+     * <p>A null admin handler keeps the ledger slot fail-closed on the ledger
+     * usage reply instead of the not-yet stub, so an unwired server never
+     * pretends operator verdicts are coming soon. The orphan branch has no
+     * handler here and fails closed on its own unavailable reply. Every other
+     * overload stays untouched so the focused assembly tests pinning them stay
+     * valid.
      */
     static Map<String, LandCommand.Handler> buildLandHandlers(
             SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
@@ -1825,10 +1868,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
                 profile, binding, explain, targetChunks, shrinkRefundCurrency,
                 delete, logs, manage, inspect));
-        base.put("admin", admin == null
-                ? (sender, args, sink) -> sink.reply("command.land.admin.ledger.failed",
-                        Map.of("reason", "ledger.unavailable"))
-                : admin);
+        base.put("admin", new AdminCommandRouter(admin, null));
         return Map.copyOf(base);
     }
 
@@ -1839,7 +1879,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * <p>A null history handler keeps the slot fail-closed on the generic
      * unavailable reply instead of the not-yet stub, so an unwired server
      * never pretends the lookup is coming soon. Every other overload stays
-     * untouched so the focused assembly tests pinning them stay valid.
+     * untouched so the focused assembly tests pinning them stay valid. The
+     * {@code admin} slot keeps the ledger-or-fail-closed router from the
+     * previous overload; the orphan branch needs the longer overload below.
      */
     static Map<String, LandCommand.Handler> buildLandHandlers(
             SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
@@ -1880,6 +1922,52 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Production {@code /land} handlers with the orphan-world administration
+     * wired behind {@code /land admin orphan} next to the ledger branch.
+     *
+     * <p>A null orphan handler keeps only the orphan branch fail-closed on
+     * its own unavailable reply; the ledger branch is untouched. Every other
+     * overload stays untouched so the focused assembly tests pinning them
+     * stay valid.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks,
+            Currency shrinkRefundCurrency,
+            LandDeleteCommandHandler delete,
+            AuditLogCommandHandler logs,
+            ManageGuiCommandHandler manage,
+            InspectCommandHandler inspect,
+            LedgerAdminCommandHandler admin,
+            OrphanAdminCommandHandler orphan,
+            HistoryCommandHandler history) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain, targetChunks, shrinkRefundCurrency,
+                delete, logs, manage, inspect, admin, history));
+        base.put("admin", new AdminCommandRouter(admin, orphan));
+        return Map.copyOf(base);
+    }
+
+    /**
      * Builds the operator ledger handler over the claim bootstrap ledger and
      * the shared audit history. A null bootstrap, ledger, audit source or
      * scheduler keeps the admin slot fail-closed instead of running
@@ -1898,6 +1986,73 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
             return new LedgerAdminCommandHandler(() -> bootstrap.ledger(), () -> audits,
                     Clock.systemUTC()::instant, scheduler);
+        } catch (RuntimeException failure) {
+            return null;
+        }
+    }
+
+    /**
+     * Builds the orphan-world handler over the claim bootstrap store,
+     * rebuilder and versioned catalog guard. The guard snapshot is taken on
+     * the command thread only, and the rebuilder refreshes the runtime after
+     * a successful purge so the deleted world stops publishing. A null
+     * bootstrap, store, guard, rebuilder or scheduler keeps the orphan branch
+     * fail-closed instead of running half-wired; assembly failures degrade
+     * to null the same way.
+     */
+    static OrphanAdminCommandHandler buildOrphanAdminHandler(ClaimStartupBootstrap bootstrap,
+            OrphanWorldGuard guard,
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
+        if (bootstrap == null || guard == null || scheduler == null) {
+            return null;
+        }
+        try {
+            PersistenceStore store = bootstrap.store();
+            RuntimeRegistryRebuilder rebuilder = bootstrap.rebuilder();
+            if (store == null || rebuilder == null) {
+                return null;
+            }
+            OrphanPurgeRepository repos = new OrphanPurgeRepository(store);
+            return new OrphanAdminCommandHandler(() -> repos, guard,
+                    Clock.systemUTC()::instant, scheduler, rebuilder::rebuild);
+        } catch (RuntimeException failure) {
+            return null;
+        }
+    }
+
+    /**
+     * Snapshot of the currently loaded world UUIDs from the given world
+     * source. Any failure — a throwing or null supplier, a null or empty
+     * list, a null entry, or an unreadable world UUID — returns {@code null}
+     * so the orphan guard stays unverified and every orphan verb fails
+     * closed. It never returns an empty set as success: that would
+     * misclassify every healthy world as an orphan.
+     */
+    static Set<UUID> snapshotLoadedWorldIds(Supplier<List<World>> worlds) {
+        try {
+            return OrphanWorldCatalogListener.copyWorldIds(
+                    worlds == null ? null : worlds.get());
+        } catch (RuntimeException failure) {
+            return null;
+        }
+    }
+
+    /**
+     * Snapshot of the currently loaded world UUIDs, read from the server on
+     * the calling thread. A {@code null} return fails the orphan guard
+     * closed; see {@link #snapshotLoadedWorldIds(Supplier)}.
+     */
+    private Set<UUID> snapshotLoadedWorldIds() {
+        return snapshotLoadedWorldIds(this::snapshotServerWorlds);
+    }
+
+    /**
+     * Live server world list for the catalog snapshot, read on the calling
+     * thread. {@code null} on any failure so callers fail closed.
+     */
+    private List<World> snapshotServerWorlds() {
+        try {
+            return getServer().getWorlds();
         } catch (RuntimeException failure) {
             return null;
         }
@@ -3730,6 +3885,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     void registerWandListener(WandSafetyListener listener) {
+        getServer().getPluginManager().registerEvents(listener, this);
+    }
+
+    void registerOrphanCatalogListener(OrphanWorldCatalogListener listener) {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 

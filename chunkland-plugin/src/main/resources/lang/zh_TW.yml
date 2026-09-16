@@ -164,6 +164,13 @@ command:
         line: "<gray><value></gray>"
         resolved: "<green>帳本操作已處理：<value>。</green>"
         failed: "<red>帳本管理失敗：<reason>。</red>"
+      orphan:
+        usage: "<yellow>用法：/land admin orphan list | purge [世界UUID] | purge [世界UUID] confirm [確認碼]</yellow>"
+        empty: "<gray>沒有孤兒世界。</gray>"
+        line: "<gray><value></gray>"
+        confirm: "<yellow>孤兒世界 <world> 持有 <count> 筆領地。請在 <expiry> 秒內執行 /land admin orphan purge <world> confirm <nonce> 以永久刪除。此動作無法復原，且不會退款。</yellow>"
+        purged: "<green>孤兒世界 <world> 已清除：刪除 <count> 筆領地，未退款。</green>"
+        failed: "<red>孤兒管理失敗：<reason>。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"

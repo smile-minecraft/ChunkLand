@@ -189,6 +189,12 @@ public final class LandCommand {
             return true;
         }
         String perm = LandPermissions.forSubcommand(sub);
+        if (sub.equals("admin") && isOrphanBranch(args)) {
+            // The orphan branch carries its own irreversible-delete node:
+            // ledger holders without it stay denied here, and the orphan
+            // handler re-checks the same node for direct invocations.
+            perm = LandPermissions.ORPHAN;
+        }
         if (perm != null && !sender.hasPermission(perm)) {
             if (isExplain(sub)) {
                 denyExplain(sink);
@@ -229,6 +235,15 @@ public final class LandCommand {
             sink.reply("command.land.not_yet", Map.of("subcommand", sub));
         }
         return true;
+    }
+
+    /**
+     * Whether the admin tail selects the orphan branch
+     * ({@code /land admin orphan ...}). Only that branch is gated by the
+     * independent orphan node; every other admin verb keeps the ledger node.
+     */
+    private static boolean isOrphanBranch(String[] args) {
+        return args != null && args.length >= 2 && "orphan".equalsIgnoreCase(args[1]);
     }
 
     /**

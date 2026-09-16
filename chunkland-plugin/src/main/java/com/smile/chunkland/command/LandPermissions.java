@@ -39,9 +39,16 @@ public final class LandPermissions {
      * bypass node: holding those never grants ledger verdicts.
      */
     public static final String ADMIN = "chunkland.admin.ledger";
+    /**
+     * Independent orphan-world administration node for
+     * {@code /land admin orphan}. Deliberately separate from the ledger node,
+     * {@code chunkland.admin.serverland} and the bypass node: holding those
+     * never grants irreversible orphan purges.
+     */
+    public static final String ORPHAN = "chunkland.admin.orphan";
 
     public static final List<String> ALL_ORDERED = List.of(
-            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN);
+            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN, ORPHAN);
 
     private static final Map<String, String> BY_SUBCOMMAND = Map.ofEntries(
             Map.entry("help", HELP),

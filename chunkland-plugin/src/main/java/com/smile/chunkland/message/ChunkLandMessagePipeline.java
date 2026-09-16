@@ -125,7 +125,8 @@ public class ChunkLandMessagePipeline {
         "landid", "landname", "worldid", "chunks", "sublands",
         "structurerevision", "landpolicyrevision", "serverland",
         "playeruuid", "playerref", "limitmaxchunksperland", "limitmaxsublandsperland",
-        "limitmaxchunksperlandsource", "limitmaxsublandsperlandsource"
+        "limitmaxchunksperlandsource", "limitmaxsublandsperlandsource",
+        "world", "count", "nonce", "expiry"
     );
 
     private static final MiniMessage STRICT_MINIMESSAGE = MiniMessage.builder().strict(true).build();
