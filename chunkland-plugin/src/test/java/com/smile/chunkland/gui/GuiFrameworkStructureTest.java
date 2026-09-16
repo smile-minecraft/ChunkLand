@@ -15,6 +15,11 @@ import org.junit.jupiter.api.Test;
  * Structural guards for the Java GUI framework: only the supported public
  * AceLib surface may be referenced, generations always come from the upstream
  * session, and disable-time cleanup never touches the provider-wide shutdown.
+ *
+ * <p>Bedrock 表單是明確的例外：AceLib FormService 沒有上游 session
+ * 或 generation 概念（fire-and-forget send），§66.1 要求 Bedrock 導航
+ * 自己維護 generation，所以 BedrockFormNavigator 的本地單調配發加
+ * 頂層比對加單次消費即為 token，不受「上游 generation」守衛限制。
  */
 class GuiFrameworkStructureTest {
 
@@ -78,6 +83,13 @@ class GuiFrameworkStructureTest {
     void noSelfMadeGenerationOrClickGuardInFramework() throws Exception {
         for (Path p : guiSources()) {
             String content = Files.readString(p);
+            if (p.getFileName().toString().equals("BedrockFormNavigator.java")) {
+                // Bedrock 例外：FormService 沒有上游 session，generation 只能
+                // 本地維護（見類別註解）；這裡只守住不混用 Java GUI 的 session。
+                assertFalse(content.contains("new GuiSession("),
+                    "Bedrock navigation must not construct GUI sessions: " + p);
+                continue;
+            }
             assertFalse(content.contains("new GuiSession("),
                 "generations come from the upstream session, never constructed locally: " + p);
             assertFalse(content.contains("nextGeneration"),

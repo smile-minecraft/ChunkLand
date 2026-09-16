@@ -43,7 +43,7 @@ import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.binding.LandBindingService;
 import com.smile.chunkland.command.AuditLogCommandHandler;
-import com.smile.chunkland.command.BedrockClaimFormHandler;import com.smile.chunkland.command.BindingCommandHandler;
+import com.smile.chunkland.command.BedrockClaimFormHandler;import com.smile.chunkland.command.BedrockManageFormHandler;import com.smile.chunkland.command.BindingCommandHandler;
 import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
@@ -76,6 +76,7 @@ import com.smile.chunkland.economy.UnavailableVaultBridge;
 import com.smile.chunkland.economy.VaultBridge;
 import com.smile.chunkland.economy.VaultServiceDiscovery;
 import com.smile.chunkland.gui.GuiNavigator;
+import com.smile.chunkland.gui.BedrockFormNavigator;
 import com.smile.chunkland.gui.GuiClickContext;
 import com.smile.chunkland.gui.ManagementGuiActions;
 import com.smile.chunkland.gui.ManagementGuiModel;
@@ -238,6 +239,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<M0CapabilityProbe> capabilityProbe = Optional.empty();
     private Optional<Capabilities> capabilities = Optional.empty();
     private GuiNavigator guiNavigator;
+    private BedrockFormNavigator bedrockFormNavigator;
     private Optional<ConfigService> configService = Optional.empty();
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
     private LandCommand landCommand;
@@ -472,6 +474,82 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         }
         return ManagementGuiModel.fromExplains(explains, byAction);
+    }
+
+    /**
+     * disable 時的 Bedrock 導航清理本體：null 安全、可重複呼叫。
+     * performFullCleanup 先清欄位引用再呼叫這裡，所以重複 disable 不殘留。
+     */
+    static void closeBedrockForms(BedrockFormNavigator navigator) {
+        if (navigator == null) {
+            return;
+        }
+        try {
+            navigator.closeAll();
+        } catch (RuntimeException ignored) {
+            // 清理保持 best-effort；追蹤已經在呼叫端丟掉引用。
+        }
+    }
+
+    /**
+     * Bedrock 管理表單的唯讀模型來源：與 Java 管理 GUI 讀同一份不可變快照、
+     * 同一個 provider，記憶體讀取 only。快照讀取失敗一律回傳 unavailable，
+     * 表單呈現 fail-closed 通知頁，絕不猜測資料。
+     */
+    static ManagementGuiModel buildBedrockManageModel(LandRegistryStore store,
+            java.util.function.Supplier<PermissionContextProvider> providers,
+            UUID actor, LandId landId) {
+        if (store == null || providers == null || actor == null || landId == null) {
+            return ManagementGuiModel.unavailable();
+        }
+        final LandRegistry snapshot;
+        try {
+            snapshot = store.snapshot();
+        } catch (RuntimeException unresolved) {
+            return ManagementGuiModel.unavailable();
+        }
+        if (snapshot == null) {
+            return ManagementGuiModel.unavailable();
+        }
+        final PermissionContextProvider contexts;
+        try {
+            contexts = providers.get();
+        } catch (RuntimeException unresolved) {
+            return ManagementGuiModel.unavailable();
+        }
+        if (contexts == null) {
+            return ManagementGuiModel.unavailable();
+        }
+        try {
+            return buildManagementGuiModel(actor, landId, snapshot, contexts);
+        } catch (RuntimeException unresolved) {
+            return ManagementGuiModel.unavailable();
+        }
+    }
+
+    /**
+     * 線上玩家名稱：只在玩家 region 任務內呼叫，只讀名稱不碰其他狀態；
+     * 讀取失敗回傳空名單，選擇頁 fail-closed。
+     */
+    List<String> listOnlinePlayerNames() {
+        try {
+            var online = getServer().getOnlinePlayers();
+            if (online == null) {
+                return List.of();
+            }
+            return online.stream()
+                    .map(candidate -> {
+                        try {
+                            return candidate == null ? null : candidate.getName();
+                        } catch (RuntimeException unresolved) {
+                            return null;
+                        }
+                    })
+                    .filter(name -> name != null && !name.isBlank())
+                    .toList();
+        } catch (RuntimeException unresolved) {
+            return List.of();
+        }
     }
 
     @Override
@@ -830,8 +908,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         Supplier<ChunkLandConfig> inspectConfigs = this.configService
                 .map(service -> (Supplier<ChunkLandConfig>) service::current)
                 .orElse(null);
-        this.landCommand = new LandCommand(
-                buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
+        Map<String, LandCommand.Handler> landHandlers = new HashMap<>(buildLandHandlers(
+                this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
                          trustHandler, untrustHandler, defaultHandler, banHandler, unbanHandler,
                           expandRunner(), expandCurrentLand(this.protectionStore),
@@ -846,10 +924,24 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                     inspectConfigs,
                                     buildOfflinePlayerResolver(getServer(),
                                             this.resolveExecutor),
-                                    buildPlayerScheduler(this))),
-                null, buildManagementGateResolver(this.protectionStore,
-                        () -> atomicContexts,
-                        PluginManagementGateResolver.TargetLandResolver.currentLocation()));
+                                    buildPlayerScheduler(this))));
+        ManagementGateResolver landGateResolver = buildManagementGateResolver(this.protectionStore,
+                () -> atomicContexts,
+                PluginManagementGateResolver.TargetLandResolver.currentLocation());
+        // Bedrock 管理表單分支：與 Java 共用 gate resolver 與不可變快照模型，
+        // 轉交的 handlers 直接引用正式 map 的其他槽位（絕不轉交 manage 自己，
+        // 所以不會遞迴）。半接線時沒有分支，原本的 Java 路徑原樣保留。
+        BedrockManageFormHandler bedrockManage = buildBedrockManageForms(
+                this.capabilities.orElse(null),
+                landGateResolver,
+                (actor, landId) -> buildBedrockManageModel(
+                        this.protectionStore, () -> atomicContexts, actor, landId),
+                landHandlers,
+                this::listOnlinePlayerNames);
+        this.bedrockFormNavigator = bedrockManage == null ? null : bedrockManage.navigator();
+        landHandlers.put("manage", wrapManageWithBedrock(landHandlers.get("manage"), bedrockManage));
+        this.landCommand = new LandCommand(
+                landHandlers, null, landGateResolver);
         // Wand safety listener: native Bukkit listener for selection wand protection.
         // The selecting handler turns wand hits into selection corners on the
         // same session /land claim reads; safety cancelling stays in the
@@ -1927,6 +2019,123 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 confirm,
                 ClaimFormTexts::forLocale,
                 capabilities.scheduler());
+    }
+
+    /**
+     * Bedrock 表單導航的正式接線：服務按需解析，不快取失效中的 facade。
+     * 缺少 capabilities、BedrockService、FormService 或 scheduler 時回傳
+     * null，讓 {@code /land manage} 保留原本的 Java 路徑。
+     * scheduler 本體導航用不到，但沒有它任何回應都派不出去，
+     * 所以半接線一樣視為不可用。
+     */
+    static BedrockFormNavigator buildBedrockFormNavigator(Capabilities capabilities) {
+        if (capabilities == null) {
+            return null;
+        }
+        final BedrockService bedrock;
+        try {
+            bedrock = capabilities.bedrockService();
+        } catch (RuntimeException failure) {
+            return null;
+        }
+        if (bedrock == null) {
+            return null;
+        }
+        final FormService forms;
+        try {
+            forms = capabilities.formService();
+        } catch (RuntimeException failure) {
+            return null;
+        }
+        if (forms == null) {
+            return null;
+        }
+        if (capabilities.scheduler() == null) {
+            return null;
+        }
+        return new BedrockFormNavigator(
+                (playerId, spec, callback) -> {
+                    FormService live;
+                    try {
+                        live = capabilities.formService();
+                    } catch (RuntimeException failure) {
+                        throw new IllegalStateException("FormService unavailable", failure);
+                    }
+                    if (live == null) {
+                        throw new IllegalStateException("FormService unavailable");
+                    }
+                    return live.sendForm(playerId, spec, callback);
+                });
+    }
+
+    /**
+     * {@code /land manage} Bedrock 分支的正式接線：共用 gate resolver 與
+     * 不可變快照模型，轉交的 handlers 直接引用正式 map 的其他槽位。
+     * handler 只轉交非 manage 槽位，不會遞迴呼叫自己；任一接縫缺失回傳
+     * null，保留 Java 路徑。
+     */
+    static BedrockManageFormHandler buildBedrockManageForms(
+            Capabilities capabilities,
+            ManagementGateResolver gateResolver,
+            BedrockManageFormHandler.ModelSource models,
+            Map<String, LandCommand.Handler> handlers,
+            BedrockManageFormHandler.OnlineNames onlineNames) {
+        if (capabilities == null || gateResolver == null || models == null
+                || handlers == null || onlineNames == null) {
+            return null;
+        }
+        BedrockFormNavigator navigator = buildBedrockFormNavigator(capabilities);
+        if (navigator == null) {
+            return null;
+        }
+        SafeScheduler scheduler = capabilities.scheduler();
+        if (scheduler == null) {
+            return null;
+        }
+        return new BedrockManageFormHandler(
+                playerId -> {
+                    BedrockService bedrock;
+                    try {
+                        bedrock = capabilities.bedrockService();
+                    } catch (RuntimeException failure) {
+                        throw new IllegalStateException("BedrockService unavailable", failure);
+                    }
+                    return bedrock != null && bedrock.isBedrockPlayer(playerId);
+                },
+                gateResolver,
+                models,
+                handlers,
+                navigator,
+                onlineNames,
+                scheduler);
+    }
+
+    /**
+     * {@code manage} 槽位的 Bedrock 包裝：Bedrock 玩家且分支接管時走表單，
+     * 其他情況（Java 玩家、半接線、分支回傳 false）一律走原本的 Java 分支。
+     * 分支本身永不拋出；萬一拋出也落回 Java，仍受同一個 gate 保護。
+     */
+    static LandCommand.Handler wrapManageWithBedrock(LandCommand.Handler javaManage,
+            BedrockManageFormHandler bedrockManage) {
+        if (bedrockManage == null) {
+            return javaManage;
+        }
+        return (sender, args, sink) -> {
+            if (sender instanceof Player player) {
+                try {
+                    if (bedrockManage.handle(player, args, sink)) {
+                        return;
+                    }
+                } catch (RuntimeException ignored) {
+                    // 落回 Java 分支；gate 會再檢查一次。
+                }
+            }
+            if (javaManage != null) {
+                javaManage.handle(sender, args, sink);
+            } else {
+                sink.reply("command.land.manage.denied", Map.of());
+            }
+        };
     }
 
     /**
@@ -3396,6 +3605,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
             } catch (RuntimeException ignored) {
             }
         }
+        // Bedrock 表單導航追蹤同樣逐一清空：FormService 沒有遠端關閉 API，
+        // 清掉追蹤即不再接受任何回應；遲到回應由 AceLib 側零執行加上
+        // generation 守衛雙重丟棄。先清引用再關，保持重複 disable 冪等。
+        BedrockFormNavigator bedrockForms = this.bedrockFormNavigator;
+        this.bedrockFormNavigator = null;
+        closeBedrockForms(bedrockForms);
         if (capabilities.isPresent()) {
             try {
                 capabilities.get().release();

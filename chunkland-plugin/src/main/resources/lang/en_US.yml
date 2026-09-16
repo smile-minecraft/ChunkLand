@@ -150,6 +150,8 @@ command:
     manage:
       console: "<red>Only players can open the management GUI.</red>"
       denied: "<red>Management GUI unavailable.</red>"
+      bedrock:
+        unsupported: "<yellow>That step is not available as a Bedrock form yet. Use /land <subcommand> in chat instead.</yellow>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

@@ -150,6 +150,8 @@ command:
     manage:
       console: "<red>只有玩家可以開啟管理介面。</red>"
       denied: "<red>管理介面目前無法使用。</red>"
+      bedrock:
+        unsupported: "<yellow>這個步驟尚無 Bedrock 表單。請改用聊天指令 /land <subcommand>。</yellow>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"
