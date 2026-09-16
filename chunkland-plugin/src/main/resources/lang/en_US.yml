@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|log]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|log|manage]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -143,6 +143,9 @@ command:
       empty: "<gray>No audit entries match those filters.</gray>"
       line: "<gray><value></gray>"
       failed: "<red>Audit log lookup failed: <reason>.</red>"
+    manage:
+      console: "<red>Only players can open the management GUI.</red>"
+      denied: "<red>Management GUI unavailable.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

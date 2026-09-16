@@ -35,6 +35,11 @@ import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.land.SubLandSnapshot;
+import com.smile.chunkland.api.permission.PermissionContext;
+import com.smile.chunkland.api.permission.PermissionDecision;
+import com.smile.chunkland.api.permission.PermissionResolver;
+import com.smile.chunkland.api.permission.PermissionState;
+import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.binding.LandBindingService;
 import com.smile.chunkland.command.AuditLogCommandHandler;
 import com.smile.chunkland.command.BedrockClaimFormHandler;import com.smile.chunkland.command.BindingCommandHandler;
@@ -52,6 +57,7 @@ import com.smile.chunkland.command.ShrinkCommandHandler;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
+import com.smile.chunkland.command.ManageGuiCommandHandler;
 import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.RenameCommandHandler;
 import com.smile.chunkland.command.SubLandCommandHandler;
@@ -67,6 +73,10 @@ import com.smile.chunkland.economy.UnavailableVaultBridge;
 import com.smile.chunkland.economy.VaultBridge;
 import com.smile.chunkland.economy.VaultServiceDiscovery;
 import com.smile.chunkland.gui.GuiNavigator;
+import com.smile.chunkland.gui.GuiClickContext;
+import com.smile.chunkland.gui.ManagementGuiActions;
+import com.smile.chunkland.gui.ManagementGuiModel;
+import com.smile.chunkland.gui.ManagementGuiPages;
 import com.smile.chunkland.limit.LimitResolver;
 import com.smile.chunkland.limit.OwnerQuotaHydrator;
 import com.smile.chunkland.limit.OwnerQuotaService;
@@ -84,6 +94,9 @@ import com.smile.chunkland.persistence.SubLandAtomicCommit;
 import com.smile.chunkland.persistence.PermissionProfileRepository;
 import com.smile.chunkland.persistence.SubjectGroupRepository;
 import com.smile.chunkland.protection.EntryBanLookup;
+import com.smile.chunkland.protection.ManagementPermissionGate;
+import com.smile.chunkland.protection.PermissionExplain;
+import com.smile.chunkland.protection.PermissionExplainService;
 import com.smile.chunkland.group.SubjectGroupService;
 import com.smile.chunkland.profile.PermissionProfileService;
 import com.smile.chunkland.protection.LandAuthorisationCache;
@@ -137,6 +150,7 @@ import com.smile.chunkland.wand.WandSafetyListener;
 import com.smile.chunkland.wand.WandSelectionNotifier;
 import com.smile.chunkland.wand.SelectionWandClickHandler;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -299,6 +313,160 @@ public final class ChunkLandPlugin extends JavaPlugin {
      */
     public Optional<GuiNavigator> guiNavigator() {
         return Optional.ofNullable(guiNavigator);
+    }
+
+    /**
+     * Management GUI actions shown on the second layer, in display order.
+     * The five management actions come first, then the most-checked
+     * subject-permission actions so the detail page stays on one screen.
+     */
+    static final List<ProtectionActionType> MANAGEMENT_GUI_ACTIONS = List.of(
+            ProtectionActionType.MANAGE_MEMBER,
+            ProtectionActionType.MANAGE_PERMISSION,
+            ProtectionActionType.MANAGE_SUBLAND,
+            ProtectionActionType.EXPAND_LAND,
+            ProtectionActionType.DELETE_LAND,
+            ProtectionActionType.BLOCK_BREAK,
+            ProtectionActionType.BLOCK_PLACE,
+            ProtectionActionType.CONTAINER_OPEN,
+            ProtectionActionType.ENTRY);
+
+    /**
+     * Open the first-layer land-management GUI for {@code playerUuid} on
+     * {@code landId}.
+     *
+     * <p>The caller is re-checked against the shared
+     * {@link ManagementPermissionGate} for {@code MANAGE_PERMISSION} before
+     * anything opens; without {@code ALLOW} (unknown land, missing snapshot
+     * or provider, denied gate, resolver failure) the call returns empty and
+     * reveals nothing. The detail rows are read-only views over the same
+     * immutable snapshot the enforcement path reads. Row clicks only reach
+     * the caller-owned seam: this milestone keeps them observational, so
+     * every mutation stays on the existing {@code /land} handler/service
+     * path behind the same gate — the GUI never mutates domain state and
+     * never offers an {@code EVERYONE} entry.
+     *
+     * @return the authoritative upstream generation, or empty when the GUI
+     *     must stay closed
+     */
+    public Optional<Long> openManagementGui(UUID playerUuid, LandId landId) {
+        GuiNavigator navigator = this.guiNavigator;
+        if (playerUuid == null || landId == null || navigator == null
+                || protectionStore == null || permissionDefaults == null) {
+            return Optional.empty();
+        }
+        LandRegistry snapshot;
+        try {
+            snapshot = protectionStore.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (snapshot == null) {
+            return Optional.empty();
+        }
+        try {
+            if (snapshot.land(landId) == null) {
+                return Optional.empty();
+            }
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        PermissionContextProvider contexts = permissionDefaults.provider();
+        if (contexts == null) {
+            return Optional.empty();
+        }
+        PermissionDecision gate;
+        try {
+            gate = ManagementPermissionGate.check(playerUuid, landId,
+                    ProtectionActionType.MANAGE_PERMISSION, snapshot, false, false, contexts);
+        } catch (RuntimeException denied) {
+            return Optional.empty();
+        }
+        if (gate == null || gate.outcome() != PermissionState.ALLOW) {
+            return Optional.empty();
+        }
+        ManagementGuiModel model =
+                buildManagementGuiModel(playerUuid, landId, snapshot, contexts);
+        ManagementGuiModel shared = model.available() ? model : ManagementGuiModel.unavailable();
+        ManagementGuiActions actions = new ManagementGuiActions() {
+            @Override
+            public void openDetails(GuiClickContext click) {
+                try {
+                    navigator.push(click.playerUuid(),
+                            ManagementGuiPages.detailsPage(shared, this));
+                } catch (RuntimeException ignored) {
+                    // Navigation stays fail-closed; the current page is kept.
+                }
+            }
+
+            @Override
+            public void back(GuiClickContext click) {
+                try {
+                    navigator.back(click.playerUuid());
+                } catch (RuntimeException ignored) {
+                    // Navigation stays fail-closed; the current page is kept.
+                }
+            }
+
+            @Override
+            public void requestChange(GuiClickContext click, ProtectionActionType action) {
+                // Read-only in this milestone: row clicks are observed only.
+                // Mutations stay on the existing /land handler/service path
+                // behind the same management gate; the GUI never mutates
+                // domain state directly.
+                Objects.requireNonNull(click, "click");
+                Objects.requireNonNull(action, "action");
+            }
+        };
+        try {
+            return navigator.open(playerUuid, ManagementGuiPages.rootPage(actions));
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Read-only detail model over one snapshot: one context per listed
+     * action, resolved and explained through the shared path. Actions whose
+     * context, decision or explanation is missing or fails are skipped
+     * fail-closed; when nothing survives the model is unavailable.
+     */
+    static ManagementGuiModel buildManagementGuiModel(UUID actor, LandId landId,
+            LandRegistry snapshot, PermissionContextProvider contexts) {
+        if (actor == null || landId == null || snapshot == null || contexts == null) {
+            return ManagementGuiModel.unavailable();
+        }
+        boolean serverLand;
+        try {
+            serverLand = ManagementPermissionGate.isServerLand(
+                    Objects.requireNonNull(snapshot.land(landId), "land"));
+        } catch (RuntimeException unresolved) {
+            return ManagementGuiModel.unavailable();
+        }
+        List<PermissionExplain> explains = new ArrayList<>();
+        Map<ProtectionActionType, PermissionContext> byAction = new HashMap<>();
+        for (ProtectionActionType action : MANAGEMENT_GUI_ACTIONS) {
+            try {
+                PermissionContext ctx = contexts.provide(actor, landId, action, snapshot);
+                if (ctx == null) {
+                    continue;
+                }
+                PermissionDecision decision = PermissionResolver.resolve(ctx);
+                if (decision == null || decision.outcome() == PermissionState.INHERIT) {
+                    continue;
+                }
+                PermissionExplain explained = PermissionExplainService.explain(
+                        ctx, decision, null, false, serverLand);
+                if (explained == null) {
+                    continue;
+                }
+                explains.add(explained);
+                byAction.put(action, ctx);
+            } catch (RuntimeException skipped) {
+                // Per-action fail-closed: skip without poisoning the rest.
+            }
+        }
+        return ManagementGuiModel.fromExplains(explains, byAction);
     }
 
     @Override
@@ -647,7 +815,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                            buildExplainHandler(this.protectionStore, () -> atomicContexts),
                            expandTargetChunks(this.protectionStore, registryReadiness),
                            economyCurrency(activeConfig.current()),
-                           deleteHandler(), logHandler),
+                           deleteHandler(), logHandler, buildManageHandler(() -> atomicContexts)),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -1272,6 +1440,52 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Production {@code /land} handlers with the player-reachable management
+     * GUI entry wired behind {@code /land manage}.
+     *
+     * <p>A null manage handler keeps the slot fail-closed on the generic
+     * manage denial instead of the not-yet stub, so an unwired server never
+     * pretends the GUI is coming soon. Every other overload stays untouched
+     * so the focused assembly tests pinning them stay valid. The opener seam
+     * hops to the player's region thread before touching the navigator, so
+     * the command thread never opens an inventory directly.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks,
+            Currency shrinkRefundCurrency,
+            LandDeleteCommandHandler delete,
+            AuditLogCommandHandler logs,
+            ManageGuiCommandHandler manage) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain, targetChunks, shrinkRefundCurrency,
+                delete, logs));
+        base.put("manage", manage == null
+                ? (sender, args, sink) -> sink.reply("command.land.manage.denied", Map.of())
+                : manage);
+        return Map.copyOf(base);
+    }
+
+    /**
      * Builds the read-only explain handler over the shared protection
      * snapshot and the same atomic context provider the enforcement path
      * reads, so every explain observes the generation it classifies with.
@@ -1284,6 +1498,58 @@ public final class ChunkLandPlugin extends JavaPlugin {
         Supplier<PermissionContextProvider> activeProviders = providers == null
                 ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
         return new ExplainCommandHandler(active::snapshot, activeProviders);
+    }
+
+    /**
+     * Builds the {@code /land manage} entry over the shared protection
+     * snapshot and the same atomic context provider the enforcement path
+     * reads. The opener seam hops to the player's region thread before
+     * touching the navigator, so the command thread never opens an
+     * inventory directly.
+     */
+    ManageGuiCommandHandler buildManageHandler(
+            Supplier<PermissionContextProvider> providers) {
+        Supplier<PermissionContextProvider> activeProviders = providers == null
+                ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
+        LandRegistryStore store = this.protectionStore == null
+                ? new LandRegistryStore() : this.protectionStore;
+        ManagementGateResolver resolver = buildManagementGateResolver(
+                store, activeProviders,
+                PluginManagementGateResolver.TargetLandResolver.currentLocation());
+        return new ManageGuiCommandHandler(resolver, this::openManagementGuiOnRegion);
+    }
+
+    /**
+     * Region-safe GUI open for one player: hops to the player's region thread
+     * (Folia entity scheduler) before reaching {@link #openManagementGui},
+     * which re-checks the shared gate over the live snapshot. Best-effort and
+     * silent — a retired scheduler or failed open simply leaves the current
+     * screen untouched.
+     */
+    void openManagementGuiOnRegion(Player player, LandId landId) {
+        if (player == null || landId == null) {
+            return;
+        }
+        UUID actor;
+        try {
+            actor = player.getUniqueId();
+        } catch (RuntimeException unresolved) {
+            return;
+        }
+        if (actor == null) {
+            return;
+        }
+        try {
+            player.getScheduler().run(this, task -> {
+                try {
+                    openManagementGui(actor, landId);
+                } catch (RuntimeException ignored) {
+                    // Best-effort open: a failed GUI must not break the command.
+                }
+            }, null);
+        } catch (RuntimeException ignored) {
+            // A retired scheduler stays silent; the screen is simply not opened.
+        }
     }
 
     /**

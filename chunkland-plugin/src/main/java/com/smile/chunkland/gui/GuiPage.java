@@ -11,10 +11,16 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Immutable render data for one GUI screen: identity, title, inventory size
- * and the slot button bindings. A page carries no session state; generations
- * live in the navigator's per-player stack and always come from the upstream
- * session returned at open time.
+ * Immutable render data for one GUI screen: identity, title, inventory size,
+ * visible text lines and the slot button bindings. A page carries no session
+ * state; generations live in the navigator's per-player stack and always come
+ * from the upstream session returned at open time.
+ *
+ * <p>The text lines are framework-owned visible render data: one entry per
+ * described row (for example {@code "BLOCK_BREAK: DENY @ LAND_BINDING"}).
+ * The public upstream open argument only transports title, size and
+ * protected slots, so the lines travel with the page value itself for
+ * callers that render them through another channel.
  */
 public final class GuiPage {
 
@@ -22,12 +28,15 @@ public final class GuiPage {
     private final String title;
     private final int size;
     private final Map<Integer, GuiButton> buttons;
+    private final List<String> lines;
 
-    private GuiPage(String id, String title, int size, Map<Integer, GuiButton> buttons) {
+    private GuiPage(String id, String title, int size, Map<Integer, GuiButton> buttons,
+            List<String> lines) {
         this.id = id;
         this.title = title;
         this.size = size;
         this.buttons = buttons;
+        this.lines = lines;
     }
 
     /**
@@ -42,9 +51,27 @@ public final class GuiPage {
      * @param buttons slot bindings; never {@code null} (may be empty)
      */
     public static GuiPage of(String id, String title, int size, List<GuiButton> buttons) {
+        return of(id, title, size, buttons, List.of());
+    }
+
+    /**
+     * Build an immutable page with visible text lines.
+     *
+     * @param id page identity used in click contexts; never {@code null} or empty
+     * @param title inventory title; never {@code null}
+     * @param size inventory size; must be positive (the upstream service
+     *     validates chest-row shapes at open time and the navigator treats a
+     *     rejection as fail-closed)
+     * @param buttons slot bindings; never {@code null} (may be empty)
+     * @param lines visible text lines in display order; never {@code null}
+     *     (may be empty), entries never {@code null}
+     */
+    public static GuiPage of(String id, String title, int size, List<GuiButton> buttons,
+            List<String> lines) {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(title, "title");
         Objects.requireNonNull(buttons, "buttons");
+        Objects.requireNonNull(lines, "lines");
         if (id.isEmpty()) {
             throw new IllegalArgumentException("id must not be empty");
         }
@@ -63,7 +90,8 @@ public final class GuiPage {
             }
             copy.put(button.slot(), button);
         }
-        return new GuiPage(id, title, size, Collections.unmodifiableMap(copy));
+        List<String> owned = List.copyOf(lines);
+        return new GuiPage(id, title, size, Collections.unmodifiableMap(copy), owned);
     }
 
     public String id() {
@@ -86,6 +114,11 @@ public final class GuiPage {
     /** @return bound slots; unmodifiable. */
     public Set<Integer> slots() {
         return Collections.unmodifiableSet(buttons.keySet());
+    }
+
+    /** @return visible text lines in display order; unmodifiable, may be empty. */
+    public List<String> lines() {
+        return lines;
     }
 
     /** @return the binding for {@code slot}, or empty when the slot has none. */

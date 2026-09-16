@@ -11,7 +11,7 @@ message:
       unknown: '未知動作：<payload>'
 command:
   land:
-    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|log]</gray>"
+    help: "<gray>用法：/land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|log|manage]</gray>"
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
@@ -143,6 +143,9 @@ command:
       empty: "<gray>沒有符合這些篩選條件的審計紀錄。</gray>"
       line: "<gray><value></gray>"
       failed: "<red>查詢審計紀錄失敗：<reason>。</red>"
+    manage:
+      console: "<red>只有玩家可以開啟管理介面。</red>"
+      denied: "<red>管理介面目前無法使用。</red>"
 land:
   claim:
     confirm: "<white>圈地 <land_name> — <chunk_count> 個區塊，花費 <price>（衝突 <conflict_count>，最低高度 <min_y>）。</white> <hover:show_text:'<gray>點擊確認</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[確認]</green></click></hover>"
