@@ -147,8 +147,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             // Dropping the range is the point of the transition; the end-reason
             // notifier owns the single "abandoned" prompt when a live range goes.
             manager.clear(playerId, SelectionEndReason.ITEM_CHANGED);
-            blockedNotified.remove(playerId);
-            unavailableNotified.remove(playerId);
+            forgetDedup(playerId);
             stopPreview(playerId);
         } catch (RuntimeException ignored) {
             // A lifecycle hook must never throw back onto the item event thread.
@@ -163,6 +162,26 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         // The range was already dropped when the wand left the hand, so this is
         // only guidance: tell the player the fresh range starts at a first click.
         feedback.send(player, WandFeedback.Kind.RESET, Map.of());
+    }
+
+    /**
+     * Forget the per-player blocked prompt, unavailable prompt and preview
+     * bookkeeping after a selection teardown (quit, world change, cross-world
+     * respawn), so the next click on the same land prompts and previews again.
+     * The caller owns stopping the preview renderer; this only resets the
+     * dedup, so the handler's view stays consistent with the torn-down render.
+     */
+    public void onSelectionCleared(UUID playerId) {
+        if (playerId == null) {
+            return;
+        }
+        forgetDedup(playerId);
+    }
+
+    private void forgetDedup(UUID playerId) {
+        blockedNotified.remove(playerId);
+        unavailableNotified.remove(playerId);
+        previewedLand.remove(playerId);
     }
 
     private void handleClick(Player player, Block block) {

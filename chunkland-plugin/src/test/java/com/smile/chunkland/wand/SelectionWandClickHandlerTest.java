@@ -15,6 +15,7 @@ import com.smile.chunkland.selection.SelectionLandBoundaryLookup;
 import com.smile.chunkland.selection.SelectionLandContext;
 import com.smile.chunkland.selection.SelectionLandIndex;
 import com.smile.chunkland.selection.SelectionLandLookup;
+import com.smile.chunkland.selection.SelectionLifecycleListener;
 import com.smile.chunkland.selection.SelectionMode;
 import com.smile.chunkland.selection.SelectionNotification;
 import com.smile.chunkland.selection.SelectionPoint;
@@ -48,8 +49,10 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDamageEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.PlayerInventory;
@@ -1134,6 +1137,79 @@ class SelectionWandClickHandlerTest {
                 player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
         assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
         assertEquals(1, harness.preview.shown.size());
+    }
+
+    @Test
+    void lifecycleClearForgetsDedupSoTheBlockedLandPromptsAndPreviewsAgain() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        otherLandChunks(harness, OTHER_LAND, 1L, Set.of(new ChunkKey(WORLD_ID, 0, 0)));
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+        assertEquals(1, harness.preview.shown.size());
+
+        // A lifecycle teardown (quit / world change) drops the session and its
+        // preview, so it must also forget the per-player prompt/preview dedup.
+        handler.onSelectionCleared(PLAYER_ID);
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED, WandFeedback.Kind.BLOCKED), harness.feedbackKinds(),
+                "after a teardown the same blocked land must prompt again");
+        assertEquals(2, harness.preview.shown.size(),
+                "after a teardown the same blocked land must preview again");
+    }
+
+    @Test
+    void quitThenReclickingTheSameBlockedLandPromptsAndPreviewsAgain() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        otherLandChunks(harness, OTHER_LAND, 1L, Set.of(new ChunkKey(WORLD_ID, 0, 0)));
+        SelectionWandClickHandler handler = harness.handler();
+        SelectionLifecycleListener lifecycle = new SelectionLifecycleListener(
+                harness.manager, harness.preview, handler::onSelectionCleared);
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+        assertEquals(1, harness.preview.shown.size());
+
+        lifecycle.onPlayerQuit(new PlayerQuitEvent(player, "quit"));
+        assertTrue(harness.preview.stopped.contains(PLAYER_ID), "quit must stop the orphan preview");
+
+        // Rejoining and hitting the same blocked land must prompt and preview again.
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED, WandFeedback.Kind.BLOCKED), harness.feedbackKinds(),
+                "a rejoining player must be told again that the land is blocked");
+        assertEquals(2, harness.preview.shown.size(),
+                "a rejoining player must see the blocking boundary again");
+    }
+
+    @Test
+    void worldChangeThenReclickingTheSameBlockedLandPromptsAndPreviewsAgain() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        otherLandChunks(harness, OTHER_LAND, 1L, Set.of(new ChunkKey(WORLD_ID, 0, 0)));
+        SelectionWandClickHandler handler = harness.handler();
+        SelectionLifecycleListener lifecycle = new SelectionLifecycleListener(
+                harness.manager, harness.preview, handler::onSelectionCleared);
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(1, harness.preview.shown.size());
+
+        lifecycle.onPlayerChangedWorld(new PlayerChangedWorldEvent(player, fakeWorld(OTHER_WORLD_ID)));
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED, WandFeedback.Kind.BLOCKED), harness.feedbackKinds(),
+                "after a world change the same blocked land must prompt again");
+        assertEquals(2, harness.preview.shown.size(),
+                "after a world change the same blocked land must preview again");
     }
 
     @Test

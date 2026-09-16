@@ -651,7 +651,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 (player, kind, vars) -> sendWandSelectionMessage(player, kind.messageKey(), vars),
                 wandOccupancyLookup(this.protectionStore, registryReadiness),
                 wandBoundaryLookup(this.protectionStore, registryReadiness),
-                occupiedPreview);
+                occupiedPreview,
+                this.selectionLifecycleListener);
         // ENTRY enforcement reads banned-inside stops from the immutable ban
         // snapshot through a memory-only lookup: no SQL, Bukkit, chunk load
         // or network on the event thread. Unknown or failing answers fail
@@ -2390,8 +2391,30 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SelectionLandLookup landLookup,
             SelectionLandBoundaryLookup boundaryLookup,
             OccupiedPreviewController occupiedPreview) {
-        return new WandSafetyListener(new SelectionWandClickHandler(
-                manager, editServices, clock, feedback, landLookup, boundaryLookup, occupiedPreview));
+        return buildWandSafetyListener(
+                manager, editServices, clock, feedback, landLookup, boundaryLookup, occupiedPreview, null);
+    }
+
+    /**
+     * Same assembly, additionally binding the lifecycle listener to the wand
+     * handler so quit / world change / cross-world respawn forgets the
+     * per-player prompt/preview dedup it just tore down.
+     */
+    public static WandSafetyListener buildWandSafetyListener(
+            SelectionSessionManager manager,
+            java.util.function.Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback,
+            SelectionLandLookup landLookup,
+            SelectionLandBoundaryLookup boundaryLookup,
+            OccupiedPreviewController occupiedPreview,
+            SelectionLifecycleListener lifecycleListener) {
+        SelectionWandClickHandler clickHandler = new SelectionWandClickHandler(
+                manager, editServices, clock, feedback, landLookup, boundaryLookup, occupiedPreview);
+        if (lifecycleListener != null) {
+            lifecycleListener.bindWandStateReset(clickHandler::onSelectionCleared);
+        }
+        return new WandSafetyListener(clickHandler);
     }
 
     /**
