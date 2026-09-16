@@ -77,6 +77,13 @@ command:
       rejected: "<red>Rename rejected: <reason>.</red>"
       failed: "<red>Rename failed: <reason>.</red>"
       degraded: "<yellow>Land renamed to <new_name> but the live map is still rebuilding: <reason>.</yellow>"
+    expand:
+      console: "<red>Only players can expand land.</red>"
+      no_selection: "<yellow>No active selection. Select chunks first, then run /land expand again.</yellow>"
+      no_target: "<yellow>Stand on the land you want to expand and target it first.</yellow>"
+      success: "<green>Expanded <chunk_count> chunks.</green>"
+      rejected: "<red>Expand rejected: <reason>.</red>"
+      failed: "<red>Expand failed: <reason>.</red>"
     shrink:
       console: "<red>Only players can shrink land.</red>"
       no_selection: "<yellow>No active selection. Select chunks first, then run /land shrink again.</yellow>"
@@ -151,8 +158,11 @@ economy:
 selection:
   wand:
     first_point: "<yellow>First corner set. Click another block to pick the second corner.</yellow>"
+    edit_target: "<yellow>Editing your land: first corner set. Select chunks to expand or shrink it.</yellow>"
     second_point: "<green>Selection ready: <width>×<height> chunks. Click again to resize the second corner.</green>"
     resized: "<green>Selection resized to <width>×<height> chunks. Click again to adjust it further.</green>"
+    blocked: "<red>That area belongs to an existing land. Move to wilderness and set the first corner again.</red>"
+    unavailable: "<yellow>Land data is still loading. Please try again in a moment.</yellow>"
     reset: "<yellow>Selection reset. Click a block to set the first corner.</yellow>"
     abandoned: "<yellow>Selection cleared because you switched away from the wand.</yellow>"
     cancelled: "<yellow>Selection cancelled.</yellow>"

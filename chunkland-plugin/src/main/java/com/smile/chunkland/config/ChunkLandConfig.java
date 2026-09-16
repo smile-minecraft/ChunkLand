@@ -52,6 +52,7 @@ public final class ChunkLandConfig {
     private final SelectionSettings selection;
     private final SubjectDefaultsConfig subjectDefaults;
     private final RuleDefaultsConfig ruleDefaults;
+    private final EconomySettings economy;
     private final long globalPolicyEpoch;
     private final Map<String, Long> worldPolicyEpochs;
     private final int decisionCacheMaxEntries;
@@ -97,6 +98,26 @@ public final class ChunkLandConfig {
                            long globalPolicyEpoch,
                            Map<String, Long> worldPolicyEpochs,
                            int decisionCacheMaxEntries) {
+        this(worlds, limits, messages, selection, subjectDefaults, ruleDefaults, null,
+                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+    }
+
+    /**
+     * Canonical snapshot with the typed economy section. A {@code null}
+     * economy means {@code config.yml} carries no {@code economy} section:
+     * old configs keep parsing, while pricing resolution fails closed
+     * downstream instead of falling back to a zero table.
+     */
+    public ChunkLandConfig(Map<String, WorldSettings> worlds,
+                           LimitSettings limits,
+                           MessageSettings messages,
+                           SelectionSettings selection,
+                           SubjectDefaultsConfig subjectDefaults,
+                           RuleDefaultsConfig ruleDefaults,
+                           EconomySettings economy,
+                           long globalPolicyEpoch,
+                           Map<String, Long> worldPolicyEpochs,
+                           int decisionCacheMaxEntries) {
         Objects.requireNonNull(worlds, "worlds");
         Objects.requireNonNull(limits, "limits");
         Objects.requireNonNull(messages, "messages");
@@ -139,6 +160,7 @@ public final class ChunkLandConfig {
         this.selection = selection;
         this.subjectDefaults = subjectDefaults;
         this.ruleDefaults = ruleDefaults;
+        this.economy = economy;
         this.globalPolicyEpoch = globalPolicyEpoch;
         this.worldPolicyEpochs = Collections.unmodifiableMap(defensiveEpochs);
         this.decisionCacheMaxEntries = decisionCacheMaxEntries;
@@ -191,6 +213,16 @@ public final class ChunkLandConfig {
         return ruleDefaults;
     }
 
+    /**
+     * Typed economy section, or {@code null} when {@code config.yml} carries
+     * no {@code economy} key. Null is the backward-compatible state for
+     * pre-economy configs; callers must treat it as pricing-unavailable,
+     * never as a zero-price table.
+     */
+    public EconomySettings economy() {
+        return economy;
+    }
+
     public long globalPolicyEpoch() {
         return globalPolicyEpoch;
     }
@@ -229,31 +261,40 @@ public final class ChunkLandConfig {
     public ChunkLandConfig withWorlds(Map<String, WorldSettings> newWorlds) {
         Objects.requireNonNull(newWorlds, "newWorlds");
         return new ChunkLandConfig(newWorlds, limits, messages, selection, subjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withLimits(LimitSettings newLimits) {
         Objects.requireNonNull(newLimits, "newLimits");
         return new ChunkLandConfig(worlds, newLimits, messages, selection, subjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withMessages(MessageSettings newMessages) {
         Objects.requireNonNull(newMessages, "newMessages");
         return new ChunkLandConfig(worlds, limits, newMessages, selection, subjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withSubjectDefaults(SubjectDefaultsConfig newSubjectDefaults) {
         Objects.requireNonNull(newSubjectDefaults, "newSubjectDefaults");
         return new ChunkLandConfig(worlds, limits, messages, selection, newSubjectDefaults, ruleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withRuleDefaults(RuleDefaultsConfig newRuleDefaults) {
         Objects.requireNonNull(newRuleDefaults, "newRuleDefaults");
         return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, newRuleDefaults,
-                globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+    }
+
+    /**
+     * Return a copy with the economy section substituted. {@code null}
+     * clears it back to the pre-economy state.
+     */
+    public ChunkLandConfig withEconomy(EconomySettings newEconomy) {
+        return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, ruleDefaults,
+                newEconomy, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     /**
@@ -283,6 +324,7 @@ public final class ChunkLandConfig {
                 this.selection,
                 this.subjectDefaults,
                 this.ruleDefaults,
+                this.economy,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped,
                 this.decisionCacheMaxEntries);
@@ -305,6 +347,7 @@ public final class ChunkLandConfig {
                 this.selection,
                 this.subjectDefaults,
                 this.ruleDefaults,
+                this.economy,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped,
                 this.decisionCacheMaxEntries);
@@ -323,12 +366,30 @@ public final class ChunkLandConfig {
     }
 
     public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds,
-                                             LimitSettings nextLimits,
-                                             MessageSettings nextMessages,
-                                             SelectionSettings nextSelection,
-                                             SubjectDefaultsConfig nextSubjectDefaults,
-                                             RuleDefaultsConfig nextRuleDefaults,
-                                             int nextDecisionCacheMaxEntries) {
+                                              LimitSettings nextLimits,
+                                              MessageSettings nextMessages,
+                                              SelectionSettings nextSelection,
+                                              SubjectDefaultsConfig nextSubjectDefaults,
+                                              RuleDefaultsConfig nextRuleDefaults,
+                                              int nextDecisionCacheMaxEntries) {
+        return withEpochsBumped(nextWorlds, nextLimits, nextMessages, nextSelection,
+                nextSubjectDefaults, nextRuleDefaults, this.economy, nextDecisionCacheMaxEntries);
+    }
+
+    /**
+     * Reload-path overload: the freshly loaded economy replaces the previous
+     * one (a removed section clears back to null) while epochs bump exactly
+     * once. A {@code null} next economy is the backward-compatible
+     * pre-economy state, not an error.
+     */
+    public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds,
+                                              LimitSettings nextLimits,
+                                              MessageSettings nextMessages,
+                                              SelectionSettings nextSelection,
+                                              SubjectDefaultsConfig nextSubjectDefaults,
+                                              RuleDefaultsConfig nextRuleDefaults,
+                                              EconomySettings nextEconomy,
+                                              int nextDecisionCacheMaxEntries) {
         Objects.requireNonNull(nextWorlds, "nextWorlds");
         Objects.requireNonNull(nextLimits, "nextLimits");
         Objects.requireNonNull(nextMessages, "nextMessages");
@@ -349,6 +410,7 @@ public final class ChunkLandConfig {
                 nextSelection,
                 nextSubjectDefaults,
                 nextRuleDefaults,
+                nextEconomy,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped,
                 nextDecisionCacheMaxEntries);

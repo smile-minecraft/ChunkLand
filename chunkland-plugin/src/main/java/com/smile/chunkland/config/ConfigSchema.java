@@ -1,15 +1,21 @@
 package com.smile.chunkland.config;
 
+import com.smile.chunkland.api.money.Currency;
+import com.smile.chunkland.api.money.Money;
+import com.smile.chunkland.api.money.PricingTable;
+import com.smile.chunkland.api.money.PricingTier;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.api.rule.LandRuleType;
 import com.smile.chunkland.selection.SelectionVisualizationBudget;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -89,11 +95,11 @@ public final class ConfigSchema {
         // loud failures instead of silent runtime bugs.
         for (String key : root.keySet()) {
             if (!"worlds".equals(key) && !"limits".equals(key) && !"messages".equals(key)
-                    && !"selection".equals(key)
+                    && !"selection".equals(key) && !"economy".equals(key)
                     && !"subject-defaults".equals(key) && !"rule-defaults".equals(key)) {
                 throw new ConfigValidationException(
                         "unknown top-level key '" + key
-                                + "' (only 'worlds', 'limits', 'messages', 'selection', "
+                                + "' (only 'worlds', 'limits', 'messages', 'selection', 'economy', "
                                 + "'subject-defaults' and 'rule-defaults' are supported in the current schema)");
             }
         }
@@ -149,8 +155,10 @@ public final class ConfigSchema {
             ruleDefaults = parseRuleDefaults(rawRuleDefaults, "rule-defaults");
         }
         int decisionCacheMaxEntries = parseDecisionCacheMaxEntries(root.get("limits"));
+        EconomySettings economy = parseEconomyOptional(root.get("economy"), "economy",
+                root.containsKey("economy"));
         return new ChunkLandConfig(worlds, limits, messages, selection,
-                subjectDefaults, ruleDefaults, 0L, deriveWorldEpochs(worlds),
+                subjectDefaults, ruleDefaults, economy, 0L, deriveWorldEpochs(worlds),
                 decisionCacheMaxEntries);
     }
 
@@ -186,6 +194,234 @@ public final class ConfigSchema {
             out.put(name, 0L);
         }
         return out;
+    }
+
+    /**
+     * Optional {@code economy} section: claim currency plus owner-total
+     * price-per-chunk tiers.
+     *
+     * <p>Absent means a pre-economy config and stays backward-compatible
+     * (returns {@code null}; pricing resolution fails closed downstream, it
+     * never falls back to a zero table). A present section must be complete
+     * and exact: unknown keys, missing currency/pricing, blank codes,
+     * out-of-range scales, non-integer or non-positive bounds, overlapping
+     * tiers, a finite top tier (gap at infinity), negative, non-finite, or
+     * overflowing prices all fail closed here so a bad edit can never become
+     * a silent free land.
+     *
+     * <p>Shape:
+     * <pre>
+     * economy:
+     *   currency:
+     *     code: EMC
+     *     scale: 2
+     *   pricing:
+     *     tiers:
+     *       - until: 20
+     *         price-per-chunk: 1.00
+     *       - until: unbounded
+     *         price-per-chunk: 2.00
+     * </pre>
+     *
+     * <p>{@code price-per-chunk} is major units (what the Vault provider
+     * moves as {@code double}); it is converted to exact minor units with
+     * the currency scale here, so sub-minor fractions and overflow fail at
+     * load instead of rounding silently.
+     */
+    static EconomySettings parseEconomyOptional(Object raw, String path, boolean present) {
+        if (!present) {
+            return null;
+        }
+        if (raw == null) {
+            throw new ConfigValidationException(
+                    path + " must not be null; remove the key or provide 'currency' and 'pricing'");
+        }
+        Map<String, Object> map = requireMapping(raw, path, "'currency' and 'pricing'");
+        rejectUnknownKeys(map, path, Set.of("currency", "pricing"));
+        if (!map.containsKey("currency")) {
+            throw new ConfigValidationException(path + ".currency is required");
+        }
+        if (!map.containsKey("pricing")) {
+            throw new ConfigValidationException(path + ".pricing is required");
+        }
+        Currency currency = parseEconomyCurrency(map.get("currency"), path + ".currency");
+        PricingTable pricing = parseEconomyPricing(map.get("pricing"), path + ".pricing", currency);
+        try {
+            return new EconomySettings(currency, pricing);
+        } catch (IllegalArgumentException e) {
+            throw new ConfigValidationException(path + " is inconsistent: " + e.getMessage());
+        }
+    }
+
+    private static Currency parseEconomyCurrency(Object raw, String path) {
+        Map<String, Object> map = requireMapping(raw, path, "'code' and 'scale'");
+        rejectUnknownKeys(map, path, Set.of("code", "scale"));
+        if (!map.containsKey("code")) {
+            throw new ConfigValidationException(path + ".code is required");
+        }
+        Object rawCode = map.get("code");
+        if (!(rawCode instanceof String code) || code.isBlank()) {
+            throw new ConfigValidationException(
+                    path + ".code must be a non-blank currency code string");
+        }
+        if (!map.containsKey("scale")) {
+            throw new ConfigValidationException(path + ".scale is required");
+        }
+        Object rawScale = map.get("scale");
+        if (rawScale == null) {
+            throw new ConfigValidationException(path + ".scale must not be null");
+        }
+        int scale = parseIntLimit(rawScale, path + ".scale");
+        try {
+            return Currency.of(code.trim(), scale);
+        } catch (IllegalArgumentException e) {
+            throw new ConfigValidationException(path + " is invalid: " + e.getMessage());
+        }
+    }
+
+    private static PricingTable parseEconomyPricing(Object raw, String path, Currency currency) {
+        Map<String, Object> map = requireMapping(raw, path, "'tiers'");
+        rejectUnknownKeys(map, path, Set.of("tiers"));
+        if (!map.containsKey("tiers")) {
+            throw new ConfigValidationException(path + ".tiers is required");
+        }
+        Object rawTiers = map.get("tiers");
+        if (!(rawTiers instanceof List<?> list)) {
+            throw new ConfigValidationException(
+                    path + ".tiers must be a list of {until, price-per-chunk}, got "
+                            + (rawTiers == null ? "null" : rawTiers.getClass().getSimpleName()));
+        }
+        if (list.isEmpty()) {
+            throw new ConfigValidationException(path + ".tiers must not be empty");
+        }
+        List<PricingTier> tiers = new ArrayList<>(list.size());
+        for (int i = 0; i < list.size(); i++) {
+            tiers.add(parseEconomyTier(list.get(i), path + ".tiers[" + i + "]", currency));
+        }
+        try {
+            return PricingTable.of(tiers);
+        } catch (IllegalArgumentException | ArithmeticException e) {
+            throw new ConfigValidationException(
+                    path + ".tiers are not a contiguous partition: " + e.getMessage());
+        }
+    }
+
+    private static PricingTier parseEconomyTier(Object raw, String path, Currency currency) {
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new ConfigValidationException(
+                    path + " must be a mapping with 'until' and 'price-per-chunk', got "
+                            + (raw == null ? "null" : raw.getClass().getSimpleName()));
+        }
+        Map<String, Object> map = castStringKeyMap(rawMap, path);
+        rejectUnknownKeys(map, path, Set.of("until", "price-per-chunk"));
+        if (!map.containsKey("until")) {
+            throw new ConfigValidationException(path + ".until is required");
+        }
+        if (!map.containsKey("price-per-chunk")) {
+            throw new ConfigValidationException(path + ".price-per-chunk is required");
+        }
+        long until = parseTierUntil(map.get("until"), path + ".until");
+        Money price = parseTierPrice(map.get("price-per-chunk"), path + ".price-per-chunk", currency);
+        try {
+            return PricingTier.of(until, price);
+        } catch (IllegalArgumentException e) {
+            throw new ConfigValidationException(path + " is invalid: " + e.getMessage());
+        }
+    }
+
+    private static long parseTierUntil(Object raw, String path) {
+        if (raw instanceof String text) {
+            if (text.trim().equalsIgnoreCase("unbounded")) {
+                return PricingTier.UNBOUNDED;
+            }
+            throw new ConfigValidationException(
+                    path + " must be a positive integer chunk upper bound or 'unbounded', got '"
+                            + text + "'");
+        }
+        if (raw instanceof Double || raw instanceof Float) {
+            throw new ConfigValidationException(
+                    path + " must be an integer chunk upper bound (no floating point), got " + raw);
+        }
+        if (raw instanceof BigInteger bi) {
+            if (bi.signum() <= 0) {
+                throw new ConfigValidationException(path + " must be >= 1, got " + bi);
+            }
+            try {
+                return bi.longValueExact();
+            } catch (ArithmeticException e) {
+                throw new ConfigValidationException(path + " out of range (> Long.MAX_VALUE): " + bi);
+            }
+        }
+        if (raw instanceof BigDecimal bd) {
+            long value;
+            try {
+                value = bd.longValueExact();
+            } catch (ArithmeticException e) {
+                throw new ConfigValidationException(path + " must be an integer, got " + raw);
+            }
+            if (value < 1) {
+                throw new ConfigValidationException(path + " must be >= 1, got " + raw);
+            }
+            return value;
+        }
+        if (raw instanceof Number number) {
+            long value = number.longValue();
+            if (value < 1) {
+                throw new ConfigValidationException(path + " must be >= 1, got " + raw);
+            }
+            return value;
+        }
+        throw new ConfigValidationException(
+                path + " must be a positive integer chunk upper bound or 'unbounded', got "
+                        + (raw == null ? "null"
+                                : raw.getClass().getSimpleName() + " value '" + raw + "'"));
+    }
+
+    private static Money parseTierPrice(Object raw, String path, Currency currency) {
+        if (raw == null) {
+            throw new ConfigValidationException(path + " must not be null");
+        }
+        BigDecimal major;
+        if (raw instanceof BigDecimal bd) {
+            major = bd;
+        } else if (raw instanceof BigInteger bi) {
+            major = new BigDecimal(bi);
+        } else if (raw instanceof Double d) {
+            if (!Double.isFinite(d)) {
+                throw new ConfigValidationException(path + " must be a finite amount, got " + raw);
+            }
+            major = BigDecimal.valueOf(d);
+        } else if (raw instanceof Float f) {
+            if (!Float.isFinite(f)) {
+                throw new ConfigValidationException(path + " must be a finite amount, got " + raw);
+            }
+            major = BigDecimal.valueOf(f.doubleValue());
+        } else if (raw instanceof Number number) {
+            major = BigDecimal.valueOf(number.longValue());
+        } else if (raw instanceof String text) {
+            try {
+                major = new BigDecimal(text.trim());
+            } catch (NumberFormatException e) {
+                throw new ConfigValidationException(
+                        path + " must be a decimal major-unit amount, got '" + text + "'");
+            }
+        } else {
+            throw new ConfigValidationException(
+                    path + " must be a decimal major-unit amount, got "
+                            + raw.getClass().getSimpleName() + " value '" + raw + "'");
+        }
+        if (major.signum() < 0) {
+            throw new ConfigValidationException(path + " must not be negative, got " + raw);
+        }
+        long minor;
+        try {
+            minor = major.movePointRight(currency.scale()).longValueExact();
+        } catch (ArithmeticException e) {
+            throw new ConfigValidationException(
+                    path + " overflows minor units or carries a sub-minor fraction "
+                            + "at scale " + currency.scale() + ": " + raw);
+        }
+        return new Money(minor, currency);
     }
 
     private static Map<String, WorldSettings> parseWorlds(Object rawWorlds, String path) {

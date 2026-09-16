@@ -1,19 +1,29 @@
 package com.smile.chunkland.wand;
 
+import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.selection.OccupiedPreviewController;
 import com.smile.chunkland.selection.SelectionClock;
 import com.smile.chunkland.selection.SelectionEditOutcome;
+import com.smile.chunkland.selection.SelectionEditReason;
 import com.smile.chunkland.selection.SelectionEditService;
 import com.smile.chunkland.selection.SelectionEndReason;
+import com.smile.chunkland.selection.SelectionLandBoundaryLookup;
+import com.smile.chunkland.selection.SelectionLandContext;
+import com.smile.chunkland.selection.SelectionLandLookup;
 import com.smile.chunkland.selection.SelectionMode;
 import com.smile.chunkland.selection.SelectionPoint;
 import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionUpdate;
+import com.smile.chunkland.selection.SelectionWandGuard;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -32,6 +42,14 @@ import org.bukkit.entity.Player;
  * clean range. A rejected analysis keeps the session untouched, so particles
  * only move when the rectangle is actually accepted.
  *
+ * <p>The first corner is context-aware: wilderness opens a new {@code
+ * CREATE_LAND} claim, the actor's own Player Land opens an {@code
+ * EDIT_SELECTION} that targets it so expand/shrink can read the target, and
+ * any other land is refused before a session exists. A candidate rectangle
+ * that would cover a land other than the session target is refused by the edit
+ * service's collision guard and reported once as occupied; while a player
+ * keeps hitting a blocked area the prompt is not repeated.
+ *
  * <p>Only identifiers and block coordinates cross into the session; no
  * Bukkit object is retained. Reads stay on the event thread and touch no
  * chunk data, storage, or network — position math plus the in-memory
@@ -43,12 +61,29 @@ public final class SelectionWandClickHandler implements WandClickHandler {
     private final Supplier<SelectionEditService> editServices;
     private final SelectionClock clock;
     private final WandFeedback feedback;
+    private final SelectionWandGuard guard;
+    private final SelectionLandLookup landLookup;
+    private final SelectionLandBoundaryLookup boundaryLookup;
+    private final OccupiedPreviewController preview;
+    /**
+     * Last blocked token per player, so a repeated blocked click does not
+     * re-prompt. The token is the live session generation, or {@code
+     * NO_SESSION_TOKEN} while no session exists; it is cleared by any accepted
+     * update and when the wand leaves the hand.
+     */
+    private final Map<UUID, Long> blockedNotified = new ConcurrentHashMap<>();
+    /** Players already told that the land registry is not hydrated yet. */
+    private final Set<UUID> unavailableNotified = ConcurrentHashMap.newKeySet();
+    /** Land currently previewed per player, so a repeated click does not restart it. */
+    private final Map<UUID, LandId> previewedLand = new ConcurrentHashMap<>();
+
+    private static final long NO_SESSION_TOKEN = -1L;
 
     public SelectionWandClickHandler(
             SelectionSessionManager manager,
             Supplier<SelectionEditService> editServices,
             SelectionClock clock) {
-        this(manager, editServices, clock, WandFeedback.none());
+        this(manager, editServices, clock, WandFeedback.none(), SelectionLandLookup.none());
     }
 
     public SelectionWandClickHandler(
@@ -56,10 +91,35 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             Supplier<SelectionEditService> editServices,
             SelectionClock clock,
             WandFeedback feedback) {
+        this(manager, editServices, clock, feedback, SelectionLandLookup.none());
+    }
+
+    public SelectionWandClickHandler(
+            SelectionSessionManager manager,
+            Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback,
+            SelectionLandLookup landLookup) {
+        this(manager, editServices, clock, feedback, landLookup,
+                SelectionLandBoundaryLookup.none(), OccupiedPreviewController.noop());
+    }
+
+    public SelectionWandClickHandler(
+            SelectionSessionManager manager,
+            Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback,
+            SelectionLandLookup landLookup,
+            SelectionLandBoundaryLookup boundaryLookup,
+            OccupiedPreviewController preview) {
         this.manager = Objects.requireNonNull(manager, "manager");
         this.editServices = Objects.requireNonNull(editServices, "editServices");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.feedback = Objects.requireNonNull(feedback, "feedback");
+        this.landLookup = Objects.requireNonNull(landLookup, "landLookup");
+        this.guard = new SelectionWandGuard(landLookup);
+        this.boundaryLookup = Objects.requireNonNull(boundaryLookup, "boundaryLookup");
+        this.preview = Objects.requireNonNull(preview, "preview");
     }
 
     @Override
@@ -87,6 +147,9 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             // Dropping the range is the point of the transition; the end-reason
             // notifier owns the single "abandoned" prompt when a live range goes.
             manager.clear(playerId, SelectionEndReason.ITEM_CHANGED);
+            blockedNotified.remove(playerId);
+            unavailableNotified.remove(playerId);
+            stopPreview(playerId);
         } catch (RuntimeException ignored) {
             // A lifecycle hook must never throw back onto the item event thread.
         }
@@ -173,7 +236,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
                 return;
             }
             if (current == null || !worldId.equals(current.worldId())) {
-                openSession(playerId, player, worldId, point, now);
+                openSession(playerId, player, worldId, point, now, current);
                 return;
             }
             extendSession(playerId, player, current, edits, point);
@@ -182,8 +245,49 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         }
     }
 
-    private void openSession(UUID playerId, Player player, UUID worldId, SelectionPoint point, Instant now) {
-        SelectionSession stamped = startEmptySession(playerId, worldId, now);
+    private void openSession(
+            UUID playerId, Player player, UUID worldId, SelectionPoint point, Instant now, SelectionSession current) {
+        SelectionWandGuard.FirstPoint firstPoint;
+        try {
+            firstPoint = guard.classifyFirstPoint(playerId, point);
+        } catch (RuntimeException ex) {
+            // Not hydrated or unreadable: fail closed and say so rather than
+            // treating durable land as wilderness.
+            notifyUnavailable(playerId, player);
+            return;
+        }
+        if (firstPoint == null || firstPoint.kind() == SelectionWandGuard.FirstPointKind.BLOCKED) {
+            Optional<LandId> occupied = firstPoint == null ? Optional.empty() : firstPoint.occupiedLandId();
+            notifyBlocked(playerId, player, current);
+            showPreview(playerId, occupied, point.blockY() + 1.0);
+            return;
+        }
+        if (firstPoint.kind() == SelectionWandGuard.FirstPointKind.EDIT_SELECTION) {
+            // Own land: open the edit context and keep the existing boundary as
+            // the baseline until the player accepts a new selection.
+            startSession(playerId, player, worldId, point, now, SelectionMode.EDIT_SELECTION,
+                    firstPoint.targetLandId(), firstPoint.baseStructureRevision(), WandFeedback.Kind.EDIT_TARGET);
+            showPreview(playerId, firstPoint.targetLandId(), point.blockY() + 1.0);
+            return;
+        }
+        // Wilderness first point: no existing boundary to preview.
+        stopPreview(playerId);
+        startSession(playerId, player, worldId, point, now, SelectionMode.CREATE_LAND,
+                Optional.empty(), 0L, WandFeedback.Kind.FIRST_POINT);
+    }
+
+    private void startSession(
+            UUID playerId,
+            Player player,
+            UUID worldId,
+            SelectionPoint point,
+            Instant now,
+            SelectionMode mode,
+            Optional<LandId> targetLandId,
+            long baseStructureRevision,
+            WandFeedback.Kind opening) {
+        SelectionSession stamped = startEmptySession(
+                playerId, worldId, mode, targetLandId, baseStructureRevision, now);
         if (stamped == null) {
             return;
         }
@@ -205,22 +309,29 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             return;
         }
         if (updated != null && updated.isPresent()) {
-            feedback.send(player, WandFeedback.Kind.FIRST_POINT, Map.of());
+            clearBlockedNotice(playerId);
+            feedback.send(player, opening, Map.of());
         }
     }
 
-    private SelectionSession startEmptySession(UUID playerId, UUID worldId, Instant now) {
+    private SelectionSession startEmptySession(
+            UUID playerId,
+            UUID worldId,
+            SelectionMode mode,
+            Optional<LandId> targetLandId,
+            long baseStructureRevision,
+            Instant now) {
         SelectionSession initial;
         try {
             initial = SelectionSession.initial(
                     playerId,
                     worldId,
-                    SelectionMode.EDIT_SELECTION,
+                    mode,
+                    targetLandId,
                     Optional.empty(),
                     Optional.empty(),
                     Optional.empty(),
-                    Optional.empty(),
-                    0,
+                    baseStructureRevision,
                     now);
         } catch (RuntimeException ex) {
             return null;
@@ -239,6 +350,13 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             SelectionSession current,
             SelectionEditService edits,
             SelectionPoint point) {
+        // Only the wand-owned modes may grow here. A CREATE_SUBLAND session is
+        // driven by the SubLand flow and must never be reinterpreted as a
+        // claim/edit rectangle by a stray wand hit.
+        if (current.mode() != SelectionMode.CREATE_LAND
+                && current.mode() != SelectionMode.EDIT_SELECTION) {
+            return;
+        }
         // The first corner always stays; the new click moves the second corner.
         // A session that holds only the second corner is repaired the same way.
         boolean resize = current.pointA().isPresent() && current.pointB().isPresent();
@@ -254,7 +372,14 @@ public final class SelectionWandClickHandler implements WandClickHandler {
                 return;
             }
             if (outcome == null || !outcome.accepted() || outcome.update().isEmpty()) {
-                // Limits, collisions, or shape rejections leave the session as-is.
+                // Limits and shape rejections leave the session as-is and silent;
+                // an occupied chunk is the one rejection the player is told about,
+                // once per blocked attempt, together with the blocking land's
+                // actual boundary preview.
+                if (outcome != null && outcome.reason() == SelectionEditReason.COLLISION) {
+                    notifyBlocked(playerId, player, current);
+                    showPreview(playerId, occupiedLandAt(outcome.conflictChunk()), point.blockY() + 1.0);
+                }
                 return;
             }
             if (outcome.expectedSession() != current) {
@@ -268,6 +393,10 @@ public final class SelectionWandClickHandler implements WandClickHandler {
                 return;
             }
             if (updated != null && updated.isPresent()) {
+                clearBlockedNotice(playerId);
+                // A committed selection replaces the preview with the normal
+                // gold outline.
+                stopPreview(playerId);
                 feedback.send(player, resize ? WandFeedback.Kind.RESIZED : WandFeedback.Kind.SECOND_POINT,
                         acceptedSizeVars(updated.get()));
             }
@@ -288,7 +417,92 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             return;
         }
         if (updated != null && updated.isPresent()) {
+            clearBlockedNotice(playerId);
             feedback.send(player, WandFeedback.Kind.FIRST_POINT, Map.of());
+        }
+    }
+
+    /**
+     * Tell the player once that the click hit an existing land the selection
+     * may not cover. The prompt is deduplicated per session generation (or the
+     * no-session state) so holding the wand on a blocked area cannot spam chat.
+     */
+    private void notifyBlocked(UUID playerId, Player player, SelectionSession current) {
+        long token = current == null ? NO_SESSION_TOKEN : current.sessionGeneration();
+        Long previous = blockedNotified.put(playerId, token);
+        if (previous != null && previous == token) {
+            return;
+        }
+        feedback.send(player, WandFeedback.Kind.BLOCKED, Map.of());
+    }
+
+    private void clearBlockedNotice(UUID playerId) {
+        blockedNotified.remove(playerId);
+        unavailableNotified.remove(playerId);
+    }
+
+    /** Tell the player once that land data is not hydrated yet, so nothing is judged. */
+    private void notifyUnavailable(UUID playerId, Player player) {
+        if (!unavailableNotified.add(playerId)) {
+            return;
+        }
+        feedback.send(player, WandFeedback.Kind.UNAVAILABLE, Map.of());
+    }
+
+    /** Resolve the land owning a rejected candidate chunk, for the boundary preview. */
+    private Optional<LandId> occupiedLandAt(Optional<ChunkKey> chunk) {
+        if (chunk == null || chunk.isEmpty()) {
+            return Optional.empty();
+        }
+        ChunkKey key = chunk.get();
+        try {
+            SelectionLandContext context = landLookup.landAt(key.worldId(), key.chunkX(), key.chunkZ());
+            return context == null ? Optional.empty() : Optional.of(context.landId());
+        } catch (RuntimeException ex) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Render the blocking land's real immutable boundary with the preview
+     * controller. Best-effort: a missing land or a failing preview never
+     * affects the session or the claim tokens.
+     */
+    private void showPreview(UUID playerId, Optional<LandId> landId, double planeY) {
+        if (landId == null || landId.isEmpty()) {
+            return;
+        }
+        LandId land = landId.get();
+        if (land.equals(previewedLand.get(playerId))) {
+            // Same blocking land: the running preview already outlines it.
+            return;
+        }
+        Optional<Set<ChunkKey>> chunks;
+        try {
+            chunks = boundaryLookup.chunksOf(land);
+        } catch (RuntimeException ex) {
+            return;
+        }
+        if (chunks == null || chunks.isEmpty()) {
+            return;
+        }
+        Set<ChunkKey> boundary = chunks.get();
+        if (boundary.isEmpty()) {
+            return;
+        }
+        try {
+            preview.show(playerId, boundary, planeY);
+            previewedLand.put(playerId, land);
+        } catch (RuntimeException ignored) {
+            // Preview is best-effort; selection data is unaffected.
+        }
+    }
+
+    private void stopPreview(UUID playerId) {
+        previewedLand.remove(playerId);
+        try {
+            preview.stop(playerId);
+        } catch (RuntimeException ignored) {
         }
     }
 

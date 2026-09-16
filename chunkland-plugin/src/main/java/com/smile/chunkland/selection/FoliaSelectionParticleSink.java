@@ -36,13 +36,31 @@ public final class FoliaSelectionParticleSink implements SelectionParticleSink {
     public static final int PARTICLE_COUNT = 1;
     /** Warm gold chosen for contrast on grass, dirt, and stone. */
     public static final Color DUST_COLOR = Color.fromRGB(255, 180, 0);
+    /**
+     * Occupied-land preview colour: a clearly different red-orange so a land
+     * boundary can never be mistaken for the active selection outline.
+     */
+    public static final Color OCCUPIED_DUST_COLOR = Color.fromRGB(255, 70, 0);
     /** Larger than the default mote so the boundary stays readable at a distance. */
     public static final float DUST_SIZE = 1.5F;
 
     private final Function<UUID, Player> playerLookup;
+    private final Color dustColor;
+    private final float dustSize;
 
     public FoliaSelectionParticleSink(Function<UUID, Player> playerLookup) {
+        this(playerLookup, DUST_COLOR, DUST_SIZE);
+    }
+
+    /** Sink variant with an explicit colour, used for the occupied-land preview. */
+    public FoliaSelectionParticleSink(Function<UUID, Player> playerLookup, Color dustColor) {
+        this(playerLookup, dustColor, DUST_SIZE);
+    }
+
+    public FoliaSelectionParticleSink(Function<UUID, Player> playerLookup, Color dustColor, float dustSize) {
         this.playerLookup = Objects.requireNonNull(playerLookup, "playerLookup");
+        this.dustColor = Objects.requireNonNull(dustColor, "dustColor");
+        this.dustSize = dustSize;
     }
 
     @Override
@@ -66,6 +84,6 @@ public final class FoliaSelectionParticleSink implements SelectionParticleSink {
         if (player == null) {
             return;
         }
-        player.spawnParticle(PARTICLE, x, y, z, PARTICLE_COUNT, new Particle.DustOptions(DUST_COLOR, DUST_SIZE));
+        player.spawnParticle(PARTICLE, x, y, z, PARTICLE_COUNT, new Particle.DustOptions(dustColor, dustSize));
     }
 }

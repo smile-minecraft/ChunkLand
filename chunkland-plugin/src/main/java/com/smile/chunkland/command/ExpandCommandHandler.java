@@ -8,6 +8,7 @@ import com.smile.chunkland.claim.ExpandRequest;
 import com.smile.chunkland.claim.ExpandSaga;
 import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -53,10 +54,27 @@ public final class ExpandCommandHandler implements LandCommand.Handler {
         CompletionStage<ClaimOutcome> expand(ExpandRequest request);
     }
 
+    /**
+     * Read-only lookup of a target land's immutable chunk set.
+     *
+     * <p>Expansion deltas are the selection minus the chunks the target
+     * already owns: a wand rectangle anchored on the actor's own land always
+     * covers that land, and handing those chunks to the saga would trip its
+     * overlap check. The lookup reads an already-built immutable registry
+     * snapshot; no World, Chunk, SQL or network access happens here. An empty
+     * result means the target cannot be resolved, which fails closed.
+     */
+    @FunctionalInterface
+    public interface TargetChunkLookup {
+        Optional<Set<ChunkKey>> chunksOf(LandId targetLandId);
+    }
+
     private final SelectionSessionManager selections;
     private final ExpandRunner runner;
     private final Supplier<CompletionStage<?>> recoveryScan;
     private final Function<CommandSender, Optional<LandId>> currentLand;
+    /** Null keeps the legacy pass-through delta used by direct-token tests. */
+    private final TargetChunkLookup targetChunks;
 
     /**
      * @param selections live selection registry; never null
@@ -68,10 +86,23 @@ public final class ExpandCommandHandler implements LandCommand.Handler {
     public ExpandCommandHandler(SelectionSessionManager selections, ExpandRunner runner,
             Supplier<CompletionStage<?>> recoveryScan,
             Function<CommandSender, Optional<LandId>> currentLand) {
+        this(selections, runner, recoveryScan, currentLand, null);
+    }
+
+    /**
+     * Production constructor: the delta becomes {@code selection - target
+     * chunks}, so only the wilderness the actor is adding reaches the saga.
+     * An unknown target fails closed instead of sending the whole rectangle.
+     */
+    public ExpandCommandHandler(SelectionSessionManager selections, ExpandRunner runner,
+            Supplier<CompletionStage<?>> recoveryScan,
+            Function<CommandSender, Optional<LandId>> currentLand,
+            TargetChunkLookup targetChunks) {
         this.selections = Objects.requireNonNull(selections, "selections");
         this.runner = runner;
         this.recoveryScan = recoveryScan;
         this.currentLand = currentLand;
+        this.targetChunks = targetChunks;
     }
 
     @Override
@@ -105,8 +136,8 @@ public final class ExpandCommandHandler implements LandCommand.Handler {
             sink.reply("command.land.expand.failed", Map.of("reason", "expand.failed"));
             return;
         }
-        Set<ChunkKey> delta = session.selectedChunks();
-        if (delta.isEmpty()) {
+        Set<ChunkKey> selected = session.selectedChunks();
+        if (selected.isEmpty()) {
             sink.reply("command.land.expand.no_selection", Map.of());
             return;
         }
@@ -124,6 +155,28 @@ public final class ExpandCommandHandler implements LandCommand.Handler {
             }
             if (standing == null || standing.isEmpty() || !target.get().equals(standing.get())) {
                 sink.reply("command.land.expand.no_target", Map.of());
+                return;
+            }
+        }
+        Set<ChunkKey> delta = selected;
+        if (targetChunks != null) {
+            Optional<Set<ChunkKey>> owned;
+            try {
+                owned = targetChunks.chunksOf(target.get());
+            } catch (RuntimeException failure) {
+                owned = Optional.empty();
+            }
+            if (owned == null || owned.isEmpty()) {
+                // The target vanished or cannot be resolved: never send the
+                // whole rectangle to the saga as if it were free wilderness.
+                sink.reply("command.land.expand.failed", Map.of("reason", "expand.unknown_land"));
+                return;
+            }
+            Set<ChunkKey> wilderness = new LinkedHashSet<>(selected);
+            wilderness.removeAll(owned.get());
+            delta = wilderness;
+            if (delta.isEmpty()) {
+                sink.reply("command.land.expand.no_selection", Map.of());
                 return;
             }
         }

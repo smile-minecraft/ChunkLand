@@ -132,7 +132,7 @@ public final class ConfigService {
             }
             ChunkLandConfig next = previous.withEpochsBumped(
                     loaded.worlds(), loaded.limits(), loaded.messages(), loaded.selection(),
-                    loaded.subjectDefaults(), loaded.ruleDefaults(),
+                    loaded.subjectDefaults(), loaded.ruleDefaults(), loaded.economy(),
                     loaded.decisionCacheMaxEntries());
             // Replace the parsed typed payload but keep the bumped epochs.
             ChunkLandConfig published = new ChunkLandConfig(
@@ -142,6 +142,7 @@ public final class ConfigService {
                     loaded.selection(),
                     loaded.subjectDefaults(),
                     loaded.ruleDefaults(),
+                    loaded.economy(),
                     next.globalPolicyEpoch(),
                     next.worldPolicyEpochs(),
                     loaded.decisionCacheMaxEntries());
@@ -212,6 +213,7 @@ public final class ConfigService {
                         || !previous.messages().equals(next.messages())
                         || !previous.selection().equals(next.selection())
                         || !previous.subjectDefaults().equals(next.subjectDefaults())
-                        || !previous.ruleDefaults().equals(next.ruleDefaults()));
+                        || !previous.ruleDefaults().equals(next.ruleDefaults())
+                        || !java.util.Objects.equals(previous.economy(), next.economy()));
     }
 }

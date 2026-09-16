@@ -791,6 +791,84 @@ class ExpandSagaTest {
     }
 
     @Test
+    void expandHandlerSubtractsTargetChunksFromTheWandRectangle() throws Exception {
+        try (Harness h = new Harness(10, 100)) {
+            UUID actor = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            OwnerRef owner = OwnerRef.player(actor);
+            ChunkKey existing = chunk(world, 0, 0);
+            ChunkKey added = chunk(world, 1, 0);
+            h.insertLand(land, owner, world, Set.of(existing), 0, 100L);
+            h.rebuild();
+            // The wand rectangle anchored on the actor's own land covers the
+            // existing chunk plus the wilderness the actor is adding.
+            h.selectDelta(actor, world, land, Set.of(existing, added));
+
+            ExpandCommandHandler handler = new ExpandCommandHandler(h.selections, h.saga::expand,
+                    null, sender -> Optional.of(land), target -> Optional.of(Set.of(existing)));
+            LatchSink sink = new LatchSink();
+            handler.handle(player(actor), new String[]{"expand"}, sink);
+            sink.awaitReply();
+
+            assertEquals(1, sink.replies.size());
+            assertEquals("command.land.expand.success", sink.replies.get(0).key);
+            assertEquals(1, sink.replies.get(0).vars.get("chunk_count"),
+                    "only the wilderness delta must reach the saga, not the target chunks");
+            assertEquals(List.of("CHUNK_ADD"), h.auditActions(land));
+            assertEquals(1L, h.structureRevision(land), "exactly one chunk was added to the target");
+        }
+    }
+
+    @Test
+    void expandHandlerFailsClosedWhenTheTargetCannotBeResolved() throws Exception {
+        try (Harness h = new Harness(10, 100)) {
+            UUID actor = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            OwnerRef owner = OwnerRef.player(actor);
+            h.insertLand(land, owner, world, Set.of(chunk(world, 0, 0)), 0, 100L);
+            h.rebuild();
+            h.selectDelta(actor, world, land, Set.of(chunk(world, 0, 0), chunk(world, 1, 0)));
+
+            ExpandCommandHandler handler = new ExpandCommandHandler(h.selections, h.saga::expand,
+                    null, sender -> Optional.of(land), target -> Optional.empty());
+            LatchSink sink = new LatchSink();
+            handler.handle(player(actor), new String[]{"expand"}, sink);
+            sink.awaitReply();
+
+            assertEquals("command.land.expand.failed", sink.replies.get(0).key);
+            assertEquals("expand.unknown_land", sink.replies.get(0).vars.get("reason"));
+            assertTrue(h.ledgerRows().isEmpty(), "an unknown target must not reach the saga");
+            assertTrue(h.economy.charges.isEmpty());
+        }
+    }
+
+    @Test
+    void expandHandlerTreatsATargetOnlySelectionAsEmptyDelta() throws Exception {
+        try (Harness h = new Harness(10, 100)) {
+            UUID actor = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            OwnerRef owner = OwnerRef.player(actor);
+            ChunkKey existing = chunk(world, 0, 0);
+            h.insertLand(land, owner, world, Set.of(existing), 0, 100L);
+            h.rebuild();
+            h.selectDelta(actor, world, land, Set.of(existing));
+
+            ExpandCommandHandler handler = new ExpandCommandHandler(h.selections, h.saga::expand,
+                    null, sender -> Optional.of(land), target -> Optional.of(Set.of(existing)));
+            LatchSink sink = new LatchSink();
+            handler.handle(player(actor), new String[]{"expand"}, sink);
+            sink.awaitReply();
+
+            assertEquals("command.land.expand.no_selection", sink.replies.get(0).key);
+            assertTrue(h.ledgerRows().isEmpty());
+            assertTrue(h.economy.charges.isEmpty());
+        }
+    }
+
+    @Test
     void expandDispatchWithoutGateNeverReachesTheHandler() {
         Map<String, List<String>> seen = new HashMap<>();
         LandCommand.Handler probe = (sender, args, sink) -> seen.put("expand", List.of(args));

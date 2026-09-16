@@ -4,6 +4,7 @@ import com.smile.acelib.bedrock.BedrockPlayerInfo;
 import com.smile.acelib.bedrock.BedrockService;
 import com.smile.acelib.config.LangManager;
 import com.smile.acelib.message.MessageService;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -427,15 +428,48 @@ public class ChunkLandMessagePipeline {
         if (resolved.isEmpty()) {
             return vars;
         }
-        java.util.HashMap<String, Object> copy = new java.util.HashMap<>(vars);
+        HashMap<String, Object> copy = new HashMap<>(vars);
         copy.put("reason", resolved.get());
         return Map.copyOf(copy);
+    }
+
+    /**
+     * Lower-case the placeholder variable keys before the parser builds its
+     * resolver.
+     *
+     * <p>MiniMessage placeholder names must match
+     * {@code [!?#]?[a-z0-9_-]*}, so a caller's mixed-case key (for example
+     * {@code coveringSubLandId}) makes the parser throw while it registers the
+     * tag. MiniMessage resolves the template tag case-insensitively, so
+     * lower-casing the keys renders the identical text; it only removes the
+     * illegal name.</p>
+     */
+    static Map<String, Object> normalizePlaceholderKeys(Map<String, Object> vars) {
+        if (vars == null || vars.isEmpty()) {
+            return vars;
+        }
+        boolean alreadyLower = true;
+        for (String key : vars.keySet()) {
+            if (key != null && !key.equals(key.toLowerCase(Locale.ROOT))) {
+                alreadyLower = false;
+                break;
+            }
+        }
+        if (alreadyLower) {
+            return vars;
+        }
+        Map<String, Object> normalized = new HashMap<>(vars.size());
+        for (Map.Entry<String, Object> entry : vars.entrySet()) {
+            String key = entry.getKey();
+            normalized.put(key == null ? null : key.toLowerCase(Locale.ROOT), entry.getValue());
+        }
+        return normalized;
     }
 
     public Component render(String messageKey, Map<String, Object> vars, Locale localeOverride, Player contextPlayer) {
         Locale effective = resolveLocale(contextPlayer, localeOverride);
         String template = resolveTemplate(messageKey, effective);
-        vars = withNestedReason(messageKey, vars, effective);
+        vars = withNestedReason(messageKey, normalizePlaceholderKeys(vars), effective);
         try {
             Component parsed = parser.parse(template, vars);
             if (parsed == null) {
@@ -463,7 +497,7 @@ public class ChunkLandMessagePipeline {
     public Component renderForBroadcast(String messageKey, Map<String, Object> vars, Locale localeOverride) {
         Locale effective = localeOverride != null ? localeOverride : defaultLocale;
         String template = resolveTemplate(messageKey, effective);
-        vars = withNestedReason(messageKey, vars, effective);
+        vars = withNestedReason(messageKey, normalizePlaceholderKeys(vars), effective);
         try {
             Component parsed = parser.parse(template, vars);
             if (parsed == null) {

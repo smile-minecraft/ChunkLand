@@ -4,6 +4,7 @@ main: com.smile.chunkland.ChunkLandPlugin
 api-version: '26.1.2'
 folia-supported: true
 depend: [AceLib]
+softdepend: [Vault]
 commands:
   chunkland:
     description: ChunkLand debug commands (M0 message + capability smoke probes, selection visualization)

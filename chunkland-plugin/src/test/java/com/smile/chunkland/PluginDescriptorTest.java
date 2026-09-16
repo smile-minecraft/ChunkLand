@@ -39,6 +39,19 @@ class PluginDescriptorTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void vaultIsSoftDependSoLoadOrderFollowsWhenPresent() {
+        Map<String, Object> yml = loadDescriptor();
+        Object depend = yml.get("depend");
+        assertFalse(depend instanceof List<?> list && list.contains("Vault"),
+                "Vault must stay optional, never a hard dependency");
+        Object softDepend = yml.get("softdepend");
+        assertInstanceOf(List.class, softDepend, "softdepend must be a list");
+        assertTrue(((List<?>) softDepend).contains("Vault"),
+                "Vault must be softdepend so ChunkLand loads after it when present");
+    }
+
+    @Test
     void versionIsExpandedNotPlaceholder() {
         Map<String, Object> yml = loadDescriptor();
         Object version = yml.get("version");

@@ -6,6 +6,7 @@
 #   limits            -> typed land quotas
 #   messages          -> message settings
 #   selection         -> selection sessions and particle budgets
+#   economy           -> claim currency + owner-total price-per-chunk tiers
 #   worlds.<name>     -> per-world claim-enabled + vertical-mode
 #   subject-defaults  -> world/global SUBJECT_PERMISSION defaults (optional)
 #   rule-defaults     -> world/global LAND_RULE defaults (optional)
@@ -23,6 +24,35 @@
 messages:
   default-locale: en_US
   cooldown-seconds: 2
+
+# Claim economy (operator-tunable, reloadable).
+#
+# `currency` names the money every price is stored and charged in; `scale`
+# is the minor-units-per-unit exponent (2 means 100 minor = 1 major).
+# `pricing.tiers` prices each chunk by the owner's global total chunk count
+# (all Player Lands, never Server Land): chunk index (previousUntil, until]
+# costs `price-per-chunk` major units. The table must stay a contiguous
+# partition ending in `unbounded`; any gap, overlap, negative, non-finite,
+# or overflowing entry fails the load and keeps the previous snapshot, so
+# player claims fail closed instead of silently repricing. Refunds always
+# come from the durable per-chunk cost basis, never from these tiers, so
+# editing tiers never changes a past payment's refund. Never change the
+# currency scale while the ledger holds live rows: stored minor units would
+# reconvert to different major amounts.
+economy:
+  currency:
+    code: EMC
+    scale: 2
+  pricing:
+    tiers:
+      - until: 20
+        price-per-chunk: 1.00
+      - until: 50
+        price-per-chunk: 2.00
+      - until: 100
+        price-per-chunk: 4.00
+      - until: unbounded
+        price-per-chunk: 8.00
 
 limits:
   max-lands-per-player: 5

@@ -165,6 +165,64 @@ class ClaimStartupDepthWiringTest {
         }
     }
 
+    @Test
+    void startupHydrationPublishesDurableLandWithoutAnyLedgerRow() throws Exception {
+        UUID world = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        LandId landId = new LandId(UUID.randomUUID());
+        ChunkKey chunk = new ChunkKey(world, 12, 12);
+        Path databasePath = temp.resolve("startup-hydration.db");
+        try (PersistenceStore store = PersistenceStore.open(databasePath)) {
+            new SqliteLandRepository(store).save(new LandSnapshot(
+                    landId, "Lone", LandName.normalize("Lone"), OwnerRef.player(owner),
+                    world, Set.of(chunk), List.of(), 4, 0, TIME, TIME))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            // The runtime index is built from land_chunks rows; persist the
+            // chunk so the hydrated snapshot can resolve the land by position.
+            new com.smile.chunkland.persistence.SqliteChunkRepository(store)
+                    .addChunk(landId, chunk, 64, UUID.randomUUID(), 10L)
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+        }
+
+        LandRegistryStore sharedStore = new LandRegistryStore();
+        ClaimStartupBootstrap bootstrap = ClaimStartupBootstrap.start(
+                databasePath, sharedStore, Logger.getLogger("Test"));
+        try {
+            // No ledger row exists, so the recovery scan alone never rebuilds;
+            // startup hydration must still publish the durable land and mark
+            // readiness. Await the completion seam instead of racing it.
+            bootstrap.hydrationFuture().toCompletableFuture().get(15, TimeUnit.SECONDS);
+            assertTrue(bootstrap.readiness().isReady(), "startup hydration must mark readiness");
+            assertNotNull(sharedStore.snapshot().findLand(world, 12, 12),
+                    "a durable land must not read as wilderness after restart");
+            assertEquals(landId, sharedStore.snapshot().findLand(world, 12, 12).id());
+        } finally {
+            bootstrap.close();
+        }
+    }
+
+    @Test
+    void readinessGateFailsClosedBeforeHydrationMarksReady() {
+        // Before markReady the registry is "unknown", not wilderness: a reader
+        // that consults readiness must refuse the lookup.
+        com.smile.chunkland.runtime.index.RegistryReadiness readiness =
+                new com.smile.chunkland.runtime.index.RegistryReadiness();
+        LandRegistryStore store = new LandRegistryStore();
+
+        assertFalse(readiness.isReady());
+        assertThrows(IllegalStateException.class, () -> {
+            if (!readiness.isReady()) {
+                throw new IllegalStateException("land registry is not hydrated");
+            }
+            store.snapshot();
+        });
+
+        // After the barrier releases, the same read is safe.
+        readiness.markReady();
+        assertTrue(readiness.isReady());
+        store.snapshot();
+    }
+
     private static void seedDomainCommitted(Path databasePath, UUID world, UUID actor,
             LandId landId, UUID lot, List<OperationPayload.Chunk> chunks, String displayName)
             throws Exception {

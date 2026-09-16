@@ -3,14 +3,24 @@ package com.smile.chunkland.wand;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.smile.chunkland.ChunkLandPlugin;
+import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.config.LimitSettings;
+import com.smile.chunkland.runtime.index.WorldChunkIndex;
+import com.smile.chunkland.selection.OccupiedPreviewController;
 import com.smile.chunkland.selection.SelectionClock;
 import com.smile.chunkland.selection.SelectionEndReason;
+import com.smile.chunkland.selection.SelectionLandBoundaryLookup;
+import com.smile.chunkland.selection.SelectionLandContext;
 import com.smile.chunkland.selection.SelectionLandIndex;
+import com.smile.chunkland.selection.SelectionLandLookup;
+import com.smile.chunkland.selection.SelectionMode;
 import com.smile.chunkland.selection.SelectionNotification;
 import com.smile.chunkland.selection.SelectionPoint;
 import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
+import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
 import com.smile.chunkland.selection.SelectionTimeoutScheduler;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
 import java.lang.reflect.Proxy;
@@ -20,10 +30,13 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import org.bukkit.World;
@@ -59,6 +72,10 @@ class SelectionWandClickHandlerTest {
 
     private static final UUID PLAYER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID WORLD_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID OTHER_WORLD_ID = UUID.fromString("22222222-2222-2222-2222-222222222223");
+    private static final LandId OWN_LAND = new LandId(UUID.fromString("33333333-3333-3333-3333-333333333333"));
+    private static final LandId OTHER_LAND = new LandId(UUID.fromString("44444444-4444-4444-4444-444444444444"));
+    private static final LandId SERVER_LAND = new LandId(UUID.fromString("55555555-5555-5555-5555-555555555555"));
     private static final Instant NOW = Instant.parse("2026-09-01T00:00:00Z");
 
     private static final class RecordingVisualization implements SelectionVisualizationTaskController {
@@ -83,27 +100,88 @@ class SelectionWandClickHandlerTest {
     }
 
     private static final class Harness {
+        final Map<Long, SelectionLandContext> lands = new LinkedHashMap<>();
+        final Map<LandId, Long> revisions = new HashMap<>();
+        final Map<LandId, Set<ChunkKey>> boundaries = new LinkedHashMap<>();
         final RecordingVisualization visualization = new RecordingVisualization();
+        final RecordingPreview preview = new RecordingPreview();
         final List<Step> feedback = new ArrayList<>();
         final List<SelectionEndReason> endReasons = new ArrayList<>();
+        volatile boolean registryReady = true;
+        final SelectionClock clock = () -> NOW;
+        final SelectionLandLookup lookup = (world, chunkX, chunkZ) -> {
+            if (!registryReady) {
+                throw new IllegalStateException("land registry is not hydrated");
+            }
+            if (!WORLD_ID.equals(world)) {
+                return null;
+            }
+            return lands.get(WorldChunkIndex.pack(chunkX, chunkZ));
+        };
+        final SelectionLandIndex index = (world, packed) -> {
+            SelectionLandContext context = lands.get(packed);
+            return context == null ? null : context.landId();
+        };
+        final SelectionLandBoundaryLookup boundaryLookup = landId -> {
+            if (!registryReady) {
+                return Optional.empty();
+            }
+            Set<ChunkKey> chunks = boundaries.get(landId);
+            return chunks == null ? Optional.empty() : Optional.of(chunks);
+        };
+        final SelectionStructureRevisionLookup revisionsLookup = landId -> {
+            Long value = revisions.get(landId);
+            return value == null ? OptionalLong.empty() : OptionalLong.of(value);
+        };
         final SelectionSessionManager manager = new SelectionSessionManager(
                 (playerId, delay, task) -> SelectionTimeoutScheduler.Cancellable.noop(),
                 visualization,
                 notification -> endReasons.add(notification.reason()),
                 (SelectionClock) () -> NOW,
-                Duration.ofMinutes(10));
+                () -> Duration.ofMinutes(10),
+                uuid -> Optional.empty(),
+                revisionsLookup);
         final com.smile.chunkland.selection.SelectionEditService edits =
                 new com.smile.chunkland.selection.SelectionEditService(
                         new LimitSettings(5, 256, 128, 16, 32, 1024),
-                        (SelectionLandIndex) (world, packed) -> null);
-        final SelectionClock clock = () -> NOW;
+                        index);
 
         /** One recorded guidance prompt: the step plus the vars handed to the message pipeline. */
         record Step(WandFeedback.Kind kind, Map<String, Object> vars) {}
 
+        void ownLand(LandId landId, long revision, int chunkX, int chunkZ) {
+            ownLand(landId, revision, Set.of(new ChunkKey(WORLD_ID, chunkX, chunkZ)));
+        }
+
+        void ownLand(LandId landId, long revision, Set<ChunkKey> chunks) {
+            revisions.put(landId, revision);
+            boundaries.put(landId, Set.copyOf(chunks));
+            for (ChunkKey chunk : chunks) {
+                lands.put(WorldChunkIndex.pack(chunk.chunkX(), chunk.chunkZ()),
+                        new SelectionLandContext(landId, OwnerRef.player(PLAYER_ID), revision));
+            }
+        }
+
+        void otherPlayerLand(LandId landId, long revision, int chunkX, int chunkZ) {
+            revisions.put(landId, revision);
+            ChunkKey chunk = new ChunkKey(WORLD_ID, chunkX, chunkZ);
+            boundaries.put(landId, Set.of(chunk));
+            lands.put(WorldChunkIndex.pack(chunkX, chunkZ),
+                    new SelectionLandContext(landId, OwnerRef.player(UUID.randomUUID()), revision));
+        }
+
+        void serverLand(LandId landId, long revision, int chunkX, int chunkZ) {
+            revisions.put(landId, revision);
+            ChunkKey chunk = new ChunkKey(WORLD_ID, chunkX, chunkZ);
+            boundaries.put(landId, Set.of(chunk));
+            lands.put(WorldChunkIndex.pack(chunkX, chunkZ),
+                    new SelectionLandContext(landId, OwnerRef.server(), revision));
+        }
+
         SelectionWandClickHandler handler() {
             return new SelectionWandClickHandler(
-                    manager, () -> edits, clock, (player, kind, vars) -> feedback.add(new Step(kind, vars)));
+                    manager, () -> edits, clock, (player, kind, vars) -> feedback.add(new Step(kind, vars)),
+                    lookup, boundaryLookup, preview);
         }
 
         List<WandFeedback.Kind> feedbackKinds() {
@@ -112,6 +190,24 @@ class SelectionWandClickHandlerTest {
 
         WandSafetyListener listener() {
             return new WandSafetyListener(handler());
+        }
+    }
+
+    private static final class RecordingPreview implements OccupiedPreviewController {
+        record Call(UUID playerId, Set<ChunkKey> chunks, double planeY) {
+        }
+
+        final List<Call> shown = new ArrayList<>();
+        final List<UUID> stopped = new ArrayList<>();
+
+        @Override
+        public void show(UUID playerId, Set<ChunkKey> chunks, double planeY) {
+            shown.add(new Call(playerId, Set.copyOf(chunks), planeY));
+        }
+
+        @Override
+        public void stop(UUID playerId) {
+            stopped.add(playerId);
         }
     }
 
@@ -186,12 +282,16 @@ class SelectionWandClickHandlerTest {
     }
 
     private static World fakeWorld() {
+        return fakeWorld(WORLD_ID);
+    }
+
+    private static World fakeWorld(UUID worldId) {
         return (World) Proxy.newProxyInstance(
                 World.class.getClassLoader(),
                 new Class[]{World.class},
                 (proxy, method, args) -> {
                     switch (method.getName()) {
-                        case "getUID" -> { return WORLD_ID; }
+                        case "getUID" -> { return worldId; }
                         case "getName" -> { return "world"; }
                         case "equals" -> { return proxy == args[0]; }
                         case "hashCode" -> { return System.identityHashCode(proxy); }
@@ -832,6 +932,334 @@ class SelectionWandClickHandlerTest {
     }
 
     @Test
+    void firstPointOnOwnLandOpensEditTargetWithStructureRevision() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.ownLand(OWN_LAND, 7L, 0, 0);
+
+        harness.handler().onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(SelectionMode.EDIT_SELECTION, session.mode());
+        assertEquals(Optional.of(OWN_LAND), session.targetLandId());
+        assertEquals(7L, session.baseStructureRevision(),
+                "the edit target must capture the land's current structure revision");
+        assertEquals(Optional.of(new SelectionPoint(WORLD_ID, 0, 64, 0)), session.pointA());
+        assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET), harness.feedbackKinds());
+        assertEquals(1, harness.visualization.starts.size());
+    }
+
+    @Test
+    void firstPointOnAnotherPlayersLandIsBlockedWithoutASession() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.otherPlayerLand(OTHER_LAND, 1L, 0, 0);
+
+        harness.handler().onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+
+        assertTrue(harness.manager.sessionFor(PLAYER_ID).isEmpty(),
+                "another player's land must never open a session");
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+        assertTrue(harness.visualization.starts.isEmpty(), "a blocked first point must not start particles");
+    }
+
+    @Test
+    void firstPointOnServerLandIsBlockedWithoutASession() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.serverLand(SERVER_LAND, 1L, 0, 0);
+
+        harness.handler().onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+
+        assertTrue(harness.manager.sessionFor(PLAYER_ID).isEmpty());
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+        assertTrue(harness.visualization.starts.isEmpty());
+    }
+
+    @Test
+    void newClaimRectangleCrossingAnotherLandIsBlockedAndSessionUnchanged() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        World world = fakeWorld();
+        harness.otherPlayerLand(OTHER_LAND, 1L, 1, 0);
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(world, 0, 64, 0), BlockFace.NORTH, false));
+        SelectionSession opened = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(SelectionMode.CREATE_LAND, opened.mode());
+        assertEquals(Optional.empty(), opened.targetLandId());
+        long revision = opened.selectionRevision();
+        long generation = opened.sessionGeneration();
+
+        handler.onWandRightClick(player, blockAt(world, 16, 64, 0), BlockFace.NORTH);
+
+        SelectionSession after = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertSame(opened, after, "a blocked candidate must not replace the session");
+        assertEquals(revision, after.selectionRevision());
+        assertEquals(generation, after.sessionGeneration());
+        assertTrue(after.pointB().isEmpty(), "the blocked second corner must not be stored");
+        assertTrue(after.selectedChunks().isEmpty());
+        assertEquals(List.of(WandFeedback.Kind.FIRST_POINT, WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+
+        // Repeating the blocked click must not re-prompt or move particles.
+        handler.onWandRightClick(player, blockAt(world, 16, 64, 0), BlockFace.NORTH);
+        assertEquals(List.of(WandFeedback.Kind.FIRST_POINT, WandFeedback.Kind.BLOCKED), harness.feedbackKinds(),
+                "a repeated blocked click must stay silent");
+        assertEquals(1, harness.visualization.starts.size());
+        assertEquals(1, harness.visualization.refreshes.size());
+    }
+
+    @Test
+    void newClaimRectangleCrossingOwnLandIsAlsoBlocked() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        World world = fakeWorld();
+        harness.ownLand(OWN_LAND, 4L, 1, 0);
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(world, 0, 64, 0), BlockFace.NORTH, false));
+        handler.onWandRightClick(player, blockAt(world, 16, 64, 0), BlockFace.NORTH);
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(SelectionMode.CREATE_LAND, session.mode());
+        assertTrue(session.selectedChunks().isEmpty(), "a new claim may not include the actor's own land");
+        assertEquals(List.of(WandFeedback.Kind.FIRST_POINT, WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+    }
+
+    @Test
+    void ownLandEditRectangleWithTargetAndWildernessStaysEditSession() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        World world = fakeWorld();
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(world, 0, 64, 0), BlockFace.NORTH, false));
+        handler.onWandRightClick(player, blockAt(world, 16, 64, 0), BlockFace.NORTH);
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(SelectionMode.EDIT_SELECTION, session.mode());
+        assertEquals(Optional.of(OWN_LAND), session.targetLandId());
+        assertEquals(3L, session.baseStructureRevision());
+        assertEquals(2, session.selectedChunks().size(), "target chunk plus adjacent wilderness must be accepted");
+        assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET, WandFeedback.Kind.SECOND_POINT), harness.feedbackKinds());
+    }
+
+    @Test
+    void ownLandEditRectangleCrossingForeignLandIsBlocked() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        World world = fakeWorld();
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        harness.otherPlayerLand(OTHER_LAND, 1L, 2, 0);
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(world, 0, 64, 0), BlockFace.NORTH, false));
+        handler.onWandRightClick(player, blockAt(world, 32, 64, 0), BlockFace.NORTH);
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(SelectionMode.EDIT_SELECTION, session.mode());
+        assertEquals(Optional.of(OWN_LAND), session.targetLandId());
+        assertTrue(session.pointB().isEmpty(), "a foreign chunk inside the candidate must reject the corner");
+        assertTrue(session.selectedChunks().isEmpty());
+        assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET, WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+    }
+
+    @Test
+    void crossWorldClickNeverExtendsTheOldTarget() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        World world = fakeWorld(WORLD_ID);
+        World otherWorld = fakeWorld(OTHER_WORLD_ID);
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(world, 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(Optional.of(OWN_LAND), harness.manager.sessionFor(PLAYER_ID).orElseThrow().targetLandId());
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(otherWorld, 0, 64, 0), BlockFace.NORTH, false));
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(OTHER_WORLD_ID, session.worldId(), "a click in another world starts a new session");
+        assertEquals(SelectionMode.CREATE_LAND, session.mode(), "the old own-land target must not carry over");
+        assertTrue(session.targetLandId().isEmpty());
+    }
+
+    @Test
+    void subLandSessionIsNeverReinterpretedByWandClicks() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        SelectionSession subland = harness.manager.start(SelectionSession.initial(
+                PLAYER_ID, WORLD_ID, SelectionMode.CREATE_SUBLAND, Optional.of(OWN_LAND),
+                Optional.empty(), Optional.empty(), Optional.empty(), 3L, NOW));
+        harness.feedback.clear();
+        harness.visualization.starts.clear();
+        harness.visualization.refreshes.clear();
+
+        harness.handler().onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 1, 64, 1), BlockFace.NORTH, false));
+
+        assertSame(subland, harness.manager.sessionFor(PLAYER_ID).orElseThrow(),
+                "a CREATE_SUBLAND session must not be mutated by a stray wand hit");
+        assertTrue(harness.feedback.isEmpty());
+        assertTrue(harness.visualization.starts.isEmpty());
+        assertTrue(harness.visualization.refreshes.isEmpty());
+    }
+
+    @Test
+    void firstPointOnForeignLandPromptsOnceAndPreviewsItsActualBoundary() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        // An irregular foreign land: two non-adjacent chunks.
+        ChunkKey a = new ChunkKey(WORLD_ID, 0, 0);
+        otherLandChunks(harness, OTHER_LAND, 1L, Set.of(a, new ChunkKey(WORLD_ID, 2, 1)));
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+
+        assertTrue(harness.manager.sessionFor(PLAYER_ID).isEmpty());
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+        assertEquals(1, harness.preview.shown.size());
+        assertEquals(Set.of(a, new ChunkKey(WORLD_ID, 2, 1)), harness.preview.shown.get(0).chunks(),
+                "the preview must outline the land's real chunk set");
+        assertEquals(65.0, harness.preview.shown.get(0).planeY());
+
+        // A repeated blocked first click stays silent and does not restart the preview.
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+        assertEquals(1, harness.preview.shown.size());
+    }
+
+    @Test
+    void firstPointOnOwnLandOpensEditTargetAndPreviewsBaseline() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+
+        harness.handler().onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(SelectionMode.EDIT_SELECTION, session.mode());
+        assertEquals(Optional.of(OWN_LAND), session.targetLandId());
+        assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET), harness.feedbackKinds());
+        assertEquals(1, harness.preview.shown.size(), "the existing range is shown as the baseline");
+        assertEquals(Set.of(new ChunkKey(WORLD_ID, 0, 0)), harness.preview.shown.get(0).chunks());
+    }
+
+    @Test
+    void acceptedOwnEditSelectionStopsTheBaselinePreview() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        World world = fakeWorld();
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(world, 0, 64, 0), BlockFace.NORTH, false));
+        harness.preview.stopped.clear();
+
+        handler.onWandRightClick(player, blockAt(world, 16, 64, 0), BlockFace.NORTH);
+
+        assertEquals(List.of(PLAYER_ID), harness.preview.stopped,
+                "an accepted selection replaces the preview with the normal renderer");
+        assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET, WandFeedback.Kind.SECOND_POINT), harness.feedbackKinds());
+    }
+
+    @Test
+    void blockedCandidatePreviewsTheForeignBoundaryAndKeepsTheSession() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        World world = fakeWorld();
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        otherLandChunks(harness, OTHER_LAND, 1L, Set.of(new ChunkKey(WORLD_ID, 2, 0)));
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(player, blockAt(world, 0, 64, 0), BlockFace.NORTH, false));
+        SelectionSession opened = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        harness.preview.shown.clear();
+
+        handler.onWandRightClick(player, blockAt(world, 32, 64, 0), BlockFace.NORTH);
+
+        assertSame(opened, harness.manager.sessionFor(PLAYER_ID).orElseThrow(), "the session must not change");
+        assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET, WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
+        assertEquals(1, harness.preview.shown.size(), "the blocking land's boundary is previewed");
+        assertEquals(Set.of(new ChunkKey(WORLD_ID, 2, 0)), harness.preview.shown.get(0).chunks());
+    }
+
+    @Test
+    void wandUnequipStopsTheOccupiedPreview() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(1, harness.preview.shown.size());
+        harness.preview.stopped.clear();
+
+        handler.onWandUnequipped(player);
+
+        assertEquals(List.of(PLAYER_ID), harness.preview.stopped);
+        assertTrue(harness.manager.sessionFor(PLAYER_ID).isEmpty());
+    }
+
+    @Test
+    void unhydratedRegistryFailsClosedWithUnavailablePrompt() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.registryReady = false;
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+
+        assertTrue(harness.manager.sessionFor(PLAYER_ID).isEmpty(),
+                "an unhydrated registry must not open a session");
+        assertEquals(List.of(WandFeedback.Kind.UNAVAILABLE), harness.feedbackKinds());
+        assertTrue(harness.preview.shown.isEmpty());
+
+        // Repeating the click stays silent; once hydrated, occupancy is judged again.
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(List.of(WandFeedback.Kind.UNAVAILABLE), harness.feedbackKinds());
+    }
+
+    @Test
+    void hydratedRegistryIsRequiredBeforeWildernessIsAccepted() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.registryReady = false;
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertTrue(harness.manager.sessionFor(PLAYER_ID).isEmpty());
+
+        harness.registryReady = true;
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+
+        assertTrue(harness.manager.sessionFor(PLAYER_ID).isPresent(),
+                "after hydration a wilderness click opens a claim session");
+    }
+
+    private static void otherLandChunks(Harness harness, LandId landId, long revision, Set<ChunkKey> chunks) {
+        harness.revisions.put(landId, revision);
+        harness.boundaries.put(landId, Set.copyOf(chunks));
+        for (ChunkKey chunk : chunks) {
+            harness.lands.put(WorldChunkIndex.pack(chunk.chunkX(), chunk.chunkZ()),
+                    new SelectionLandContext(landId, OwnerRef.player(UUID.randomUUID()), revision));
+        }
+    }
+
+    @Test
     void quitWorldChangeAndDisableClearWandSessions() {
         Harness harness = new Harness();
         Player player = playerWith(wandStack());
@@ -911,6 +1339,38 @@ class SelectionWandClickHandlerTest {
             }
         }
         assertTrue(violations.isEmpty(), "wand click path violations: " + violations);
+
+        // The ownership guard and the occupied preview run on the same click
+        // path, so they obey the same hot-path contract with one stricter
+        // rule: unlike the handler (which reads block coordinates), they must
+        // not reference Bukkit at all — occupancy comes only from the
+        // immutable registry snapshot through the lookup seams.
+        List<Path> guardSources = List.of(
+                locateProduction("selection", "SelectionWandGuard.java"),
+                locateProduction("selection", "SelectionLandLookup.java"),
+                locateProduction("selection", "SelectionLandContext.java"),
+                locateProduction("selection", "SelectionLandBoundaryLookup.java"),
+                locateProduction("selection", "OccupiedPreviewController.java"),
+                locateProduction("selection", "OccupiedPreviewRenderer.java"));
+        List<String> guardForbidden = new ArrayList<>(forbidden);
+        guardForbidden.add("org.bukkit");
+        for (Path source : guardSources) {
+            String content = Files.readString(source, StandardCharsets.UTF_8);
+            for (String token : guardForbidden) {
+                if (content.contains(token)) {
+                    violations.add(source.getFileName() + " contains forbidden '" + token + "'");
+                }
+            }
+        }
+        assertTrue(violations.isEmpty(), "selection guard hot-path violations: " + violations);
+        String guard = Files.readString(
+                locateProduction("selection", "SelectionWandGuard.java"), StandardCharsets.UTF_8);
+        assertTrue(guard.contains("SelectionLandLookup"),
+                "the guard must read occupancy only through the snapshot lookup seam");
+        String lookupContract = Files.readString(
+                locateProduction("selection", "SelectionLandLookup.java"), StandardCharsets.UTF_8);
+        assertTrue(lookupContract.contains("snapshot"),
+                "the lookup contract must pin the immutable snapshot source");
     }
 
     private static Path locateProduction(String dir, String file) {

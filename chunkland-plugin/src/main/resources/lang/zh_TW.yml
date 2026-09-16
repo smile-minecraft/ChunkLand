@@ -77,6 +77,13 @@ command:
       rejected: "<red>重新命名被拒絕：<reason>。</red>"
       failed: "<red>重新命名失敗：<reason>。</red>"
       degraded: "<yellow>領地已重新命名為 <new_name>，但即時地圖仍在重建中：<reason>。</yellow>"
+    expand:
+      console: "<red>只有玩家可以擴張領地。</red>"
+      no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再重新執行 /land expand。</yellow>"
+      no_target: "<yellow>請站在要擴張的領地上並先指定目標。</yellow>"
+      success: "<green>已擴張 <chunk_count> 個區塊。</green>"
+      rejected: "<red>擴張被拒絕：<reason>。</red>"
+      failed: "<red>擴張失敗：<reason>。</red>"
     shrink:
       console: "<red>只有玩家可以縮減領地。</red>"
       no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再重新執行 /land shrink。</yellow>"
@@ -151,8 +158,11 @@ economy:
 selection:
   wand:
     first_point: "<yellow>已設定第一角。請再點擊一個方塊設定第二角。</yellow>"
+    edit_target: "<yellow>正在編輯你的領地：已設定第一角。請選取要擴張或縮小的區塊。</yellow>"
     second_point: "<green>選取範圍已完成：<width>×<height> 個區塊。再點擊可調整第二角大小。</green>"
     resized: "<green>已調整選取範圍為 <width>×<height> 個區塊。可再點擊繼續調整。</green>"
+    blocked: "<red>這個區域屬於既有領地。請移動到 Wilderness 後重新設定第一角。</red>"
+    unavailable: "<yellow>領地資料仍在載入中，請稍後再試。</yellow>"
     reset: "<yellow>選取範圍已重置。請點擊方塊設定第一角。</yellow>"
     abandoned: "<yellow>你已切換離開魔杖，選取範圍與粒子已清除。</yellow>"
     cancelled: "<yellow>已取消選取範圍。</yellow>"

@@ -61,6 +61,7 @@ import com.smile.chunkland.config.WorldSettings;
 import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.economy.UnavailableVaultBridge;
 import com.smile.chunkland.economy.VaultBridge;
+import com.smile.chunkland.economy.VaultServiceDiscovery;
 import com.smile.chunkland.gui.GuiNavigator;
 import com.smile.chunkland.limit.LimitResolver;
 import com.smile.chunkland.limit.OwnerQuotaHydrator;
@@ -92,6 +93,7 @@ import com.smile.chunkland.runtime.api.ChunkLandReadApi;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.api.ProtectionDepthLookup;
 import com.smile.chunkland.runtime.index.LandRegistry;
+import com.smile.chunkland.runtime.index.RegistryReadiness;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.index.SubLandIndex;
 import com.smile.chunkland.runtime.vertical.SnapshotProtectionDepthLookup;
@@ -107,9 +109,14 @@ import com.smile.chunkland.selection.FoliaVisualizationTickScheduler;
 import com.smile.chunkland.selection.SelectionClock;
 import com.smile.chunkland.selection.SelectionEditService;
 import com.smile.chunkland.selection.SelectionLandIndex;
+import com.smile.chunkland.selection.SelectionLandBoundaryLookup;
+import com.smile.chunkland.selection.SelectionLandContext;
+import com.smile.chunkland.selection.SelectionLandLookup;
 import com.smile.chunkland.selection.SelectionLifecycleListener;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
+import com.smile.chunkland.selection.OccupiedPreviewController;
+import com.smile.chunkland.selection.OccupiedPreviewRenderer;
 import com.smile.chunkland.selection.SelectionVisualizationRenderer;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
 import com.smile.chunkland.subland.DepthExtensionPort;
@@ -214,6 +221,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SelectionSessionManager selectionSessionManager;
     private SelectionLifecycleListener selectionLifecycleListener;
     private SelectionVisualizationTaskController visualizationController;
+    private OccupiedPreviewController occupiedPreviewController;
     private Optional<SafeScheduler> visualizationScheduler = Optional.empty();
     private SelectionStructureRevisionLookup selectionStructureRevisions;
     private LandRegistryStore protectionStore;
@@ -316,8 +324,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
         ConfigService activeConfig = this.configService.orElseThrow(
                 () -> new IllegalStateException("ChunkLand config service is unavailable"));
+        // The registry store is created before the selection manager so the
+        // manager's structure-revision source reads the same live snapshot the
+        // /land claim, expand and shrink flows publish and validate against.
+        this.protectionStore = new LandRegistryStore();
         SelectionStructureRevisionLookup structureRevisions =
-                SelectionStructureRevisionLookup.unavailable();
+                buildSubLandStructureLookup(this.protectionStore);
         this.selectionStructureRevisions = structureRevisions;
         // Selection boundary particles: a dedicated SafeScheduler built through the public
         // AceLib factory (player-scoped ticks only, never global). Empty when AceLib is not
@@ -331,6 +343,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         () -> activeConfig.current().selection().visualizationBudget()))
                 .orElseGet(SelectionVisualizationTaskController::noop);
         this.visualizationController = visualization;
+        // Occupied-land preview: a second, independent player-scoped loop with a
+        // distinct red-orange sink, so it never replaces the active selection
+        // renderer and never writes selection/claim state.
+        OccupiedPreviewController occupiedPreview = visualizationScheduler
+                .map(scheduler -> (OccupiedPreviewController) new OccupiedPreviewRenderer(
+                        new FoliaVisualizationTickScheduler(
+                                uuid -> getServer().getPlayer(uuid), () -> visualizationScheduler),
+                        new FoliaSelectionParticleSink(
+                                uuid -> getServer().getPlayer(uuid),
+                                FoliaSelectionParticleSink.OCCUPIED_DUST_COLOR),
+                        () -> activeConfig.current().selection().visualizationBudget()))
+                .orElseGet(OccupiedPreviewController::noop);
+        this.occupiedPreviewController = occupiedPreview;
         getLogger().info("ChunkLand selection visualization: "
                 + (visualizationScheduler.isPresent() ? "scheduler ready" : "dormant (AceLib scheduler unavailable)")
                 + ", budget=" + activeConfig.current().selection().visualizationBudget());
@@ -343,7 +368,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 () -> activeConfig.current().selection().sessionTimeout(),
                 uuid -> Optional.ofNullable(getServer().getWorld(uuid)).map(org.bukkit.World::getName),
                 structureRevisions);
-        this.selectionLifecycleListener = new SelectionLifecycleListener(selectionSessionManager);
+        this.selectionLifecycleListener = new SelectionLifecycleListener(selectionSessionManager, occupiedPreview);
         this.configService.ifPresent(service -> service.addListener(selectionSessionManager));
         // Only build the message probe after a ready AceLib API is held. If AceLib is
         // missing/not-ready, bridge.getApi() is null and tryBuild returns empty (fail-closed,
@@ -363,7 +388,6 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // milestones publish real snapshots and a real context provider.
         // Built before the land command so the management gate resolver reads
         // the same live snapshots the engine enforces.
-        this.protectionStore = new LandRegistryStore();
         this.readApiLifecycle = new ReadApiLifecycle();
         // Config permission defaults: world names resolve to UUIDs once here
         // (and on every config reload) against the startup-captured table, so
@@ -414,12 +438,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     getDataFolder().toPath().resolve(ClaimStartupBootstrap.DATABASE_FILE_NAME),
                     this.protectionStore,
                     getLogger(),
-                    resolveEconomyBridge());
+                    resolveEconomyBridge(),
+                    economyCurrency(activeConfig.current()));
         } catch (RuntimeException | Error failure) {
             getLogger().warning("ChunkLand claim recovery bootstrap failed; "
                     + "runtime stays empty until the next restart: " + failure.getMessage());
             this.claimStartup = null;
         }
+        // Startup hydration gate shared by the wand guard, the selection edit
+        // collision index and the expand delta adapter: until the durable
+        // registry rebuild publishes and marks readiness, occupancy reads fail
+        // closed instead of treating unhydrated durable land as wilderness.
+        RegistryReadiness registryReadiness =
+                this.claimStartup == null ? null : this.claimStartup.readiness();
         // Durable land authorisation: direct trust bindings and land defaults
         // share the recovery bootstrap store, publish into one volatile
         // snapshot the enforcement path already reads, and load the existing
@@ -598,7 +629,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
                            shrinkRunner(), expandCurrentLand(this.protectionStore),
                            shrinkTargetOwner(this.protectionStore), renameHandler, groupHandler,
                            profileHandler, bindingHandler,
-                           buildExplainHandler(this.protectionStore, () -> atomicContexts)),
+                           buildExplainHandler(this.protectionStore, () -> atomicContexts),
+                           expandTargetChunks(this.protectionStore, registryReadiness),
+                           economyCurrency(activeConfig.current())),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -606,12 +639,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // The selecting handler turns wand hits into selection corners on the
         // same session /land claim reads; safety cancelling stays in the
         // listener so a handler failure can never break or interact blocks.
+        // Startup hydration gate: until the durable registry rebuild publishes
+        // and marks readiness, the wand occupancy/collision lookups fail closed
+        // instead of treating unhydrated durable land as wilderness.
         this.wandSafetyListener = buildWandSafetyListener(
                 this.selectionSessionManager,
                 () -> new SelectionEditService(
-                        activeConfig.current().limits(), wandCollisionIndex(this.protectionStore)),
+                        activeConfig.current().limits(),
+                        wandCollisionIndex(this.protectionStore, registryReadiness)),
                 Clock.systemUTC()::instant,
-                (player, kind, vars) -> sendWandSelectionMessage(player, kind.messageKey(), vars));
+                (player, kind, vars) -> sendWandSelectionMessage(player, kind.messageKey(), vars),
+                wandOccupancyLookup(this.protectionStore, registryReadiness),
+                wandBoundaryLookup(this.protectionStore, registryReadiness),
+                occupiedPreview);
         // ENTRY enforcement reads banned-inside stops from the immutable ban
         // snapshot through a memory-only lookup: no SQL, Bukkit, chunk load
         // or network on the event thread. Unknown or failing answers fail
@@ -1077,6 +1117,90 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Production {@code /land} handlers with the wand-aware expand delta
+     * adapter installed. The wiring keeps every other overload untouched so
+     * the focused assembly tests stay valid, and only replaces the expand slot
+     * with a handler that subtracts the target's immutable chunk set.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain));
+        if (expand != null && selections != null) {
+            base.put("expand", new ExpandCommandHandler(
+                    selections, expand, recoveryScan, currentLand, targetChunks));
+        }
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers with the wand-aware expand delta
+     * adapter installed and the configured refund currency passed to the
+     * shrink reply.
+     *
+     * <p>The currency is the same typed value the shrink saga charges and
+     * refunds with, so the success and compensation-pending replies render the
+     * refund in major units ({@code "0.50 EMC"}) instead of the raw
+     * minor-unit long. The shrink slot is rebuilt here over the delta-aware map
+     * so the currency reaches the handler without disturbing the overloads the
+     * focused assembly tests pin. A null currency keeps the legacy raw fallback.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks,
+            Currency shrinkRefundCurrency) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain, targetChunks));
+        if (shrink != null && selections != null) {
+            LandCommand.Handler shrinkHandler = new ShrinkCommandHandler(selections, shrink,
+                    recoveryScan, shrinkCurrentLand, shrinkTargetOwner, "shrink",
+                    shrinkRefundCurrency);
+            base.put("shrink", shrinkHandler);
+            base.put("unclaim", shrinkHandler);
+        }
+        return Map.copyOf(base);
+    }
+
+    /**
      * Builds the read-only explain handler over the shared protection
      * snapshot and the same atomic context provider the enforcement path
      * reads, so every explain observes the generation it classifies with.
@@ -1361,31 +1485,67 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
-     * Resolves the Economy bridge for claim recovery and live claims.
+     * Resolves the Economy bridge for claim recovery and live claims through
+     * the Vault Legacy registration (live: AceEconomy). Absent, unready, or
+     * broken providers resolve to the explicitly unavailable bridge: player
+     * claims fail closed on {@code economy.unavailable} before any ledger row
+     * (the saga checks availability ahead of all side effects), and recovery
+     * refunds through it stay fail-safe with unrefunded rows retryable.
      *
-     * <p>No Vault provider hookup exists on the classpath yet, so production
-     * currently resolves to the explicitly unavailable bridge. Player claims
-     * fail closed on {@code economy.unavailable} before any ledger row (the
-     * saga checks availability ahead of all side effects); recovery refunds
-     * through it stay fail-safe with unrefunded rows retryable. When a Vault
-     * hookup lands, it plugs in here and both paths pick it up without
-     * touching the bootstrap or the saga.
+     * <p>Package-visible seam so production wiring tests drive the same
+     * lookup the server uses without a running Vault plugin.
      */
-    private static VaultBridge resolveEconomyBridge() {
-        return new UnavailableVaultBridge();
+    static VaultBridge resolveEconomyBridge(org.bukkit.plugin.ServicesManager services,
+            java.util.function.Function<java.util.UUID, org.bukkit.OfflinePlayer> players) {
+        return VaultServiceDiscovery.resolve(services, players);
+    }
+
+    private VaultBridge resolveEconomyBridge() {
+        try {
+            return resolveEconomyBridge(getServer().getServicesManager(),
+                    uuid -> getServer().getOfflinePlayer(uuid));
+        } catch (RuntimeException | LinkageError e) {
+            getLogger().warning("ChunkLand economy lookup failed; "
+                    + "claims stay fail-closed: " + e.getMessage());
+            return new UnavailableVaultBridge();
+        }
     }
 
     /**
-     * Interim claim pricing: no pricing shape exists in {@code config.yml}
-     * yet, so every claim prices at zero in the bootstrap currency. Player
-     * claims fail closed on {@code pricing.unavailable} before any ledger,
-     * charge, or domain side effect, so the placeholder can never create a
-     * silent free land in production; server land stays free by design.
-     * Introducing real tiers later only replaces this method.
+     * Claim pricing from the typed {@code economy} section: owner-total
+     * price-per-chunk tiers in the configured currency, shared by claim and
+     * expand. Refunds never reprice — shrink always refunds from the durable
+     * per-chunk cost basis times the shrink ratio.
+     *
+     * <p>Fail-closed sentinel: a config without an {@code economy} section
+     * (pre-economy file) prices every chunk at zero in the fallback currency.
+     * That sentinel can never create a silent free land — a player claim
+     * through it is rejected on {@code economy.unavailable} when Vault is
+     * down, or on {@code pricing.unavailable} when a provider is up but no
+     * tiers are configured — while server land stays free by design without
+     * touching Economy.
      */
-    private static PricingTable claimPricing() {
+    static PricingTable claimPricing(ChunkLandConfig config) {
+        com.smile.chunkland.config.EconomySettings economy =
+                config == null ? null : config.economy();
+        if (economy != null) {
+            return economy.pricing();
+        }
         Currency currency = ClaimStartupBootstrap.CLAIM_CURRENCY;
         return PricingTable.of(List.of(PricingTier.of(PricingTier.UNBOUNDED, Money.zero(currency))));
+    }
+
+    /**
+     * Claim currency from the typed {@code economy} section, or the fallback
+     * currency for pre-economy configs. Recovery refunds and shrink refunds
+     * rebuild amounts from durable minor units through this currency, so it
+     * must agree with charge time — operators must not change the currency
+     * scale while a ledger holds live rows.
+     */
+    static Currency economyCurrency(ChunkLandConfig config) {
+        com.smile.chunkland.config.EconomySettings economy =
+                config == null ? null : config.economy();
+        return economy == null ? ClaimStartupBootstrap.CLAIM_CURRENCY : economy.currency();
     }
 
     /**
@@ -1834,7 +1994,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 return thread;
             });
             this.claimSaga = buildClaimSaga(this.protectionStore, selections,
-                    this.claimQuotas, claimPricing(), this.claimReservations,
+                    this.claimQuotas, claimPricing(config.current()), this.claimReservations,
                     bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), this.claimExecutor,
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
@@ -1883,7 +2043,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
             ConfigService config = this.configService.orElseThrow(
                     () -> new IllegalStateException("ChunkLand config service is unavailable"));
             this.expandSaga = buildExpandSaga(this.protectionStore, selections,
-                    quotas, claimPricing(), reservations,
+                    quotas, claimPricing(config.current()), reservations,
                     bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
@@ -1965,12 +2125,17 @@ public final class ChunkLandPlugin extends JavaPlugin {
             return null;
         }
         try {
+            // Shrink refunds rebuild amounts from durable minor units, so the
+            // currency must be the same typed one the bootstrap charges and
+            // refunds with — never a hardcoded constant that could drift.
+            Currency shrinkCurrency = economyCurrency(
+                    this.configService.map(ConfigService::current).orElse(null));
             this.shrinkSaga = buildShrinkSaga(this.protectionStore, selections,
                     quotas, reservations,
                     bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
                     this.selectionStructureRevisions,
                     new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()),
-                    ClaimStartupBootstrap.CLAIM_CURRENCY);
+                    shrinkCurrency);
             return this.shrinkSaga::shrink;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand shrink flow assembly failed; "
@@ -2193,7 +2358,40 @@ public final class ChunkLandPlugin extends JavaPlugin {
             java.util.function.Supplier<SelectionEditService> editServices,
             SelectionClock clock,
             WandFeedback feedback) {
-        return new WandSafetyListener(new SelectionWandClickHandler(manager, editServices, clock, feedback));
+        return buildWandSafetyListener(manager, editServices, clock, feedback, SelectionLandLookup.none());
+    }
+
+    /**
+     * Production assembly with the ownership-aware first-point guard. The
+     * lookup only reads the immutable registry snapshot, so the wand path
+     * still never touches a World, Chunk, SQL or the network.
+     */
+    public static WandSafetyListener buildWandSafetyListener(
+            SelectionSessionManager manager,
+            java.util.function.Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback,
+            SelectionLandLookup landLookup) {
+        return buildWandSafetyListener(manager, editServices, clock, feedback, landLookup,
+                SelectionLandBoundaryLookup.none(), OccupiedPreviewController.noop());
+    }
+
+    /**
+     * Full production assembly: the ownership-aware first-point guard, the
+     * immutable boundary lookup for the occupied preview, and the separate
+     * preview renderer. None of these touch a World, Chunk, SQL or network on
+     * the click path.
+     */
+    public static WandSafetyListener buildWandSafetyListener(
+            SelectionSessionManager manager,
+            java.util.function.Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback,
+            SelectionLandLookup landLookup,
+            SelectionLandBoundaryLookup boundaryLookup,
+            OccupiedPreviewController occupiedPreview) {
+        return new WandSafetyListener(new SelectionWandClickHandler(
+                manager, editServices, clock, feedback, landLookup, boundaryLookup, occupiedPreview));
     }
 
     /**
@@ -2222,8 +2420,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * Unknown worlds read as wilderness; a failing snapshot read propagates
      * so the click handler fails closed instead of selecting blindly.
      */
-    private static SelectionLandIndex wandCollisionIndex(LandRegistryStore registryStore) {
+    private static SelectionLandIndex wandCollisionIndex(
+            LandRegistryStore registryStore, RegistryReadiness readiness) {
         return (worldId, packed) -> {
+            if (readiness == null || !readiness.isReady()) {
+                // Unhydrated registry: unknown must not read as wilderness.
+                throw new IllegalStateException("land registry is not hydrated");
+            }
             LandRegistryStore store = registryStore;
             if (store == null) {
                 return null;
@@ -2233,6 +2436,96 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 return null;
             }
             return snapshot.findLandIdPacked(worldId, packed);
+        };
+    }
+
+    /**
+     * Memory-only occupancy lookup for the wand's ownership-aware first point.
+     * Unknown worlds and wilderness read as {@code null}; a failing snapshot
+     * read or an unhydrated registry propagates so the guard fails closed
+     * instead of selecting blindly.
+     */
+    private static SelectionLandLookup wandOccupancyLookup(
+            LandRegistryStore registryStore, RegistryReadiness readiness) {
+        return (worldId, chunkX, chunkZ) -> {
+            if (readiness == null || !readiness.isReady()) {
+                // Unhydrated registry: unknown must not read as wilderness.
+                throw new IllegalStateException("land registry is not hydrated");
+            }
+            LandRegistryStore store = registryStore;
+            if (store == null) {
+                return null;
+            }
+            LandRegistry snapshot = store.snapshot();
+            if (snapshot == null) {
+                return null;
+            }
+            com.smile.chunkland.api.land.LandId landId = snapshot.findLandId(worldId, chunkX, chunkZ);
+            if (landId == null) {
+                return null;
+            }
+            com.smile.chunkland.api.land.LandSnapshot land = snapshot.land(landId);
+            if (land == null) {
+                return null;
+            }
+            return new SelectionLandContext(landId, land.ownerRef(), land.structureRevision());
+        };
+    }
+
+    /**
+     * Read-only boundary lookup for the occupied-land preview: the land's real
+     * immutable chunk set comes from the same volatile registry snapshot, so
+     * irregular shapes are outlined exactly. An unhydrated registry returns
+     * empty (no preview) rather than guessing wilderness.
+     */
+    private static SelectionLandBoundaryLookup wandBoundaryLookup(
+            LandRegistryStore registryStore, RegistryReadiness readiness) {
+        return landId -> {
+            if (readiness == null || !readiness.isReady()) {
+                return java.util.Optional.empty();
+            }
+            LandRegistryStore store = registryStore;
+            if (store == null || landId == null) {
+                return java.util.Optional.empty();
+            }
+            LandRegistry snapshot = store.snapshot();
+            if (snapshot == null) {
+                return java.util.Optional.empty();
+            }
+            com.smile.chunkland.api.land.LandSnapshot land = snapshot.land(landId);
+            if (land == null) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(land.chunks());
+        };
+    }
+
+    /**
+     * Read-only target-chunk lookup for the {@code /land expand} delta: the
+     * target land's immutable chunk set comes from the same volatile registry
+     * snapshot everything else reads, so the expanded delta is exactly the
+     * selected chunks the target does not already own. No second registry is
+     * built and no World, Chunk, SQL or network access happens here.
+     */
+    private static ExpandCommandHandler.TargetChunkLookup expandTargetChunks(
+            LandRegistryStore registryStore, RegistryReadiness readiness) {
+        return landId -> {
+            if (readiness == null || !readiness.isReady()) {
+                return java.util.Optional.empty();
+            }
+            LandRegistryStore store = registryStore;
+            if (store == null || landId == null) {
+                return java.util.Optional.empty();
+            }
+            LandRegistry snapshot = store.snapshot();
+            if (snapshot == null) {
+                return java.util.Optional.empty();
+            }
+            com.smile.chunkland.api.land.LandSnapshot land = snapshot.land(landId);
+            if (land == null) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(land.chunks());
         };
     }
 
@@ -2262,6 +2555,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         if (selectionSessionManager != null) {
             try {
                 selectionSessionManager.disable();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        if (occupiedPreviewController != null) {
+            try {
+                occupiedPreviewController.stopAll();
             } catch (RuntimeException ignored) {
             }
         }

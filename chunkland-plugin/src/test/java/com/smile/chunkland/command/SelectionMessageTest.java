@@ -24,8 +24,11 @@ class SelectionMessageTest {
 
     private static final Set<String> SELECTION_KEYS = Set.of(
             "selection.wand.first_point",
+            "selection.wand.edit_target",
             "selection.wand.second_point",
             "selection.wand.resized",
+            "selection.wand.blocked",
+            "selection.wand.unavailable",
             "selection.wand.reset",
             "selection.wand.abandoned",
             "selection.wand.cancelled");

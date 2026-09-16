@@ -19,10 +19,16 @@ public interface WandFeedback {
     enum Kind {
         /** First valid corner recorded; the range is open. */
         FIRST_POINT("selection.wand.first_point"),
+        /** First corner on the actor's own land; an edit selection is open. */
+        EDIT_TARGET("selection.wand.edit_target"),
         /** Second corner recorded; the chunk rectangle is ready. */
         SECOND_POINT("selection.wand.second_point"),
         /** An existing rectangle was resized in place (first corner kept). */
         RESIZED("selection.wand.resized"),
+        /** The click hit an existing land the selection may not cover. */
+        BLOCKED("selection.wand.blocked"),
+        /** Land data is not hydrated yet, so the click cannot be judged safely. */
+        UNAVAILABLE("selection.wand.unavailable"),
         /** The wand came back to the main hand; the range restarts clean. */
         RESET("selection.wand.reset");
 

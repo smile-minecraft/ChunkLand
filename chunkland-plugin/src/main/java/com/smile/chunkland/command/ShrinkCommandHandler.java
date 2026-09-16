@@ -3,6 +3,7 @@ package com.smile.chunkland.command;
 import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.claim.ClaimOutcome;
 import com.smile.chunkland.claim.ShrinkOutcome;
 import com.smile.chunkland.claim.ShrinkRequest;
@@ -71,6 +72,36 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
     private final Function<CommandSender, Optional<LandId>> currentLand;
     private final Function<LandId, Optional<OwnerRef>> targetOwner;
     private final String subcommand;
+    private final Currency refundCurrency;
+
+    /**
+     * @param selections live selection registry; never null
+     * @param runner saga entry point; null means shrink is not wired yet
+     * @param recoveryScan startup recovery scan; null means no gate (tests)
+     * @param currentLand land under the sender; null skips the position check
+     *        (tests that drive the saga tokens directly)
+     * @param targetOwner owner of the target land from the already-published
+     *        snapshot; null keeps the legacy player-only path (Server Land
+     *        then fails closed in the validator with {@code owner_mismatch})
+     * @param subcommand alias used for message keys ({@code shrink} or
+     *        {@code unclaim}); null defaults to {@code shrink}
+     * @param refundCurrency currency used to render the refund in the success
+     *        and compensation-pending replies; null keeps the legacy raw
+     *        minor-unit fallback (unwired maps and legacy constructors)
+     */
+    public ShrinkCommandHandler(SelectionSessionManager selections, ShrinkRunner runner,
+            Supplier<CompletionStage<?>> recoveryScan,
+            Function<CommandSender, Optional<LandId>> currentLand,
+            Function<LandId, Optional<OwnerRef>> targetOwner,
+            String subcommand, Currency refundCurrency) {
+        this.selections = Objects.requireNonNull(selections, "selections");
+        this.runner = runner;
+        this.recoveryScan = recoveryScan;
+        this.currentLand = currentLand;
+        this.targetOwner = targetOwner;
+        this.subcommand = subcommand == null || subcommand.isBlank() ? "shrink" : subcommand;
+        this.refundCurrency = refundCurrency;
+    }
 
     /**
      * @param selections live selection registry; never null
@@ -89,12 +120,7 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
             Function<CommandSender, Optional<LandId>> currentLand,
             Function<LandId, Optional<OwnerRef>> targetOwner,
             String subcommand) {
-        this.selections = Objects.requireNonNull(selections, "selections");
-        this.runner = runner;
-        this.recoveryScan = recoveryScan;
-        this.currentLand = currentLand;
-        this.targetOwner = targetOwner;
-        this.subcommand = subcommand == null || subcommand.isBlank() ? "shrink" : subcommand;
+        this(selections, runner, recoveryScan, currentLand, targetOwner, subcommand, null);
     }
 
     /**
@@ -210,7 +236,8 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
             sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.failed"));
             return;
         }
-        stage.whenComplete((outcome, failure) -> replyOutcome(sink, chunkCount, outcome, failure));
+        stage.whenComplete((outcome, failure) -> replyOutcome(sink, chunkCount, outcome, failure,
+                refundCurrency));
     }
 
     private OwnerRef resolveRequestOwner(LandId target, UUID actor) {
@@ -237,19 +264,31 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
     }
 
     private static void replyOutcome(ReplySink sink, int chunkCount,
-            ShrinkOutcome outcome, Throwable failure) {
+            ShrinkOutcome outcome, Throwable failure, Currency refundCurrency) {
         try {
             if (failure != null || outcome == null) {
                 sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.failed"));
                 return;
             }
             switch (outcome.status()) {
-                case SUCCESS, DEGRADED -> sink.reply("command.land.shrink.success",
-                        Map.of("chunk_count", chunkCount,
-                                "refund", outcome.refundMinorUnits() == null ? 0L : outcome.refundMinorUnits()));
-                case COMPENSATION_PENDING -> sink.reply("command.land.shrink.compensation_pending",
-                        Map.of("chunk_count", chunkCount,
-                                "refund", outcome.refundMinorUnits() == null ? 0L : outcome.refundMinorUnits()));
+                case SUCCESS, DEGRADED -> {
+                    if (isNegativeRefund(outcome.refundMinorUnits())) {
+                        sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.failed"));
+                    } else {
+                        sink.reply("command.land.shrink.success",
+                                Map.of("chunk_count", chunkCount,
+                                        "refund", formatRefund(outcome.refundMinorUnits(), refundCurrency)));
+                    }
+                }
+                case COMPENSATION_PENDING -> {
+                    if (isNegativeRefund(outcome.refundMinorUnits())) {
+                        sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.failed"));
+                    } else {
+                        sink.reply("command.land.shrink.compensation_pending",
+                                Map.of("chunk_count", chunkCount,
+                                        "refund", formatRefund(outcome.refundMinorUnits(), refundCurrency)));
+                    }
+                }
                 case NEEDS_RECONCILIATION -> sink.reply("command.land.shrink.failed",
                         Map.of("reason", "shrink.reconciliation"));
                 case REJECTED -> {
@@ -276,6 +315,36 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
                     case DEGRADED -> ShrinkOutcome.degraded(outcome.landId(), 0L, outcome.diagnosticKey());
                     case REJECTED -> ShrinkOutcome.rejected(outcome.diagnosticKey());
                     case FAILED -> ShrinkOutcome.failed(outcome.diagnosticKey());
-                }, failure);
+                }, failure, null);
+    }
+
+    /**
+     * Renders the refund var for the reply.
+     *
+     * <p>With a configured currency the durable minor units become readable
+     * major units ({@code 50} at scale {@code 2} renders as {@code "0.50 EMC"}).
+     * Without one (unwired maps and legacy constructors) the raw minor-unit
+     * long is kept, so a half-wired server never invents a currency.
+     *
+     * <p>A negative amount fails closed in the caller (a {@code shrink.failed}
+     * reply, never a success with a bogus refund): the residual catch below
+     * only preserves the terminal reply against an unreachable display
+     * failure, because the typed currency already guarantees a valid scale
+     * and the caller already rejected negatives.
+     */
+    private static boolean isNegativeRefund(Long refundMinorUnits) {
+        return refundMinorUnits != null && refundMinorUnits < 0;
+    }
+
+    private static Object formatRefund(Long refundMinorUnits, Currency refundCurrency) {
+        long minorUnits = refundMinorUnits == null ? 0L : refundMinorUnits;
+        if (refundCurrency == null) {
+            return minorUnits;
+        }
+        try {
+            return MoneyDisplay.format(minorUnits, refundCurrency);
+        } catch (RuntimeException invalid) {
+            return minorUnits;
+        }
     }
 }

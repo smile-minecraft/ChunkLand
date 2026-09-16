@@ -10,6 +10,10 @@ dependencyResolutionManagement {
         mavenCentral()
         // Paper / Folia API for compile-only plugin development (server provides it at runtime).
         maven { url = uri("https://repo.papermc.io/repository/maven-public/") }
+        // VaultAPI (com.github.MilkBowl) is only published via JitPack since
+        // JCenter sunset; compile-only boundary for the Vault Legacy Economy
+        // hookup (server provides Vault at runtime, never embedded).
+        maven { url = uri("https://jitpack.io") }
         // AceLib is a server-provided plugin: resolved compile-only from the locally
         // built jar (produced by scripts/build-acelib.sh), never embedded.
         val aceCache = System.getenv("ACE_OUTPUT_DIR")

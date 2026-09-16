@@ -12,10 +12,13 @@ import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.RecoveryResult;
 import com.smile.chunkland.persistence.SqliteChunkRepository;
 import com.smile.chunkland.persistence.SqliteLandRepository;
+import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
+import com.smile.chunkland.runtime.index.RegistryReadiness;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
@@ -52,9 +55,10 @@ public final class ClaimStartupBootstrap implements AutoCloseable {
     public static final String DATABASE_FILE_NAME = "chunkland.db";
 
     /**
-     * Claim currency until the production config gains a currency source.
-     * Matches the currency the claim tests already standardise on; a real
-     * provider must replace this constant before Vault is connected.
+     * Claim currency fallback for snapshots without an {@code economy}
+     * section: pre-economy configs keep parsing, while pricing resolution
+     * fails player claims closed downstream. Production passes the configured
+     * currency through the currency overload once Vault is connected.
      */
     static final Currency CLAIM_CURRENCY = Currency.of("EMC", 2);
 
@@ -64,17 +68,31 @@ public final class ClaimStartupBootstrap implements AutoCloseable {
     private final RuntimeRegistryRebuilder rebuilder;
     private final CompletionStage<List<RecoveryResult>> scan;
     private final Logger logger;
+    private final RegistryReadiness readiness;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    /**
+     * Completes once startup hydration has published the registry and marked
+     * readiness (or failed). A deterministic seam for tests; production never
+     * blocks on it.
+     */
+    private volatile CompletionStage<LandRegistry> hydration = CompletableFuture.completedFuture(null);
 
     private ClaimStartupBootstrap(PersistenceStore store, OperationLedger ledger,
             ClaimEconomy economy, RuntimeRegistryRebuilder rebuilder,
             CompletionStage<List<RecoveryResult>> scan, Logger logger) {
+        this(store, ledger, economy, rebuilder, scan, logger, new RegistryReadiness());
+    }
+
+    private ClaimStartupBootstrap(PersistenceStore store, OperationLedger ledger,
+            ClaimEconomy economy, RuntimeRegistryRebuilder rebuilder,
+            CompletionStage<List<RecoveryResult>> scan, Logger logger, RegistryReadiness readiness) {
         this.store = store;
         this.ledger = ledger;
         this.economy = economy;
         this.rebuilder = rebuilder;
         this.scan = scan;
         this.logger = logger;
+        this.readiness = Objects.requireNonNull(readiness, "readiness");
     }
 
     /**
@@ -109,22 +127,39 @@ public final class ClaimStartupBootstrap implements AutoCloseable {
      */
     public static ClaimStartupBootstrap start(Path databasePath, LandRegistryStore sharedStore, Logger logger,
             VaultBridge bridge) {
+        return start(databasePath, sharedStore, logger, bridge, CLAIM_CURRENCY);
+    }
+
+    /**
+     * Open persistence and trigger the startup recovery scan with an explicit
+     * Economy bridge and claim currency.
+     *
+     * <p>The currency must be the configured {@code economy.currency}: refund
+     * amounts are rebuilt from durable minor units through it, so a currency
+     * that disagrees with charge time would mis-convert refunds. A null
+     * currency falls back to {@link #CLAIM_CURRENCY}.
+     */
+    public static ClaimStartupBootstrap start(Path databasePath, LandRegistryStore sharedStore, Logger logger,
+            VaultBridge bridge, Currency currency) {
         Objects.requireNonNull(databasePath, "databasePath");
         Objects.requireNonNull(sharedStore, "sharedStore");
         VaultBridge active = bridge == null ? new UnavailableVaultBridge() : bridge;
+        Currency activeCurrency = currency == null ? CLAIM_CURRENCY : currency;
         PersistenceStore store = PersistenceStore.open(databasePath);
         boolean started = false;
         try {
             OperationLedger ledger = new OperationLedger(store);
-            ClaimEconomy economy = new VaultClaimEconomy(active, CLAIM_CURRENCY);
+            ClaimEconomy economy = new VaultClaimEconomy(active, activeCurrency);
             RuntimeRegistryRebuilder rebuilder =
                     new RuntimeRegistryRebuilder(new SqliteLandRepository(store), sharedStore,
                             new SqliteChunkRepository(store));
             CompletionStage<List<RecoveryResult>> scan =
                     ClaimRecoveryHandlers.scanAtStartup(ledger, economy, rebuilder);
+            RegistryReadiness readiness = new RegistryReadiness();
             ClaimStartupBootstrap bootstrap =
-                    new ClaimStartupBootstrap(store, ledger, economy, rebuilder, scan, logger);
+                    new ClaimStartupBootstrap(store, ledger, economy, rebuilder, scan, logger, readiness);
             bootstrap.observe(scan);
+            bootstrap.hydrate(sharedStore);
             started = true;
             return bootstrap;
         } finally {
@@ -154,6 +189,78 @@ public final class ClaimStartupBootstrap implements AutoCloseable {
 
     RuntimeRegistryRebuilder rebuilder() {
         return rebuilder;
+    }
+
+    /** Shared readiness flag for the runtime registry hydration. */
+    RegistryReadiness readiness() {
+        return readiness;
+    }
+
+    /**
+     * Kick off the startup registry hydration: rebuild the immutable runtime
+     * index from the durable repository, publish it, then mark readiness so
+     * the selection guard can distinguish a hydrated empty world from an
+     * unhydrated one. Runs asynchronously on the persistence executor; a
+     * failing rebuild leaves the flag unset so occupancy reads stay fail-closed
+     * instead of treating durable land as wilderness.
+     */
+    private void hydrate(LandRegistryStore sharedStore) {
+        Objects.requireNonNull(sharedStore, "sharedStore");
+        CompletionStage<LandRegistry> rebuild;
+        try {
+            rebuild = rebuilder.rebuild();
+        } catch (RuntimeException | Error failure) {
+            failHydration(failure);
+            return;
+        }
+        if (rebuild == null) {
+            failHydration(new IllegalStateException("rebuilder returned no stage"));
+            return;
+        }
+        try {
+            this.hydration = rebuild.whenComplete((registry, failure) -> {
+                try {
+                    if (closed.get()) {
+                        return;
+                    }
+                    if (failure != null) {
+                        warnHydration(failure);
+                        return;
+                    }
+                    readiness.markReady();
+                    if (logger != null) {
+                        logger.info("ChunkLand startup registry hydrated: "
+                                + (registry == null ? 0 : registry.lands().size()) + " lands");
+                    }
+                } catch (RuntimeException | Error ignored) {
+                    // Observer only; the readiness flag is the contract.
+                }
+            });
+        } catch (RuntimeException | Error registrationFailure) {
+            failHydration(registrationFailure);
+        }
+    }
+
+    private void failHydration(Throwable failure) {
+        warnHydration(failure);
+        this.hydration = CompletableFuture.failedFuture(failure);
+    }
+
+    private void warnHydration(Throwable failure) {
+        if (logger != null) {
+            logger.warning("ChunkLand startup registry hydration failed; "
+                    + "selection occupancy stays fail-closed: " + failure);
+        }
+    }
+
+    /**
+     * Deterministic completion seam for the startup hydration. Completes after
+     * readiness is marked on success, or exceptionally when the rebuild could
+     * not be started. Awaiting it never blocks a region thread: the rebuild
+     * read runs on the persistence executor.
+     */
+    CompletionStage<LandRegistry> hydrationFuture() {
+        return hydration;
     }
 
     CompletionStage<List<RecoveryResult>> scanFuture() {

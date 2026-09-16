@@ -103,7 +103,31 @@ public final class SelectionVisualizationGeometry {
             double viewerZ) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(budget, "budget");
-        Set<ChunkKey> chunks = session.selectedChunks();
+        return plan(session.selectedChunks(), planeY(session, viewerY), budget, viewerX, viewerZ);
+    }
+
+    /**
+     * Plan one frame for an explicit immutable chunk set on a fixed plane.
+     *
+     * <p>Used by the occupied-land preview, which renders a land's real chunk
+     * boundary without owning a selection session. Geometry, culling, caps and
+     * sampling are identical to the session path, so the preview honours the
+     * same budget.
+     *
+     * @param chunks the immutable chunk set to outline
+     * @param planeY the fixed render plane in block coordinates
+     * @param budget the active caps
+     * @param viewerX viewer block x used for render-distance culling
+     * @param viewerZ viewer block z used for render-distance culling
+     */
+    public static Frame plan(
+            Set<ChunkKey> chunks,
+            double planeY,
+            SelectionVisualizationBudget budget,
+            double viewerX,
+            double viewerZ) {
+        Objects.requireNonNull(chunks, "chunks");
+        Objects.requireNonNull(budget, "budget");
         if (chunks.isEmpty()) {
             return new Frame(List.of(), 0, false);
         }
@@ -120,7 +144,6 @@ public final class SelectionVisualizationGeometry {
         }
         boolean truncated = visible.size() > budget.maxSegments();
         List<BoundarySegment> kept = truncated ? visible.subList(0, budget.maxSegments()) : visible;
-        double planeY = planeY(session, viewerY);
         List<Point> points = new ArrayList<>(kept.size() * SAMPLE_FRACTIONS.length);
         for (BoundarySegment segment : kept) {
             long[] edge = segment.edgeEndpoints();
