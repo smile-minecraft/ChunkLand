@@ -93,6 +93,17 @@ command:
       delete_required: "<yellow>That would remove the whole land. Use /land delete to remove it entirely.</yellow>"
       rejected: "<red>Shrink rejected: <reason>.</red>"
       failed: "<red>Shrink failed: <reason>.</red>"
+    delete:
+      console: "<red>Only players can delete land.</red>"
+      no_target: "<yellow>Stand on the land you want to delete and target it first.</yellow>"
+      usage: "<yellow>Usage: /land delete confirm <revision></yellow>"
+      confirm: "<yellow>This will permanently delete the land and refund its full cost. Run /land delete confirm <revision> to proceed.</yellow>"
+      stale: "<yellow>That delete confirmation has expired. Please review the latest details and try again.</yellow>"
+      success: "<green>Land <land_name> deleted: <chunk_count> chunks. Refunded <refund>.</green>"
+      compensation_pending: "<yellow>Land deleted: <chunk_count> chunks. The refund of <refund> is still being processed.</yellow>"
+      degraded: "<yellow>Land deleted but the live map is still rebuilding. Please wait a moment and try again: <reason>.</yellow>"
+      rejected: "<red>Delete rejected: <reason>.</red>"
+      failed: "<red>Delete failed: <reason>.</red>"
     group:
       console: "<red>Only players can manage groups.</red>"
       usage: "<yellow>Usage: /land group (create|list|add|remove|delete) [args]</yellow>"

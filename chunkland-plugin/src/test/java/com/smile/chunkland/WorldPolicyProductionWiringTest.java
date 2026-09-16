@@ -464,7 +464,8 @@ class WorldPolicyProductionWiringTest {
     }
 
     // ------------------------------------------------------------------
-    // Scope guard: Delete stays out of this task; Expand is wired by CL-M2-21
+    // Scope guard: Delete left the stub pool with expand and shrink; Expand
+    // is wired by CL-M2-21
     // ------------------------------------------------------------------
 
     @Test
@@ -497,10 +498,16 @@ class WorldPolicyProductionWiringTest {
                 varsByKey.put(messageKey, vars);
             }
         };
+        // Delete left the stub pool with expand and shrink: without a runner
+        // it fails closed as unavailable instead of pretending it is coming
+        // soon. Delete is owned by the land-delete flow; this scope guard only
+        // pins the fail-closed shape while unwired.
         assertNotNull(handlers.get("delete"), "delete must stay registered");
         handlers.get("delete").handle(null, new String[]{"delete"}, sink);
-        assertEquals(List.of("command.land.not_yet"), keys,
-                "delete must stay a not-yet stub in this task");
+        assertEquals(List.of("command.land.delete.failed"), keys,
+                "delete must fail closed while unwired");
+        assertEquals("delete.unavailable",
+                varsByKey.get("command.land.delete.failed").get("reason"));
         // Expand left the stub pool: without a runner it fails closed as
         // unavailable instead of pretending it is coming soon.
         assertNotNull(handlers.get("expand"), "expand must stay registered");

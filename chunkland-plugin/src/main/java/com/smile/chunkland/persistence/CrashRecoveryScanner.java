@@ -137,15 +137,16 @@ public final class CrashRecoveryScanner {
 
     /**
      * Route a domain-committed row by operation kind. Claim rows rebuild the
-     * runtime towards {@code ACTIVE}; refund and shrink rows already released
-     * their domain but may never have moved money, so they park for
+     * runtime towards {@code ACTIVE}; refund, shrink and delete rows already
+     * released their domain but may never have moved money, so they park for
      * compensation and retry the deposit through the shared compensation path
      * instead of being marked active with an unpaid refund. A zero-amount
-     * refund or shrink row moves no money, so it settles directly with the
-     * zero marker and a runtime rebuild, without parking or calling Economy.
+     * refund, shrink or delete row moves no money, so it settles directly with
+     * the zero marker and a runtime rebuild, without parking or calling Economy.
      */
     private CompletionStage<RecoveryResult> recoverDomainCommittedByType(LedgerEntry entry) {
-        if ("REFUND".equals(entry.operationType()) || "SHRINK".equals(entry.operationType())) {
+        if ("REFUND".equals(entry.operationType()) || "SHRINK".equals(entry.operationType())
+                || "DELETE".equals(entry.operationType())) {
             return recoverRefundCommitted(entry);
         }
         return recoverDomainCommitted(entry);
@@ -157,20 +158,34 @@ public final class CrashRecoveryScanner {
                 return moveToReconciliation(entry, "refund domain-committed payload is invalid");
             }
             if (!"REFUND".equals(payload.operationType())
-                    && !"SHRINK".equals(payload.operationType())) {
+                    && !"SHRINK".equals(payload.operationType())
+                    && !"DELETE".equals(payload.operationType())) {
                 return moveToReconciliation(entry, "refund row carries a non-refund payload");
             }
             if (payload.priceMinorUnits() == 0L) {
                 return settleZeroFromDomainCommitted(entry, payload);
             }
             return ledger.parkForRefundCompensation(
-                            entry.operationId(), "refund:" + entry.operationId(), now())
+                            entry.operationId(), compensationRef(entry), now())
                     .thenCompose(ignored -> ledger.find(entry.operationId()))
                     .thenCompose(this::recoverCompensation)
                     .exceptionally(failure -> unchanged(entry,
                             LedgerState.RecoveryClassification.RETRY_COMPENSATION,
                             "refund could not be parked for compensation"));
         });
+    }
+
+    /**
+     * Durable parking marker for a DOMAIN_COMMITTED refund-class row. A
+     * delete row keeps the {@code delete:} prefix its saga parks and settles
+     * with, so park and recovery stay consistent; refund and shrink rows keep
+     * the shared {@code refund:} prefix. The marker is only stored on the
+     * ledger row — the Economy idempotency key is derived from the operation
+     * id — so it never changes a deposit.
+     */
+    private static String compensationRef(LedgerEntry entry) {
+        String prefix = "DELETE".equals(entry.operationType()) ? "delete:" : "refund:";
+        return prefix + entry.operationId();
     }
 
     private CompletionStage<RecoveryResult> recoverDomainCommitted(LedgerEntry entry) {        return payloadFor(entry).thenCompose(payload -> {
@@ -215,11 +230,11 @@ public final class CrashRecoveryScanner {
     }
 
     /**
-     * Retry a parked compensation. Refund and shrink rows carry their own
-     * payload contract, so the payload is validated before touching Economy:
+     * Retry a parked compensation. Refund, shrink and delete rows carry their
+     * own payload contract, so the payload is validated before touching Economy:
      * an untrusted payload quarantines without a deposit, a settle, or a
      * runtime rebuild. Claim rows keep their existing retry path unchanged.
-     * A zero-amount refund or shrink row moves no money, so the payload
+     * A zero-amount refund, shrink or delete row moves no money, so the payload
      * amount settles it directly without calling Economy; the amount always
      * comes from the authoritative payload, never from current ownership.
      */
@@ -227,11 +242,13 @@ public final class CrashRecoveryScanner {
         if (entry.economyTransactionRef() == null || entry.economyTransactionRef().isBlank()) {
             return moveToReconciliation(entry, "compensation has no Economy transaction reference");
         }
-        if ("REFUND".equals(entry.operationType()) || "SHRINK".equals(entry.operationType())) {
+        if ("REFUND".equals(entry.operationType()) || "SHRINK".equals(entry.operationType())
+                || "DELETE".equals(entry.operationType())) {
             return payloadFor(entry).thenCompose(payload -> {
                 if (payload == null
                         || (!"REFUND".equals(payload.operationType())
-                                && !"SHRINK".equals(payload.operationType()))) {
+                                && !"SHRINK".equals(payload.operationType())
+                                && !"DELETE".equals(payload.operationType()))) {
                     return moveToReconciliation(entry, "refund compensation payload is invalid");
                 }
                 if (payload.priceMinorUnits() == 0L) {
@@ -255,7 +272,8 @@ public final class CrashRecoveryScanner {
                 .thenCompose(result -> {
                     if (result == RefundOutcome.REFUNDED) {
                         if ("REFUND".equals(entry.operationType())
-                                || "SHRINK".equals(entry.operationType())) {
+                                || "SHRINK".equals(entry.operationType())
+                                || "DELETE".equals(entry.operationType())) {
                             return settleRefundCompensatedWithRuntime(entry);
                         }
                         return ledger.compareAndSetState(entry.operationId(), LedgerState.COMPENSATION_PENDING,
@@ -323,7 +341,7 @@ public final class CrashRecoveryScanner {
     }
 
     /**
-     * Settle a refund or shrink row as compensated and then rebuild the
+     * Settle a refund, shrink or delete row as compensated and then rebuild the
      * runtime from durable truth, mirroring the saga settle-then-publish
      * order. Both the settle and the rebuild run outside any SQL transaction:
      * the settle is its own transaction and the rebuild reads authoritative
@@ -338,7 +356,8 @@ public final class CrashRecoveryScanner {
                 .thenCompose(ignored -> {
                     if (payload == null
                             || (!"REFUND".equals(payload.operationType())
-                                    && !"SHRINK".equals(payload.operationType()))) {
+                                    && !"SHRINK".equals(payload.operationType())
+                                    && !"DELETE".equals(payload.operationType()))) {
                         return completed(changed(entry, LedgerState.COMPENSATED,
                                 LedgerState.RecoveryClassification.RETRY_COMPENSATION, "refund confirmed"));
                     }

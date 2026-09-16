@@ -221,6 +221,28 @@ public record OperationPayload(
                 refundNumerator, refundDenominator);
     }
 
+    /**
+     * Whole-land delete payload: the chunk set is the full durable set of the
+     * deleted land, and {@code targetLandId} is always the deleted land. The
+     * price is the full refund amount derived from the durable per-chunk cost
+     * bases, never from the current pricing table.
+     */
+    public static OperationPayload delete(
+            UUID operationId,
+            UUID actorUuid,
+            UUID worldUuid,
+            LandId targetLandId,
+            List<Chunk> chunkSet,
+            long refundMinorUnits,
+            String economyProviderId,
+            Instant createdAt,
+            String landDisplayName) {
+        Objects.requireNonNull(targetLandId, "targetLandId");
+        return new OperationPayload(operationId, "DELETE", actorUuid, worldUuid, targetLandId,
+                chunkSet, refundMinorUnits, economyProviderId, null,
+                createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName, null, null);
+    }
+
     public String toJson() {
         StringBuilder json = new StringBuilder(512);
         json.append('{');

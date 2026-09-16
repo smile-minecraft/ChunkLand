@@ -93,6 +93,17 @@ command:
       delete_required: "<yellow>這會移除整個領地。請改用 /land delete 完整刪除。</yellow>"
       rejected: "<red>縮減被拒絕：<reason>。</red>"
       failed: "<red>縮減失敗：<reason>。</red>"
+    delete:
+      console: "<red>只有玩家可以刪除領地。</red>"
+      no_target: "<yellow>請站在要刪除的領地上並先指定目標。</yellow>"
+      usage: "<yellow>用法：/land delete confirm <revision></yellow>"
+      confirm: "<yellow>這將永久刪除領地並全額退費。請執行 /land delete confirm <revision> 以繼續。</yellow>"
+      stale: "<yellow>該刪除確認已過期。請重新確認最新內容後再試一次。</yellow>"
+      success: "<green>已刪除領地 <land_name>：<chunk_count> 個區塊，已退費 <refund>。</green>"
+      compensation_pending: "<yellow>已刪除領地：<chunk_count> 個區塊，<refund> 的退費仍在處理中。</yellow>"
+      degraded: "<yellow>領地已刪除，但即時地圖仍在重建中。請稍候再試：<reason>。</yellow>"
+      rejected: "<red>刪除被拒絕：<reason>。</red>"
+      failed: "<red>刪除失敗：<reason>。</red>"
     group:
       console: "<red>只有玩家可以管理群組。</red>"
       usage: "<yellow>用法：/land group (create|list|add|remove|delete) [參數]</yellow>"

@@ -328,6 +328,24 @@ class OwnerQuotaServiceTest {
         assertEquals(0, svc.chunkReserved(owner));
     }
 
+    @Test
+    void releaseCommittedLandsFloorsAtZeroAndServerIsNoop() {
+        OwnerRef owner = OwnerRef.player(UUID.randomUUID());
+        OwnerQuotaService svc = new OwnerQuotaService(new LimitResolver(configWithLimit(5)));
+        svc.setLandCommitted(owner, 1);
+        svc.releaseCommittedLands(owner, 1);
+        assertEquals(0, svc.landCommitted(owner), "one committed land must be released");
+        svc.releaseCommittedLands(owner, 1);
+        assertEquals(0, svc.landCommitted(owner), "a stale release must floor at zero");
+        // Server Land is untracked: releasing must be a safe no-op.
+        assertDoesNotThrow(() -> svc.releaseCommittedLands(OwnerRef.server(), 1));
+        assertEquals(0, svc.landCommitted(OwnerRef.server()));
+        // An owner with no state must not be created as a side effect.
+        assertDoesNotThrow(() -> svc.releaseCommittedLands(OwnerRef.player(UUID.randomUUID()), 1));
+        assertThrows(IllegalArgumentException.class, () -> svc.releaseCommittedLands(owner, -1));
+        assertEquals(0, svc.landCommitted(owner), "the rejected release must not mutate");
+    }
+
     @RepeatedTest(100)
     void deterministicBarrierChunkReservations() throws Exception {
         OwnerRef owner = OwnerRef.player(UUID.randomUUID());

@@ -499,6 +499,213 @@ public final class OperationLedger {
         }));
     }
 
+    /**
+     * Removes a whole land, its Land-owned rows, and marks {@code
+     * DOMAIN_COMMITTED} in one SQL transaction. No repository callback or
+     * external collaborator is called; Economy work always happens after this
+     * transaction completes.
+     *
+     * <p>Every chunk row is re-read inside the transaction: a missing chunk, a
+     * chunk owned by another land, or a stored cost basis that no longer
+     * matches the validated value aborts the whole transaction, so a stale or
+     * already-deleted request fails closed without moving money. The stored
+     * chunk count must equal the commit set (a concurrent shrink would
+     * otherwise silently narrow the delete), and the land row is removed under
+     * a structure-revision compare, so two deletes racing on the same revision
+     * serialize to exactly one winner. History in {@code audit_log} (including
+     * the deleted land id), {@code subject_groups} and {@code
+     * permission_profiles} is never touched.
+     */
+    public CompletionStage<Void> commitDeleteAtomically(DeleteCommit commit) {
+        Objects.requireNonNull(commit, "commit");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, c -> {
+            LedgerEntry created = findRow(c, commit.operationId());
+            if (!LedgerState.CREATED.name().equals(created.state())) {
+                throw new SQLException("atomic delete commit requires CREATED state, got " + created.state());
+            }
+            validateDeleteAgainstPayload(created, commit);
+            verifyDeleteOwner(c, commit);
+            verifyDeleteChunks(c, commit);
+            failureInjector.accept(AtomicCommitStep.AFTER_LAND);
+            deleteLandOwnedRows(c, commit.landId());
+            failureInjector.accept(AtomicCommitStep.AFTER_CHUNKS);
+            deleteLandRow(c, commit);
+            insertAudit(c, commit.audit());
+            failureInjector.accept(AtomicCommitStep.AFTER_AUDIT);
+            SqliteLedgerRepository.compareAndSetState(
+                    c, commit.operationId(), LedgerState.CREATED, LedgerState.DOMAIN_COMMITTED,
+                    null, commit.audit().timestamp());
+            failureInjector.accept(AtomicCommitStep.AFTER_LEDGER);
+            return null;
+        }));
+    }
+
+    private static void validateDeleteAgainstPayload(LedgerEntry created, DeleteCommit commit) throws SQLException {
+        final OperationPayload payload;
+        try {
+            payload = OperationPayload.fromJson(created.payloadJson());
+        } catch (RuntimeException failure) {
+            throw new SQLException("delete operation has an invalid payload", failure);
+        }
+        if (!"DELETE".equals(payload.operationType())) {
+            throw new SQLException("atomic delete commit requires a DELETE payload, got "
+                    + payload.operationType());
+        }
+        if (!payload.operationId().equals(commit.operationId())) {
+            throw new SQLException("payload operationId does not match ledger row");
+        }
+        if (payload.targetLandId() == null || !payload.targetLandId().equals(commit.landId())) {
+            throw new SQLException("deleted land does not match payload targetLandId");
+        }
+        if (!payload.worldUuid().equals(commit.worldId())) {
+            throw new SQLException("deleted land does not match payload worldUuid");
+        }
+        if (!payload.chunkSet().equals(commit.chunks())) {
+            throw new SQLException("deleted chunks must use the saved operation payload");
+        }
+        if (payload.priceMinorUnits() != commit.refundAmountMinorUnits()) {
+            throw new SQLException("delete refund amount does not match payload priceMinorUnits");
+        }
+    }
+
+    private static void verifyDeleteOwner(java.sql.Connection connection, DeleteCommit commit)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT owner_key, world_uuid FROM lands WHERE id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(commit.landId().value()));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new SQLException("unknown deleted land " + commit.landId());
+                }
+                String ownerKey = rows.getString(1);
+                if (!commit.owner().key().equals(ownerKey)) {
+                    throw new SQLException("delete owner changed since validation");
+                }
+                byte[] worldBytes = rows.getBytes(2);
+                if (worldBytes == null || !commit.worldId().equals(UuidBlob.decode(worldBytes))) {
+                    throw new SQLException("deleted land world changed since validation");
+                }
+            }
+        }
+    }
+
+    private static void verifyDeleteChunks(java.sql.Connection connection, DeleteCommit commit)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT land_id, cost_basis_minor_units FROM land_chunks "
+                        + "WHERE world_uuid = ? AND chunk_x = ? AND chunk_z = ?")) {
+            for (OperationPayload.Chunk chunk : commit.chunks()) {
+                statement.setBytes(1, UuidBlob.encode(chunk.chunk().worldId()));
+                statement.setInt(2, chunk.chunk().chunkX());
+                statement.setInt(3, chunk.chunk().chunkZ());
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (!rows.next()) {
+                        throw new SQLException("delete chunk is already released or unknown: "
+                                + chunk.chunk().chunkX() + "," + chunk.chunk().chunkZ());
+                    }
+                    byte[] landBytes = rows.getBytes(1);
+                    if (landBytes == null || !commit.landId().value().equals(UuidBlob.decode(landBytes))) {
+                        throw new SQLException("delete chunk does not belong to the deleted land");
+                    }
+                    Object basisValue = rows.getObject(2);
+                    if (basisValue == null) {
+                        throw new SQLException("delete chunk has no durable cost basis");
+                    }
+                    long storedBasis = rows.getLong(2);
+                    if (storedBasis < 0) {
+                        throw new SQLException("delete chunk has a negative durable cost basis");
+                    }
+                    if (storedBasis != chunk.costBasisMinorUnits()) {
+                        throw new SQLException("delete chunk cost basis changed since validation");
+                    }
+                }
+            }
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT COUNT(*) FROM land_chunks WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(commit.landId().value()));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getInt(1) != commit.chunks().size()) {
+                    throw new SQLException("delete chunk set changed since validation");
+                }
+            }
+        }
+    }
+
+    private static void deleteLandOwnedRows(java.sql.Connection connection, LandId landId)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM land_entry_bans WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            statement.executeUpdate();
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM land_rules WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            statement.executeUpdate();
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM land_defaults WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            statement.executeUpdate();
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM land_bindings WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            statement.executeUpdate();
+        }
+        java.util.List<byte[]> sublandIds = new java.util.ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT id FROM sublands WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    sublandIds.add(rows.getBytes(1));
+                }
+            }
+        }
+        for (byte[] sublandId : sublandIds) {
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "DELETE FROM subland_rules WHERE subland_id = ?")) {
+                statement.setBytes(1, sublandId);
+                statement.executeUpdate();
+            }
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "DELETE FROM subland_defaults WHERE subland_id = ?")) {
+                statement.setBytes(1, sublandId);
+                statement.executeUpdate();
+            }
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "DELETE FROM subland_bindings WHERE subland_id = ?")) {
+                statement.setBytes(1, sublandId);
+                statement.executeUpdate();
+            }
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM sublands WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            statement.executeUpdate();
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM land_chunks WHERE land_id = ?")) {
+            statement.setBytes(1, UuidBlob.encode(landId.value()));
+            statement.executeUpdate();
+        }
+    }
+
+    private static void deleteLandRow(java.sql.Connection connection, DeleteCommit commit)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM lands WHERE id = ? AND structure_revision = ?")) {
+            statement.setBytes(1, UuidBlob.encode(commit.landId().value()));
+            statement.setLong(2, commit.expectedStructureRevision());
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("stale land structure revision: expected "
+                        + commit.expectedStructureRevision() + " but the durable row moved");
+            }
+        }
+    }
+
     private static void validateShrinkAgainstPayload(LedgerEntry created, ShrinkCommit commit) throws SQLException {
         final OperationPayload payload;
         try {

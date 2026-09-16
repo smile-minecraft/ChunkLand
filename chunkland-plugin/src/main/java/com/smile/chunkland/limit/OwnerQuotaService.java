@@ -108,6 +108,32 @@ public final class OwnerQuotaService {
         }
     }
 
+    /**
+     * Release durable land capacity after a whole-land delete committed.
+     *
+     * <p>Decrements the committed land total by {@code lands}, floored at
+     * zero so a stale counter can never go negative. Server owners are
+     * untracked and stay a no-op. Best effort by design: callers invoke this
+     * only after the durable domain already won, so a failure or mismatch
+     * here never blocks the refund or the runtime publish.
+     */
+    public void releaseCommittedLands(OwnerRef owner, int lands) {
+        Objects.requireNonNull(owner, "owner");
+        if (lands < 0) {
+            throw new IllegalArgumentException("lands must be >= 0: " + lands);
+        }
+        if (lands == 0 || owner instanceof OwnerRef.ServerOwnerRef) {
+            return;
+        }
+        State s = states.get(owner.key());
+        if (s == null) {
+            return;
+        }
+        synchronized (s.lock) {
+            s.landCommitted = Math.max(0, s.landCommitted - lands);
+        }
+    }
+
     public int committed(OwnerRef owner) {
         return landCommitted(owner);
     }

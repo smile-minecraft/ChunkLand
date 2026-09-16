@@ -19,12 +19,15 @@ import com.smile.chunkland.capability.M0CapabilityProbe;
 import com.smile.chunkland.claim.ClaimEconomy;
 import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.ClaimValidator;
+import com.smile.chunkland.claim.DeleteSaga;
+import com.smile.chunkland.claim.DeleteValidator;
 import com.smile.chunkland.claim.ExpandSaga;
 import com.smile.chunkland.claim.ExpandValidator;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.claim.ShrinkSaga;
 import com.smile.chunkland.claim.ShrinkValidator;
 import com.smile.chunkland.claim.SnapshotClaimValidator;
+import com.smile.chunkland.claim.SnapshotDeleteValidator;
 import com.smile.chunkland.claim.SnapshotExpandValidator;
 import com.smile.chunkland.claim.SnapshotShrinkValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
@@ -43,6 +46,7 @@ import com.smile.chunkland.command.EntryBanCommandHandler;
 import com.smile.chunkland.command.ExpandCommandHandler;
 import com.smile.chunkland.command.ExplainCommandHandler;
 import com.smile.chunkland.command.GroupCommandHandler;
+import com.smile.chunkland.command.LandDeleteCommandHandler;
 import com.smile.chunkland.command.ProfileCommandHandler;
 import com.smile.chunkland.command.ShrinkCommandHandler;
 import com.smile.chunkland.command.LandCommand;
@@ -235,6 +239,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ClaimSaga claimSaga;
     private ExpandSaga expandSaga;
     private ShrinkSaga shrinkSaga;
+    private DeleteSaga deleteSaga;
     private OwnerQuotaService claimQuotas;
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
@@ -631,7 +636,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                            profileHandler, bindingHandler,
                            buildExplainHandler(this.protectionStore, () -> atomicContexts),
                            expandTargetChunks(this.protectionStore, registryReadiness),
-                           economyCurrency(activeConfig.current())),
+                           economyCurrency(activeConfig.current()),
+                           deleteHandler()),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -711,6 +717,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.unavailable"));
         base.put("shrink", shrinkUnavailable);
         base.put("unclaim", shrinkUnavailable);
+        // Delete left the legacy not-yet pool: without a runner the slot stays
+        // fail-closed with delete.unavailable, so half-wired maps never pretend
+        // the flow is coming soon. The delete-aware overload overwrites this
+        // entry with the real handler when a runner exists.
+        base.put("delete", (sender, args, sink) ->
+                sink.reply("command.land.delete.failed", Map.of("reason", "delete.unavailable")));
         return Map.copyOf(base);
     }
 
@@ -1198,6 +1210,49 @@ public final class ChunkLandPlugin extends JavaPlugin {
             base.put("shrink", shrinkHandler);
             base.put("unclaim", shrinkHandler);
         }
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers with the whole-land delete flow wired.
+     *
+     * <p>A null delete handler keeps the slot fail-closed: it replies
+     * {@code command.land.delete.failed} with {@code delete.unavailable}
+     * instead of the not-yet stub, so an unwired server never pretends the
+     * flow is coming soon and never runs a half-wired mutation. Every other
+     * overload stays untouched so the focused assembly tests pinning them
+     * stay valid.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks,
+            Currency shrinkRefundCurrency,
+            LandDeleteCommandHandler delete) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain, targetChunks, shrinkRefundCurrency));
+        base.put("delete", delete == null
+                ? (sender, args, sink) -> sink.reply("command.land.delete.failed",
+                        Map.of("reason", "delete.unavailable"))
+                : delete);
         return Map.copyOf(base);
     }
 
@@ -2147,6 +2202,134 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Assembles the formal whole-land delete saga from its production parts.
+     * Package visible so integration tests drive the same assembly the server
+     * uses.
+     *
+     * <p>Unlike shrink there is no selection token: the delete validator only
+     * checks the structure-revision token against the live source. The refund
+     * is always the full durable per-chunk cost basis, never the current
+     * pricing table and never the shrink half-ratio; Server Land refunds zero
+     * without touching Economy.
+     */
+    static DeleteSaga buildDeleteSaga(
+            LandRegistryStore registryStore,
+            SelectionSessionManager selections,
+            OwnerQuotaService quotas,
+            LogicalReservationRegistry reservations,
+            OperationLedger ledger,
+            ClaimEconomy economy,
+            com.smile.chunkland.claim.RuntimeRegistryRebuilder rebuilder,
+            Executor asyncExecutor,
+            SelectionStructureRevisionLookup structures,
+            com.smile.chunkland.persistence.ChunkRepository chunkRepository) {
+        DeleteValidator validator = new SnapshotDeleteValidator(
+                Objects.requireNonNull(registryStore, "registryStore"),
+                targetLandId -> (structures == null
+                        ? SelectionStructureRevisionLookup.unavailable() : structures)
+                        .currentRevision(targetLandId));
+        return new DeleteSaga(validator,
+                Objects.requireNonNull(chunkRepository, "chunkRepository"),
+                Objects.requireNonNull(reservations, "reservations"),
+                Objects.requireNonNull(ledger, "ledger"),
+                Objects.requireNonNull(economy, "economy"),
+                Objects.requireNonNull(rebuilder, "rebuilder"),
+                Objects.requireNonNull(quotas, "quotas"),
+                Objects.requireNonNull(selections, "selections"),
+                Clock.systemUTC(),
+                Objects.requireNonNull(asyncExecutor, "asyncExecutor"),
+                CLAIM_COMPENSATION_RETRIES);
+    }
+
+    /**
+     * Live delete runner sharing the claim flow's quotas, reservations,
+     * executor, ledger, Economy and rebuilder, so live deletes serialize with
+     * claims, expansions and shrinks on one durable row and one reservation
+     * registry. Null when the claim flow never assembled (quotas,
+     * reservations or executor missing) or the recovery bootstrap is absent:
+     * the slot then replies {@code delete.unavailable} instead of running
+     * half-wired.
+     *
+     * <p>Must run after {@link #claimRunner()}: the shared quota, reservation
+     * and executor instances are created there.
+     */
+    private LandDeleteCommandHandler.DeleteRunner deleteRunner() {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        SelectionSessionManager selections = this.selectionSessionManager;
+        OwnerQuotaService quotas = this.claimQuotas;
+        LogicalReservationRegistry reservations = this.claimReservations;
+        Executor async = this.claimExecutor;
+        if (bootstrap == null || selections == null || quotas == null
+                || reservations == null || async == null) {
+            return null;
+        }
+        try {
+            this.deleteSaga = buildDeleteSaga(this.protectionStore, selections,
+                    quotas, reservations,
+                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
+                    this.selectionStructureRevisions,
+                    new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()));
+            return this.deleteSaga::delete;
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand delete flow assembly failed; "
+                    + "/land delete stays unavailable: " + failure.getMessage());
+            this.deleteSaga = null;
+            return null;
+        }
+    }
+
+    /**
+     * Target display view for {@code /land delete}: the name, world and chunk
+     * count of the target land from the already-published immutable snapshot.
+     * One volatile snapshot read, no SQL, no Economy, no chunk load. Unknown
+     * lands, missing snapshots and lookup failures stay empty so the handler
+     * fails closed without touching the saga. A null store yields a view that
+     * always stays empty.
+     */
+    static java.util.function.Function<LandId, Optional<LandDeleteCommandHandler.TargetView>> deleteTargetView(
+            LandRegistryStore store) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        return landId -> {
+            try {
+                if (landId == null) {
+                    return Optional.empty();
+                }
+                var snapshot = active.snapshot();
+                if (snapshot == null) {
+                    return Optional.empty();
+                }
+                var land = snapshot.land(landId);
+                if (land == null || land.displayName() == null || land.displayName().isBlank()
+                        || land.worldId() == null || land.chunks().isEmpty()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new LandDeleteCommandHandler.TargetView(
+                        land.displayName(), land.worldId(), land.chunks().size()));
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        };
+    }
+
+    /**
+     * Live delete handler sharing the current-land view, the target owner
+     * view and the target display view over the published snapshot. Null when
+     * the runner or the selection registry is missing: the handler map then
+     * keeps {@code /land delete} fail-closed.
+     */
+    private LandDeleteCommandHandler deleteHandler() {
+        LandDeleteCommandHandler.DeleteRunner runner = deleteRunner();
+        SelectionSessionManager selections = this.selectionSessionManager;
+        if (runner == null || selections == null) {
+            return null;
+        }
+        return new LandDeleteCommandHandler(runner, claimScanSupplier(),
+                expandCurrentLand(this.protectionStore), shrinkTargetOwner(this.protectionStore),
+                deleteTargetView(this.protectionStore), this.selectionStructureRevisions,
+                economyCurrency(this.configService.map(ConfigService::current).orElse(null)));
+    }
+
+    /**
      * Live SubLand handler sharing the recovery bootstrap store and the
      * protection snapshot. Null when any part is missing or assembly fails:
      * the handler map then keeps {@code /land subland} fail-closed. Assembly
@@ -2685,6 +2868,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
             claimStartup = null;
         }
         claimSaga = null;
+        deleteSaga = null;
         claimQuotas = null;
         claimReservations = null;
         expandSaga = null;
