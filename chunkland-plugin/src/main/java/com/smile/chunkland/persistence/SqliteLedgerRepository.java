@@ -69,7 +69,8 @@ public final class SqliteLedgerRepository implements LedgerRepository {
             String sql = "UPDATE operation_ledger SET state = ?, updated_at = ? "
                     + "WHERE operation_id = ? AND state NOT IN ("
                     + "'CREATED', 'PAYMENT_PENDING', 'CHARGED', 'DOMAIN_COMMITTED', 'ACTIVE', "
-                    + "'COMPENSATION_PENDING', 'COMPENSATED', 'FAILED', 'NEEDS_RECONCILIATION')";
+                    + "'COMPENSATION_PENDING', 'COMPENSATED', 'FAILED', 'NEEDS_RECONCILIATION', "
+                    + "'RESOLVED', 'REFUNDED', 'IGNORED')";
             try (PreparedStatement ps = c.prepareStatement(sql)) {
                 ps.setString(1, newState);
                 ps.setLong(2, updatedAt.toEpochMilli());

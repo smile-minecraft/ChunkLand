@@ -13,7 +13,18 @@ public enum LedgerState {
     COMPENSATION_PENDING,
     COMPENSATED,
     FAILED,
-    NEEDS_RECONCILIATION;
+    NEEDS_RECONCILIATION,
+    /**
+     * Explicit operator verdicts over a {@code NEEDS_RECONCILIATION} row,
+     * recorded by {@code /land admin ledger resolve}. Terminal and
+     * recovery-inert: startup recovery never writes them, and no money,
+     * domain replay or compensation follows from them. {@code REFUNDED} marks
+     * that the operator handled the money outside the ledger — it is not an
+     * automatic refund.
+     */
+    RESOLVED,
+    REFUNDED,
+    IGNORED;
 
     /** Parses the exact storage spelling; malformed values are rejected. */
     public static LedgerState parse(String value) {
@@ -39,7 +50,8 @@ public enum LedgerState {
     }
 
     public boolean isTerminal() {
-        return this == ACTIVE || this == FAILED || this == COMPENSATED || this == NEEDS_RECONCILIATION;
+        return this == ACTIVE || this == FAILED || this == COMPENSATED || this == NEEDS_RECONCILIATION
+                || this == RESOLVED || this == REFUNDED || this == IGNORED;
     }
 
     public RecoveryClassification recoveryClassification() {
@@ -51,6 +63,7 @@ public enum LedgerState {
             case ACTIVE, FAILED, COMPENSATED -> RecoveryClassification.NO_OP;
             case COMPENSATION_PENDING -> RecoveryClassification.RETRY_COMPENSATION;
             case NEEDS_RECONCILIATION -> RecoveryClassification.WAIT_FOR_OPERATOR;
+            case RESOLVED, REFUNDED, IGNORED -> RecoveryClassification.NO_OP;
         };
     }
 
@@ -83,7 +96,12 @@ public enum LedgerState {
                     || next == COMPENSATED
                     || next == NEEDS_RECONCILIATION;
             case COMPENSATION_PENDING -> next == COMPENSATED || next == NEEDS_RECONCILIATION;
-            case ACTIVE, FAILED, COMPENSATED, NEEDS_RECONCILIATION -> false;
+            // Operator verdicts leave NEEDS_RECONCILIATION exactly once, under
+            // compare-and-set, and are themselves terminal: nothing recovers
+            // out of them and they never re-enter the payment or compensation
+            // flow.
+            case NEEDS_RECONCILIATION -> next == RESOLVED || next == REFUNDED || next == IGNORED;
+            case ACTIVE, FAILED, COMPENSATED, RESOLVED, REFUNDED, IGNORED -> false;
         };
     }
 

@@ -79,6 +79,9 @@ public final class CrashRecoveryScanner {
             case ACTIVE, FAILED, COMPENSATED -> completed(noOp(entry, state));
             case COMPENSATION_PENDING -> recoverCompensation(entry);
             case NEEDS_RECONCILIATION -> completed(noOp(entry, state));
+            // Operator verdicts are terminal and authoritative: a rescan
+            // reports them without writing, retrying or refunding.
+            case RESOLVED, REFUNDED, IGNORED -> completed(noOp(entry, state));
         };
     }
 

@@ -136,6 +136,24 @@ public final class OperationLedger {
         });
     }
 
+    public CompletionStage<List<LedgerEntry>> findByState(LedgerState state) {
+        Objects.requireNonNull(state, "state");
+        return store.submitAsync(connection -> {
+            java.util.ArrayList<LedgerEntry> entries = new java.util.ArrayList<>();
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT operation_id, operation_type, state, actor_uuid, world_uuid, target_land_id, "
+                            + "price_minor_units, economy_provider_id, economy_transaction_ref, payload_json, "
+                            + "metadata_schema_version, created_at, updated_at, compensation_attempts "
+                            + "FROM operation_ledger WHERE state = ? ORDER BY created_at, operation_id")) {
+                statement.setString(1, state.name());
+                try (ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) entries.add(mapRow(rows));
+                }
+            }
+            return List.copyOf(entries);
+        });
+    }
+
     public CompletionStage<Boolean> landExists(LandId landId) {
         Objects.requireNonNull(landId, "landId");
         return store.submitAsync(connection -> {

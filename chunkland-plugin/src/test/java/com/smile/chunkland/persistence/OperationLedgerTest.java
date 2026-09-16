@@ -36,7 +36,7 @@ class OperationLedgerTest {
 
     @Test
     void everyStateHasAClassificationAndTerminalRowsAreNotTransitions() {
-        assertEquals(9, LedgerState.values().length);
+        assertEquals(12, LedgerState.values().length);
         assertEquals(LedgerState.RecoveryClassification.FAIL_UNCHARGED,
                 LedgerState.CREATED.recoveryClassification());
         assertEquals(LedgerState.RecoveryClassification.LOOKUP_PAYMENT,
@@ -49,10 +49,23 @@ class OperationLedgerTest {
                 LedgerState.COMPENSATION_PENDING.recoveryClassification());
         assertEquals(LedgerState.RecoveryClassification.WAIT_FOR_OPERATOR,
                 LedgerState.NEEDS_RECONCILIATION.recoveryClassification());
+        assertEquals(LedgerState.RecoveryClassification.NO_OP,
+                LedgerState.RESOLVED.recoveryClassification());
+        assertEquals(LedgerState.RecoveryClassification.NO_OP,
+                LedgerState.REFUNDED.recoveryClassification());
+        assertEquals(LedgerState.RecoveryClassification.NO_OP,
+                LedgerState.IGNORED.recoveryClassification());
         assertTrue(LedgerState.ACTIVE.isTerminal());
         assertTrue(LedgerState.FAILED.isTerminal());
         assertTrue(LedgerState.COMPENSATED.isTerminal());
         assertTrue(LedgerState.NEEDS_RECONCILIATION.isTerminal());
+        assertTrue(LedgerState.RESOLVED.isTerminal());
+        assertTrue(LedgerState.REFUNDED.isTerminal());
+        assertTrue(LedgerState.IGNORED.isTerminal());
+        assertTrue(LedgerState.NEEDS_RECONCILIATION.canTransitionTo(LedgerState.RESOLVED));
+        assertTrue(LedgerState.NEEDS_RECONCILIATION.canTransitionTo(LedgerState.REFUNDED));
+        assertTrue(LedgerState.NEEDS_RECONCILIATION.canTransitionTo(LedgerState.IGNORED));
+        assertFalse(LedgerState.RESOLVED.canTransitionTo(LedgerState.IGNORED));
         assertFalse(LedgerState.ACTIVE.canTransitionTo(LedgerState.FAILED));
         assertThrows(IllegalArgumentException.class, () -> LedgerState.parse(" payment_pending "));
     }

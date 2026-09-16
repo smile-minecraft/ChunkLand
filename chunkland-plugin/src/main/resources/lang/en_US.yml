@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|manage]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|manage|admin]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -152,6 +152,13 @@ command:
       denied: "<red>Management GUI unavailable.</red>"
       bedrock:
         unsupported: "<yellow>That step is not available as a Bedrock form yet. Use /land <subcommand> in chat instead.</yellow>"
+    admin:
+      ledger:
+        usage: "<yellow>Usage: /land admin ledger list [state] | show [operation] | resolve [operation] [RESOLVED|REFUNDED|IGNORED]</yellow>"
+        empty: "<gray>No ledger entries match.</gray>"
+        line: "<gray><value></gray>"
+        resolved: "<green>Ledger operation resolved: <value>.</green>"
+        failed: "<red>Ledger admin failed: <reason>.</red>"
 land:
   claim:
     confirm: "<white>Claim <land_name> — <chunk_count> chunks for <price> (<conflict_count> conflicts, minY <min_y>).</white> <hover:show_text:'<gray>Click to confirm</gray>'><click:run_command:'/land confirm <generation> <revision> <land_name>'><green>[Confirm]</green></click></hover>"

@@ -54,6 +54,7 @@ import com.smile.chunkland.command.ExplainCommandHandler;
 import com.smile.chunkland.command.GroupCommandHandler;
 import com.smile.chunkland.command.InspectCommandHandler;
 import com.smile.chunkland.command.LandDeleteCommandHandler;
+import com.smile.chunkland.command.LedgerAdminCommandHandler;
 import com.smile.chunkland.command.ProfileCommandHandler;
 import com.smile.chunkland.command.ShrinkCommandHandler;
 import com.smile.chunkland.command.LandCommand;
@@ -942,6 +943,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 : new SqliteAuditRepository(authorisationStore);
         AuditLogCommandHandler logHandler = auditReads == null ? null
                 : new AuditLogCommandHandler(() -> auditReads, Clock.systemUTC()::instant);
+        // Ledger administration: the operator verdict flow reads the claim
+        // bootstrap ledger and writes LEDGER_RESOLVE into the same audit
+        // history /land log searches. Without either side the admin slot
+        // stays fail-closed instead of running half-wired.
+        LedgerAdminCommandHandler ledgerAdminHandler =
+                buildLedgerAdminHandler(this.claimStartup, auditReads, buildPlayerScheduler(this));
         // Generic binding preload: read the existing binding rows once at
         // startup so restarts keep resolving them. The publish merges over
         // the direct layers the trust preload publishes into the same
@@ -985,7 +992,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                     inspectConfigs, inspectProviders,
                                     buildOfflinePlayerResolver(getServer(),
                                             this.resolveExecutor),
-                                    buildPlayerScheduler(this))));
+                                    buildPlayerScheduler(this)),
+                            ledgerAdminHandler));
         ManagementGateResolver landGateResolver = buildManagementGateResolver(this.protectionStore,
                 () -> atomicContexts,
                 PluginManagementGateResolver.TargetLandResolver.currentLocation());
@@ -1732,6 +1740,77 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 ? (sender, args, sink) -> sink.reply("command.land.inspect.denied", Map.of())
                 : inspect);
         return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers with the operator ledger flow wired
+     * behind {@code /land admin ledger}.
+     *
+     * <p>A null admin handler keeps the slot fail-closed on the ledger usage
+     * reply instead of the not-yet stub, so an unwired server never pretends
+     * operator verdicts are coming soon. Every other overload stays untouched
+     * so the focused assembly tests pinning them stay valid.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks,
+            Currency shrinkRefundCurrency,
+            LandDeleteCommandHandler delete,
+            AuditLogCommandHandler logs,
+            ManageGuiCommandHandler manage,
+            InspectCommandHandler inspect,
+            LedgerAdminCommandHandler admin) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain, targetChunks, shrinkRefundCurrency,
+                delete, logs, manage, inspect));
+        base.put("admin", admin == null
+                ? (sender, args, sink) -> sink.reply("command.land.admin.ledger.failed",
+                        Map.of("reason", "ledger.unavailable"))
+                : admin);
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Builds the operator ledger handler over the claim bootstrap ledger and
+     * the shared audit history. A null bootstrap, ledger, audit source or
+     * scheduler keeps the admin slot fail-closed instead of running
+     * half-wired; assembly failures degrade to null the same way.
+     */
+    static LedgerAdminCommandHandler buildLedgerAdminHandler(ClaimStartupBootstrap bootstrap,
+            com.smile.chunkland.persistence.AuditRepository audits,
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
+        if (bootstrap == null || audits == null || scheduler == null) {
+            return null;
+        }
+        try {
+            OperationLedger ledger = bootstrap.ledger();
+            if (ledger == null) {
+                return null;
+            }
+            return new LedgerAdminCommandHandler(() -> bootstrap.ledger(), () -> audits,
+                    Clock.systemUTC()::instant, scheduler);
+        } catch (RuntimeException failure) {
+            return null;
+        }
     }
 
     /**
