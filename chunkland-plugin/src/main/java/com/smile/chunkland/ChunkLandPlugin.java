@@ -81,7 +81,10 @@ import com.smile.chunkland.gui.GuiClickContext;
 import com.smile.chunkland.gui.ManagementGuiActions;
 import com.smile.chunkland.gui.ManagementGuiModel;
 import com.smile.chunkland.gui.ManagementGuiPages;
+import com.smile.chunkland.api.limit.ExternalLimitProvider;
+import com.smile.chunkland.api.limit.LimitResult;
 import com.smile.chunkland.limit.LimitResolver;
+import com.smile.chunkland.limit.LuckPermsDiscovery;
 import com.smile.chunkland.limit.OwnerQuotaHydrator;
 import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
@@ -276,6 +279,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ShrinkSaga shrinkSaga;
     private DeleteSaga deleteSaga;
     private OwnerQuotaService claimQuotas;
+    /**
+     * Optional external limit provider (LuckPerms when present). Discovered
+     * once per enable generation and shared by the claim/expand quotas and
+     * inspect; absent stays empty and every limit falls back to config.
+     */
+    private volatile Optional<ExternalLimitProvider> limitProvider = Optional.empty();
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
     private ExecutorService resolveExecutor;
@@ -952,9 +961,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         + "bindings stay empty until the next restart: " + failure);
             }
         }
+        // Optional external limits (LuckPerms when present): discovered once
+        // per enable generation and shared by the claim/expand quotas and
+        // inspect. Absent stays empty and every limit falls back to config.
+        this.limitProvider = discoverLimitProvider();
         Supplier<ChunkLandConfig> inspectConfigs = this.configService
                 .map(service -> (Supplier<ChunkLandConfig>) service::current)
                 .orElse(null);
+        Supplier<Optional<ExternalLimitProvider>> inspectProviders = () -> this.limitProvider;
         Map<String, LandCommand.Handler> landHandlers = new HashMap<>(buildLandHandlers(
                 this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
@@ -968,7 +982,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                             economyCurrency(activeConfig.current()),
                             deleteHandler(), logHandler, buildManageHandler(() -> atomicContexts),
                             buildInspectHandler(this.protectionStore, () -> atomicContexts,
-                                    inspectConfigs,
+                                    inspectConfigs, inspectProviders,
                                     buildOfflinePlayerResolver(getServer(),
                                             this.resolveExecutor),
                                     buildPlayerScheduler(this))));
@@ -1735,11 +1749,40 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Supplier<ChunkLandConfig> configs,
             OfflinePlayerResolver players,
             com.smile.chunkland.command.PlayerScheduler scheduler) {
+        return buildInspectHandler(store, providers, configs, Optional::empty,
+                players, scheduler);
+    }
+
+    static InspectCommandHandler buildInspectHandler(LandRegistryStore store,
+            Supplier<PermissionContextProvider> providers,
+            Supplier<ChunkLandConfig> configs,
+            Supplier<Optional<ExternalLimitProvider>> limitProviders,
+            OfflinePlayerResolver players,
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
         Supplier<PermissionContextProvider> activeProviders = providers == null
                 ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
         return new InspectCommandHandler(active::snapshot, activeProviders,
-                buildInspectLimits(configs), players, scheduler);
+                buildInspectLimits(configs, limitProviders), players, scheduler);
+    }
+
+    /**
+     * Presence-gated discovery for the optional LuckPerms limit provider.
+     * Absent, disabled or failing LuckPerms yields empty and every limit
+     * falls back to config. Never throws: every failure degrades to empty.
+     */
+    private Optional<ExternalLimitProvider> discoverLimitProvider() {
+        try {
+            return LuckPermsDiscovery.discover(() -> {
+                try {
+                    return getServer().getPluginManager().getPlugin("LuckPerms") != null;
+                } catch (RuntimeException unavailable) {
+                    return false;
+                }
+            });
+        } catch (RuntimeException | LinkageError unavailable) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -1751,8 +1794,26 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * entries, so limits can never block the read path.
      */
     static InspectCommandHandler.Limits buildInspectLimits(Supplier<ChunkLandConfig> configs) {
+        return buildInspectLimits(configs, Optional::empty);
+    }
+
+    /**
+     * Memory-only limit observables for inspect: the owner's
+     * per-land chunk and subland caps from the live config snapshot, with an
+     * optional external provider (LuckPerms) consulted first per call. Each
+     * limit reports its value plus a {@code CONFIG}/{@code PROVIDER} source
+     * key; legacy value keys are unchanged. A {@code null} config source
+     * falls back to the bundled defaults (the same posture as the permission
+     * defaults); a failing read yields an empty map and the land summary is
+     * still reported without limit entries, so limits can never block the
+     * read path.
+     */
+    static InspectCommandHandler.Limits buildInspectLimits(Supplier<ChunkLandConfig> configs,
+            Supplier<Optional<ExternalLimitProvider>> limitProviders) {
         Supplier<ChunkLandConfig> active =
                 configs == null ? ChunkLandConfig::defaults : configs;
+        Supplier<Optional<ExternalLimitProvider>> activeProviders =
+                limitProviders == null ? Optional::empty : limitProviders;
         return owner -> {
             try {
                 if (owner == null) {
@@ -1762,12 +1823,17 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 if (config == null) {
                     return Map.of();
                 }
-                LimitResolver resolver = new LimitResolver(config);
-                long maxChunks = resolver.resolve(owner, LimitType.MAX_CHUNKS_PER_LAND).limit();
-                long maxSublands =
-                        resolver.resolve(owner, LimitType.MAX_SUBLANDS_PER_LAND).limit();
-                return Map.of("limitMaxChunksPerLand", maxChunks,
-                        "limitMaxSublandsPerLand", maxSublands);
+                Optional<ExternalLimitProvider> provider = activeProviders.get();
+                LimitResolver resolver = new LimitResolver(config,
+                        provider == null ? Optional.empty() : provider);
+                LimitResult maxChunks =
+                        resolver.resolve(owner, LimitType.MAX_CHUNKS_PER_LAND);
+                LimitResult maxSublands =
+                        resolver.resolve(owner, LimitType.MAX_SUBLANDS_PER_LAND);
+                return Map.of("limitMaxChunksPerLand", maxChunks.limit(),
+                        "limitMaxChunksPerLandSource", maxChunks.source().name(),
+                        "limitMaxSublandsPerLand", maxSublands.limit(),
+                        "limitMaxSublandsPerLandSource", maxSublands.source().name());
             } catch (RuntimeException failure) {
                 return Map.of();
             }
@@ -2795,7 +2861,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         try {
             ConfigService config = this.configService.orElseThrow(
                     () -> new IllegalStateException("ChunkLand config service is unavailable"));
-            this.claimQuotas = new OwnerQuotaService(new LimitResolver(config.current()));
+            this.claimQuotas = new OwnerQuotaService(
+                    new LimitResolver(config.current(), this.limitProvider));
             // Restart hydration: the quota service is process-local and starts
             // from zero, so restore committed counts from the authoritative
             // durable lands before serving any claim. A failed hydration keeps

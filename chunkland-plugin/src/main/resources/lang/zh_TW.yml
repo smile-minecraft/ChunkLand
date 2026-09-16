@@ -140,7 +140,7 @@ command:
       failed: "<red>查詢權限說明失敗：<reason>。</red>"
     inspect:
       usage: "<yellow>用法：/land inspect [玩家]</yellow>"
-      result: "<green>領地 <landName>（<landId>）擁有者 <owner> 世界 <worldId> 區塊 <chunks> 子領地 <sublands> 版本 <structureRevision>/<landPolicyRevision> 擁有者 <isOwner> 伺服器 <serverLand> 協管 <steward> 上限 <limitMaxChunksPerLand>/<limitMaxSublandsPerLand> 對象 <playerUuid></green>"
+      result: "<green>領地 <landName>（<landId>）擁有者 <owner> 世界 <worldId> 區塊 <chunks> 子領地 <sublands> 版本 <structureRevision>/<landPolicyRevision> 擁有者 <isOwner> 伺服器 <serverLand> 協管 <steward> 上限 <limitMaxChunksPerLand>（<limitMaxChunksPerLandSource>）/<limitMaxSublandsPerLand>（<limitMaxSublandsPerLandSource>） 對象 <playerUuid></green>"
       denied: "<red>無法查詢領地。</red>"
     log:
       usage: "<yellow>用法：/land log [u:玩家UUID] [t:7d] [a:動作] [land:領地UUID] [world:世界UUID] [limit:筆數] [page:頁數]</yellow>"

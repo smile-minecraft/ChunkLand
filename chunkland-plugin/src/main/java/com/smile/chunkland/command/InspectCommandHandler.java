@@ -246,8 +246,11 @@ public final class InspectCommandHandler implements LandCommand.Handler {
         vars.put("playerRef", "");
         vars.put("limitMaxChunksPerLand", "unknown");
         vars.put("limitMaxSublandsPerLand", "unknown");
+        vars.put("limitMaxChunksPerLandSource", "unknown");
+        vars.put("limitMaxSublandsPerLandSource", "unknown");
         Map<String, Object> limitVars = describeLimits(land.ownerRef());
-        for (String key : new String[] {"limitMaxChunksPerLand", "limitMaxSublandsPerLand"}) {
+        for (String key : new String[] {"limitMaxChunksPerLand", "limitMaxSublandsPerLand",
+                "limitMaxChunksPerLandSource", "limitMaxSublandsPerLandSource"}) {
             Object value = limitVars.get(key);
             if (value != null) {
                 vars.put(key, value);

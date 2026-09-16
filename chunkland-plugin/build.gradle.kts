@@ -21,6 +21,11 @@ dependencies {
     // Compile-only: Vault Legacy Economy boundary (net.milkbowl.vault.economy).
     // Provided by the Vault plugin at runtime (softdepend: [Vault]); never embedded.
     compileOnly(libs.vault.api)
+    // Compile-only: LuckPerms optional limit metadata (net.luckperms.api).
+    // Provided by the LuckPerms plugin at runtime (softdepend: [LuckPerms]);
+    // never embedded. Only LuckPermsMetaLookup references it, and discovery
+    // loads that class solely after confirming LuckPerms is present.
+    compileOnly(libs.luckperms.api)
     // Tests exercise the Bukkit lifecycle seams and the AceLib public API directly,
     // so both must be available on the test classpath. testImplementation does not
     // affect the plugin jar (only main sources are packaged).

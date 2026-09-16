@@ -7,6 +7,7 @@ sqlite = "3.50.3.0"
 paper = "26.1.2.build.74-stable"
 snakeyaml = "2.3"
 vaultapi = "1.7.1"
+luckperms = "5.5"
 
 [libraries]
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
@@ -15,3 +16,4 @@ sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite" }
 paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
 snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
 vault-api = { module = "com.github.MilkBowl:VaultAPI", version.ref = "vaultapi" }
+luckperms-api = { module = "net.luckperms:api", version.ref = "luckperms" }
