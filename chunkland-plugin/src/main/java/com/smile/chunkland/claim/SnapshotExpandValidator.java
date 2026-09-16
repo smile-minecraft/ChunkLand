@@ -5,6 +5,7 @@ import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import java.util.HashSet;
 import java.util.List;
@@ -86,9 +87,16 @@ public final class SnapshotExpandValidator implements ExpandValidator {
         checkWorldPolicy(request);
         checkGeneration(request);
         checkRevision(request);
-        LandSnapshot target = resolveTarget(request);
+        // One volatile snapshot read per validation: target resolution and
+        // union collision both run against this same immutable registry so a
+        // publish between the two checks cannot mix namespaces.
+        var snapshot = registryStore.snapshot();
+        if (snapshot == null) {
+            throw new ClaimRejectedException("expand.unknown_land");
+        }
+        LandSnapshot target = resolveTarget(request, snapshot);
         long expectedStructure = checkStructure(request);
-        checkUnion(request, target);
+        checkUnion(request, target, snapshot);
         List<ValidatedExpand.ChunkDetail> details = request.delta().stream()
                 .sorted((a, b) -> {
                     int c = Integer.compare(a.chunkX(), b.chunkX());
@@ -176,11 +184,7 @@ public final class SnapshotExpandValidator implements ExpandValidator {
         return expected.longValue();
     }
 
-    private LandSnapshot resolveTarget(ExpandRequest request) {
-        var snapshot = registryStore.snapshot();
-        if (snapshot == null) {
-            throw new ClaimRejectedException("expand.unknown_land");
-        }
+    private LandSnapshot resolveTarget(ExpandRequest request, LandRegistry snapshot) {
         LandSnapshot target;
         try {
             target = snapshot.land(request.targetLandId());
@@ -199,11 +203,7 @@ public final class SnapshotExpandValidator implements ExpandValidator {
         return target;
     }
 
-    private void checkUnion(ExpandRequest request, LandSnapshot target) {
-        var snapshot = registryStore.snapshot();
-        if (snapshot == null) {
-            throw new ClaimRejectedException("expand.unknown_land");
-        }
+    private void checkUnion(ExpandRequest request, LandSnapshot target, LandRegistry snapshot) {
         for (ChunkKey chunk : request.delta()) {
             if (target.chunks().contains(chunk)) {
                 throw new ClaimRejectedException("expand.overlap");

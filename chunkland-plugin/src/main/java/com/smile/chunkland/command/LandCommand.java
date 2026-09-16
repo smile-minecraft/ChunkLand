@@ -202,8 +202,10 @@ public final class LandCommand {
             return true;
         }
         Optional<ProtectionActionType> managed = managementActionFor(sub);
+        ManagementGateResolver.Request gateRequest = null;
         if (managed.isPresent()) {
-            if (!checkManagementGate(sender, managed.get(), args)) {
+            gateRequest = resolveManagementGate(sender, managed.get(), args);
+            if (gateRequest == null) {
                 if (isExplain(sub)) {
                     denyExplain(sink);
                     return true;
@@ -218,7 +220,11 @@ public final class LandCommand {
         }
         Handler h = handlers.get(sub);
         if (h != null) {
-            h.handle(sender, args, sink);
+            if (gateRequest != null && h instanceof ManagementGatedHandler gated) {
+                gated.handleGated(sender, args, sink, gateRequest);
+            } else {
+                h.handle(sender, args, sink);
+            }
         } else {
             sink.reply("command.land.not_yet", Map.of("subcommand", sub));
         }
@@ -264,27 +270,33 @@ public final class LandCommand {
     }
 
     /**
-     * Runs the shared domain gate for one management subcommand. The resolver
-     * only supplies inputs; the ALLOW/DENY verdict always comes from
-     * {@link ManagementPermissionGate#check} here. Any missing, empty or
-     * failing resolution denies without invoking the handler.
+     * Resolves the shared domain gate for one management subcommand and
+     * returns the authorised immutable inputs. The resolver only supplies
+     * inputs; the ALLOW/DENY verdict always comes from
+     * {@link ManagementPermissionGate#check} here. Any missing, empty,
+     * failing or denied resolution yields empty (fail-closed) without
+     * invoking the handler. The authorised request is handed to
+     * {@link ManagementGatedHandler} implementations so the handler executes
+     * against the same snapshot the gate authorised instead of re-reading
+     * live state for its decision basis.
      */
-    private boolean checkManagementGate(CommandSender sender, ProtectionActionType action, String[] args) {
+    private ManagementGateResolver.Request resolveManagementGate(
+            CommandSender sender, ProtectionActionType action, String[] args) {
         if (gateResolver == null) {
-            return false;
+            return null;
         }
         Optional<ManagementGateResolver.Request> resolved;
         try {
             resolved = gateResolver.resolve(sender, action, args);
         } catch (RuntimeException unresolved) {
-            return false;
+            return null;
         }
         if (resolved == null || resolved.isEmpty() || resolved.get() == null) {
-            return false;
+            return null;
         }
         ManagementGateResolver.Request request = resolved.get();
         try {
-            return ManagementPermissionGate.check(
+            boolean allowed = ManagementPermissionGate.check(
                     request.actor(),
                     request.landId(),
                     action,
@@ -292,8 +304,9 @@ public final class LandCommand {
                     request.adminBypass(),
                     request.serverLandSteward(),
                     request.provider()).outcome() == PermissionState.ALLOW;
+            return allowed ? request : null;
         } catch (RuntimeException denied) {
-            return false;
+            return null;
         }
     }
 

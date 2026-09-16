@@ -1341,7 +1341,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 : unban);
         base.put("expand", expand == null || selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.expand.failed", Map.of("reason", "expand.unavailable"))
-                : new ExpandCommandHandler(selections, expand, recoveryScan, currentLand));
+                : new ExpandCommandHandler(selections, expand, recoveryScan, currentLand, null,
+                        shrinkTargetOwner));
         LandCommand.Handler shrinkHandler = shrink == null || selections == null
                 ? (sender, args, sink) -> sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.unavailable"))
                 : new ShrinkCommandHandler(selections, shrink, recoveryScan, shrinkCurrentLand,
@@ -1527,7 +1528,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 profile, binding, explain));
         if (expand != null && selections != null) {
             base.put("expand", new ExpandCommandHandler(
-                    selections, expand, recoveryScan, currentLand, targetChunks));
+                    selections, expand, recoveryScan, currentLand, targetChunks,
+                    shrinkTargetOwner));
         }
         return Map.copyOf(base);
     }

@@ -79,6 +79,10 @@ public final class LandAuthorisationRepository {
      * with the full whitelist, replace their player binding, audit, and bump
      * the land policy revision — all in one transaction.
      *
+     * <p>Player-namespace only: Server Land rows fail closed before any
+     * write (like bans), so a {@code SERVER} owner can never gain a
+     * player-namespace binding.
+     *
      * <p>The audit before value is read from the durable binding row inside
      * the same transaction, never from the volatile cache, so consecutive
      * mutations record the true transition even when the cache refresh races.
@@ -91,7 +95,7 @@ public final class LandAuthorisationRepository {
         Objects.requireNonNull(targetPlayer, "targetPlayer");
         Objects.requireNonNull(timestamp, "timestamp");
         return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
-            requireKnownLand(conn, landId);
+            requirePlayerLand(conn, landId);
             boolean boundBefore = hasBinding(conn, landId, targetPlayer);
             long now = timestamp.toEpochMilli();
             UUID profileId = findOrCreateProfile(conn, targetPlayer, now);
@@ -112,6 +116,9 @@ public final class LandAuthorisationRepository {
      * audit, and bump the land policy revision — all in one transaction.
      * Resending without a binding still succeeds and audits.
      *
+     * <p>Player-namespace only: Server Land rows fail closed before any
+     * write (like bans).
+     *
      * <p>The audit before value is read from the durable binding row inside
      * the same transaction, so a resend without a binding records no binding
      * before it instead of repeating a stale grant.
@@ -122,7 +129,7 @@ public final class LandAuthorisationRepository {
         Objects.requireNonNull(targetPlayer, "targetPlayer");
         Objects.requireNonNull(timestamp, "timestamp");
         return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
-            requireKnownLand(conn, landId);
+            requirePlayerLand(conn, landId);
             boolean boundBefore = hasBinding(conn, landId, targetPlayer);
             try (PreparedStatement delete = conn.prepareStatement(
                     "DELETE FROM land_bindings WHERE land_id = ? AND subject_type = 'PLAYER' AND subject_id = ?")) {
@@ -193,6 +200,9 @@ public final class LandAuthorisationRepository {
      * <p>The audit before value is read from the durable ban row inside the
      * same transaction, so a resend without a ban records no ban before it
      * instead of repeating a stale one.
+     *
+     * <p>Player-namespace only: Server Land rows fail closed before any
+     * write (bans can never exist there).
      */
     public CompletionStage<Void> unban(LandId landId, UUID targetPlayer, UUID actor,
             Instant timestamp) {
@@ -200,7 +210,7 @@ public final class LandAuthorisationRepository {
         Objects.requireNonNull(targetPlayer, "targetPlayer");
         Objects.requireNonNull(timestamp, "timestamp");
         return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
-            requireKnownLand(conn, landId);
+            requirePlayerLand(conn, landId);
             boolean bannedBefore = hasBan(conn, landId, targetPlayer);
             try (PreparedStatement delete = conn.prepareStatement(
                     "DELETE FROM land_entry_bans WHERE land_id = ? AND player_uuid = ?")) {
@@ -221,6 +231,9 @@ public final class LandAuthorisationRepository {
      * {@code INHERIT} deletes it. Only whitelisted subject actions are
      * accepted; management and rule actions fail closed before any SQL.
      *
+     * <p>Player-namespace only: Server Land rows fail closed before any
+     * write (like bans).
+     *
      * <p>The audit before value is read from the durable default row inside
      * the same transaction, never from the volatile cache.
      */
@@ -232,7 +245,7 @@ public final class LandAuthorisationRepository {
         Objects.requireNonNull(timestamp, "timestamp");
         requireWhitelisted(action);
         return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
-            requireKnownLand(conn, landId);
+            requirePlayerLand(conn, landId);
             PermissionState durableBefore = readDefaultState(conn, landId, action);
             if (state == PermissionState.INHERIT) {
                 try (PreparedStatement delete = conn.prepareStatement(
@@ -561,6 +574,20 @@ public final class LandAuthorisationRepository {
                 }
                 return rows.getString(1);
             }
+        }
+    }
+
+    /**
+     * Require a known player-owned land: unknown rows fail with SQL like
+     * {@link #requireKnownLand}, while {@code SERVER} rows fail closed with
+     * an illegal argument so the player-namespace mutations (trust, untrust,
+     * defaults, unbans) can never touch the Server namespace.
+     */
+    private static void requirePlayerLand(Connection conn, LandId landId) throws SQLException {
+        String ownerKey = requireKnownLandOwner(conn, landId);
+        if (ownerKey == null || !ownerKey.startsWith(OwnerKey.PLAYER_PREFIX)) {
+            throw new IllegalArgumentException("cannot mutate player-namespace state on non-player Land "
+                    + landId);
         }
     }
 

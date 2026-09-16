@@ -46,7 +46,10 @@ import java.util.UUID;
  * {@code serverLandSteward} on a Server Land is granted the same
  * owner-equivalent ALLOW without needing Admin Bypass. The flag is ignored on
  * player-owned Land and on unknown Land, and a steward flag alone never
- * authorises anything else.
+ * authorises anything else. Conversely, Server Land without the steward
+ * flag is denied before the resolver chain is consulted, so a binding,
+ * default or explicit grant scoped to a player namespace can never
+ * authorise a Server Land mutation: the two namespaces stay disjoint.
  */
 public final class ManagementPermissionGate {
 
@@ -141,6 +144,11 @@ public final class ManagementPermissionGate {
         if (adminBypass) {
             return new PermissionDecision(PermissionState.ALLOW, DecisionSource.SUBJECT_PERMISSION,
                     "Admin bypass: full protection bypass -> ALLOW for " + action);
+        }
+        if (isServerLand(land) && !serverLandSteward) {
+            return new PermissionDecision(PermissionState.DENY, DecisionSource.SUBJECT_PERMISSION,
+                    "Management gate: Server Land " + landId + " requires the server-land steward"
+                            + " grant for " + action + " -> DENY (fail-closed, namespaces disjoint)");
         }
         if (!adminBypass && serverLandSteward && isServerLand(land)) {
             return new PermissionDecision(PermissionState.ALLOW, DecisionSource.SUBJECT_PERMISSION,
