@@ -308,6 +308,11 @@ class LandCommandTest {
                         sub + " deny must reply the generic explain denial");
                 assertFalse(keys.contains("command.land.denied"),
                         sub + " deny must not leak the shared denied key");
+            } else if (sub.equals("inspect")) {
+                assertTrue(keys.contains("command.land.inspect.denied"),
+                        sub + " deny must reply the generic inspect denial");
+                assertFalse(keys.contains("command.land.denied"),
+                        sub + " deny must not leak the shared denied key");
             } else {
                 assertTrue(keys.contains("command.land.denied"), sub+" deny must reply denied");
             }
@@ -328,6 +333,9 @@ class LandCommandTest {
                 if (sub.equals("explain")) {
                     assertTrue(keys.contains("command.land.explain.denied"),
                             sub + " fail-closed must reply the generic explain denial");
+                } else if (sub.equals("inspect")) {
+                    assertTrue(keys.contains("command.land.inspect.denied"),
+                            sub + " fail-closed must reply the generic inspect denial");
                 } else {
                     assertTrue(keys.contains("command.land.denied"), sub + " fail-closed must reply denied");
                 }

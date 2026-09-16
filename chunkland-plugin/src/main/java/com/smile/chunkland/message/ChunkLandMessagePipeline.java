@@ -110,7 +110,10 @@ public class ChunkLandMessagePipeline {
         "subcommand", "permission", "player", "state", "group", "groups", "affected",
         "profile", "profiles", "outcome", "source", "layer",
         "coveringsublandid", "isowner", "adminbypass", "steward",
-        "width", "height"
+        "width", "height",
+        "landid", "landname", "worldid", "chunks", "sublands",
+        "structurerevision", "landpolicyrevision", "serverland",
+        "playeruuid", "playerref", "limitmaxchunksperland", "limitmaxsublandsperland"
     );
 
     private static final MiniMessage STRICT_MINIMESSAGE = MiniMessage.builder().strict(true).build();

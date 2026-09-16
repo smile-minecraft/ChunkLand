@@ -73,6 +73,7 @@ public final class ManagementPermissionGate {
             Map.entry("shrink", ProtectionActionType.EXPAND_LAND),
             Map.entry("unclaim", ProtectionActionType.EXPAND_LAND),
             Map.entry("explain", ProtectionActionType.MANAGE_PERMISSION),
+            Map.entry("inspect", ProtectionActionType.MANAGE_PERMISSION),
             Map.entry("delete", ProtectionActionType.DELETE_LAND));
 
     private ManagementPermissionGate() {

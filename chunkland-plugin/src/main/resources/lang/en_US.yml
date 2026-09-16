@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|log|manage]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|manage]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -138,6 +138,10 @@ command:
       result: "<green>Explain <action>: <outcome> via <source>/<layer>. <reason> Covering <coveringSubLandId> owner <isOwner> bypass <adminBypass> steward <steward></green>"
       denied: "<red>Explain unavailable.</red>"
       failed: "<red>Explain failed: <reason>.</red>"
+    inspect:
+      usage: "<yellow>Usage: /land inspect [player]</yellow>"
+      result: "<green>Land <landName> (<landId>) owner <owner> world <worldId> chunks <chunks> sublands <sublands> rev <structureRevision>/<landPolicyRevision> owner <isOwner> server <serverLand> steward <steward> limits <limitMaxChunksPerLand>/<limitMaxSublandsPerLand> subject <playerUuid></green>"
+      denied: "<red>Inspect unavailable.</red>"
     log:
       usage: "<yellow>Usage: /land log [u:player-uuid] [t:7d] [a:action] [land:land-uuid] [world:world-uuid] [limit:n] [page:n]</yellow>"
       empty: "<gray>No audit entries match those filters.</gray>"

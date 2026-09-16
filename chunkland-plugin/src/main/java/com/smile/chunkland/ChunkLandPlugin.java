@@ -35,6 +35,7 @@ import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.land.SubLandSnapshot;
+import com.smile.chunkland.api.limit.LimitType;
 import com.smile.chunkland.api.permission.PermissionContext;
 import com.smile.chunkland.api.permission.PermissionDecision;
 import com.smile.chunkland.api.permission.PermissionResolver;
@@ -51,6 +52,7 @@ import com.smile.chunkland.command.EntryBanCommandHandler;
 import com.smile.chunkland.command.ExpandCommandHandler;
 import com.smile.chunkland.command.ExplainCommandHandler;
 import com.smile.chunkland.command.GroupCommandHandler;
+import com.smile.chunkland.command.InspectCommandHandler;
 import com.smile.chunkland.command.LandDeleteCommandHandler;
 import com.smile.chunkland.command.ProfileCommandHandler;
 import com.smile.chunkland.command.ShrinkCommandHandler;
@@ -58,6 +60,7 @@ import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.ManageGuiCommandHandler;
+import com.smile.chunkland.command.OfflinePlayerResolver;
 import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.RenameCommandHandler;
 import com.smile.chunkland.command.SubLandCommandHandler;
@@ -165,6 +168,7 @@ import java.util.concurrent.Executors;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.Location;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -259,6 +263,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private OwnerQuotaService claimQuotas;
     private LogicalReservationRegistry claimReservations;
     private ExecutorService claimExecutor;
+    private ExecutorService resolveExecutor;
     private SubLandConfirmService subLandConfirm;
     private SubLandMutationRunner subLandRunner;
     private LandAuthorisationCache landAuthorisationCache;
@@ -768,6 +773,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
         ProfileCommandHandler profileHandler = profileService == null ? null
                 : new ProfileCommandHandler(
                         ProfileCommandHandler.serviceProfiles(profileService));
+        // Offline name resolution runs on a dedicated daemon thread, never on
+        // a region thread: the binding handler and the inspect handler only
+        // schedule through it and reply on completion. Created ahead of the
+        // command wiring so both handlers share one executor; a failed build
+        // leaves it null and every offline name fails closed.
+        try {
+            this.resolveExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, "chunkland-resolve");
+                thread.setDaemon(true);
+                return thread;
+            });
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand offline resolution executor failed; "
+                    + "offline names stay fail-closed: " + failure.getMessage());
+            this.resolveExecutor = null;
+        }
         BindingCommandHandler bindingHandler = bindingService == null
                 || groupService == null || profileService == null ? null
                 : new BindingCommandHandler(
@@ -776,7 +797,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         BindingCommandHandler.serviceProfiles(profileService),
                         trustLands::resolve,
                         currentLocationSublandResolver(this.protectionStore),
-                        name -> resolveOnlinePlayerUuid(getServer(), name));
+                        name -> resolveOnlinePlayerUuid(getServer(), name),
+                        buildOfflinePlayerResolver(getServer(), this.resolveExecutor),
+                        buildPlayerScheduler(this));
         // Audit history reads: the shared recovery store holds audit_log, so
         // /land log searches the same durable rows the sagas wrote, newest
         // first with paging. Without a store the slot stays fail-closed with
@@ -804,6 +827,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         + "bindings stay empty until the next restart: " + failure);
             }
         }
+        Supplier<ChunkLandConfig> inspectConfigs = this.configService
+                .map(service -> (Supplier<ChunkLandConfig>) service::current)
+                .orElse(null);
         this.landCommand = new LandCommand(
                 buildLandHandlers(this.selectionSessionManager, claimRunner(), claimScanSupplier(),
                         structureRevisions, sublandHandler, this.capabilities.orElse(null),
@@ -812,10 +838,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
                            shrinkRunner(), expandCurrentLand(this.protectionStore),
                            shrinkTargetOwner(this.protectionStore), renameHandler, groupHandler,
                            profileHandler, bindingHandler,
-                           buildExplainHandler(this.protectionStore, () -> atomicContexts),
-                           expandTargetChunks(this.protectionStore, registryReadiness),
-                           economyCurrency(activeConfig.current()),
-                           deleteHandler(), logHandler, buildManageHandler(() -> atomicContexts)),
+                            buildExplainHandler(this.protectionStore, () -> atomicContexts),
+                            expandTargetChunks(this.protectionStore, registryReadiness),
+                            economyCurrency(activeConfig.current()),
+                            deleteHandler(), logHandler, buildManageHandler(() -> atomicContexts),
+                            buildInspectHandler(this.protectionStore, () -> atomicContexts,
+                                    inspectConfigs,
+                                    buildOfflinePlayerResolver(getServer(),
+                                            this.resolveExecutor),
+                                    buildPlayerScheduler(this))),
                 null, buildManagementGateResolver(this.protectionStore,
                         () -> atomicContexts,
                         PluginManagementGateResolver.TargetLandResolver.currentLocation()));
@@ -1483,6 +1514,185 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 ? (sender, args, sink) -> sink.reply("command.land.manage.denied", Map.of())
                 : manage);
         return Map.copyOf(base);
+    }
+
+    /**
+     * Production {@code /land} handlers with the read-only land inspect flow
+     * wired.
+     *
+     * <p>A null inspect handler keeps the slot fail-closed on the generic
+     * inspect denial instead of the not-yet stub, so an unwired server never
+     * pretends the query is coming soon. Every other overload stays untouched
+     * so the focused assembly tests pinning them stay valid.
+     */
+    static Map<String, LandCommand.Handler> buildLandHandlers(
+            SelectionSessionManager selections, ClaimCommandHandler.ClaimRunner runner,
+            Supplier<java.util.concurrent.CompletionStage<?>> recoveryScan,
+            SelectionStructureRevisionLookup structures,
+            SubLandCommandHandler subland, Capabilities capabilities,
+            DirectTrustCommandHandler trust, DirectTrustCommandHandler untrust,
+            LandDefaultCommandHandler defaults,
+            EntryBanCommandHandler ban, EntryBanCommandHandler unban,
+            ExpandCommandHandler.ExpandRunner expand,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> currentLand,
+            ShrinkCommandHandler.ShrinkRunner shrink,
+            java.util.function.Function<org.bukkit.command.CommandSender, Optional<LandId>> shrinkCurrentLand,
+            java.util.function.Function<LandId, Optional<OwnerRef>> shrinkTargetOwner,
+            RenameCommandHandler rename,
+            GroupCommandHandler group,
+            ProfileCommandHandler profile,
+            BindingCommandHandler binding,
+            ExplainCommandHandler explain,
+            ExpandCommandHandler.TargetChunkLookup targetChunks,
+            Currency shrinkRefundCurrency,
+            LandDeleteCommandHandler delete,
+            AuditLogCommandHandler logs,
+            ManageGuiCommandHandler manage,
+            InspectCommandHandler inspect) {
+        Map<String, LandCommand.Handler> base = new HashMap<>(buildLandHandlers(
+                selections, runner, recoveryScan, structures, subland,
+                capabilities, trust, untrust, defaults, ban, unban, expand, currentLand,
+                shrink, shrinkCurrentLand, shrinkTargetOwner, rename, group,
+                profile, binding, explain, targetChunks, shrinkRefundCurrency,
+                delete, logs, manage));
+        base.put("inspect", inspect == null
+                ? (sender, args, sink) -> sink.reply("command.land.inspect.denied", Map.of())
+                : inspect);
+        return Map.copyOf(base);
+    }
+
+    /**
+     * Builds the read-only inspect handler over the shared protection
+     * snapshot and the same atomic context provider the enforcement path
+     * reads, so every inspect observes the generation it classifies with.
+     * Limits resolve per call from the live config snapshot through
+     * {@link LimitResolver} (memory only, never I/O), and the optional
+     * player argument resolves through the given async resolver. A null
+     * store or provider source keeps the slot fail-closed instead of
+     * running half-wired.
+     */
+    static InspectCommandHandler buildInspectHandler(LandRegistryStore store,
+            Supplier<PermissionContextProvider> providers,
+            Supplier<ChunkLandConfig> configs,
+            OfflinePlayerResolver players,
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
+        LandRegistryStore active = store == null ? new LandRegistryStore() : store;
+        Supplier<PermissionContextProvider> activeProviders = providers == null
+                ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
+        return new InspectCommandHandler(active::snapshot, activeProviders,
+                buildInspectLimits(configs), players, scheduler);
+    }
+
+    /**
+     * Memory-only limit observables for inspect: the owner's
+     * per-land chunk and subland caps from the live config snapshot. A
+     * {@code null} config source falls back to the bundled defaults (the
+     * same posture as the permission defaults); a failing read yields an
+     * empty map and the land summary is still reported without limit
+     * entries, so limits can never block the read path.
+     */
+    static InspectCommandHandler.Limits buildInspectLimits(Supplier<ChunkLandConfig> configs) {
+        Supplier<ChunkLandConfig> active =
+                configs == null ? ChunkLandConfig::defaults : configs;
+        return owner -> {
+            try {
+                if (owner == null) {
+                    return Map.of();
+                }
+                ChunkLandConfig config = active.get();
+                if (config == null) {
+                    return Map.of();
+                }
+                LimitResolver resolver = new LimitResolver(config);
+                long maxChunks = resolver.resolve(owner, LimitType.MAX_CHUNKS_PER_LAND).limit();
+                long maxSublands =
+                        resolver.resolve(owner, LimitType.MAX_SUBLANDS_PER_LAND).limit();
+                return Map.of("limitMaxChunksPerLand", maxChunks,
+                        "limitMaxSublandsPerLand", maxSublands);
+            } catch (RuntimeException failure) {
+                return Map.of();
+            }
+        };
+    }
+
+    /**
+     * Builds the caller-owned hop back to a player's Folia thread for async
+     * command continuations. The returned seam only bridges through
+     * {@code player.getScheduler().run} — the same pattern as
+     * {@link #openManagementGuiOnRegion} — and drops the continuation
+     * fail-closed when the scheduler is retired or the player is gone, so a
+     * resolver-executor thread never touches a {@code Player}, a reply sink
+     * or any other Bukkit sender API directly.
+     */
+    static com.smile.chunkland.command.PlayerScheduler buildPlayerScheduler(
+            org.bukkit.plugin.java.JavaPlugin plugin) {
+        Objects.requireNonNull(plugin, "plugin");
+        return (player, task) -> {
+            Objects.requireNonNull(player, "player");
+            Objects.requireNonNull(task, "task");
+            try {
+                player.getScheduler().run(plugin, scheduled -> {
+                    try {
+                        task.run();
+                    } catch (RuntimeException ignored) {
+                        // Player-thread continuation must never escape.
+                    }
+                }, null);
+            } catch (RuntimeException retired) {
+                // Retired scheduler or departed player: drop fail-closed.
+            }
+        };
+    }
+
+    /**
+     * Builds the async offline-player resolver: online exact names stay on
+     * the region-safe lookup while every other name runs only on the given
+     * executor. A {@code null} executor keeps UUID text and online names
+     * working and fails every other name closed.
+     */
+    static OfflinePlayerResolver buildOfflinePlayerResolver(org.bukkit.Server server,
+            Executor async) {
+        return new OfflinePlayerResolver(
+                name -> resolveOnlinePlayerUuid(server, name),
+                name -> resolveOfflinePlayerUuid(server, name),
+                async);
+    }
+
+    /**
+     * Blocking offline-player lookup for the async executor only. Never call
+     * this on a region thread: {@code getOfflinePlayer(String)} may block on
+     * profile lookup. Names that never played stay empty so callers fail
+     * closed instead of treating every name as a UUID owner.
+     */
+    static Optional<UUID> resolveOfflinePlayerUuid(org.bukkit.Server server, String raw) {
+        if (server == null || raw == null || raw.isBlank()) {
+            return Optional.empty();
+        }
+        String stripped = raw.strip();
+        try {
+            OfflinePlayer offline = server.getOfflinePlayer(stripped);
+            if (offline == null) {
+                return Optional.empty();
+            }
+            boolean known;
+            try {
+                known = offline.hasPlayedBefore() || offline.isOnline();
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+            if (!known) {
+                return Optional.empty();
+            }
+            UUID uuid;
+            try {
+                uuid = offline.getUniqueId();
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+            return uuid == null ? Optional.empty() : Optional.of(uuid);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -3161,6 +3371,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
             } catch (RuntimeException ignored) {
             }
             claimExecutor = null;
+        }
+        if (resolveExecutor != null) {
+            try {
+                resolveExecutor.shutdownNow();
+            } catch (RuntimeException ignored) {
+            }
+            resolveExecutor = null;
         }
         this.messagePipeline = Optional.empty();
         this.capabilityProbe = Optional.empty();

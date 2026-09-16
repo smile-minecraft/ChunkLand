@@ -11,6 +11,7 @@ import com.smile.chunkland.persistence.ProfileRejectedException;
 import com.smile.chunkland.persistence.SubjectGroupRepository;
 import com.smile.chunkland.profile.PermissionProfileService;
 import com.smile.chunkland.persistence.PermissionProfileRepository;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -21,7 +22,6 @@ import java.util.concurrent.CompletionStage;
 import java.util.function.Function;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-
 /**
  * Production {@code /land binding <bind|unbind>} handler.
  *
@@ -38,8 +38,13 @@ import org.bukkit.entity.Player;
  * resolution and the durable mutation call.
  *
  * <p>Threading: everything sender-facing happens synchronously on the
- * calling thread; only the reply runs on mutation completion, using values
- * captured up front, so the callback never touches server objects.
+ *  calling thread; only the reply runs on mutation completion, using values
+ *  captured up front, so the callback never touches server objects.
+ *  Async completions never reply or mutate directly: the continuation hops
+ *  through the injected {@link PlayerScheduler} to the sender's player
+ *  thread first, so a resolver-executor thread never touches the
+ *  {@link ReplySink} (production: Folia-unsafe {@code sendChat}) and a
+ *  retired scheduler drops the continuation fail-closed.
  */
 public final class BindingCommandHandler implements LandCommand.Handler {
 
@@ -134,6 +139,11 @@ public final class BindingCommandHandler implements LandCommand.Handler {
     private final LandResolver lands;
     private final SublandResolver sublands;
     private final Function<String, Optional<UUID>> playerIds;
+    private final OfflinePlayerResolver offlinePlayers;
+    private final PlayerScheduler scheduler;
+
+    /** Fail-closed async timeout for offline name resolution. */
+    static final Duration OFFLINE_RESOLVE_TIMEOUT = Duration.ofSeconds(10);
 
     /**
      * @param bindings durable operations; null replies unavailable without side effects
@@ -148,12 +158,66 @@ public final class BindingCommandHandler implements LandCommand.Handler {
     public BindingCommandHandler(Bindings bindings, Groups groups, Profiles profiles,
             LandResolver lands, SublandResolver sublands,
             Function<String, Optional<UUID>> playerIds) {
+        this(bindings, groups, profiles, lands, sublands, playerIds, null);
+    }
+
+    /**
+     * @param bindings durable operations; null replies unavailable without side effects
+     * @param groups group reference resolution; null fails every group subject closed
+     * @param profiles profile reference resolution; null fails every verb closed
+     * @param lands affected-land resolver; null or empty resolves fail closed
+     * @param sublands affected-subland resolver for {@code --in-subland};
+     *                 null or empty resolves fail closed
+     * @param playerIds player lookup (UUID text or online exact name); null
+     *                  resolves every name fail closed
+     * @param offlinePlayers async offline-name resolution; when present, a
+     *                       name the sync lookup misses is resolved on its
+     *                       explicit executor without blocking the caller, and
+     *                       the follow-up mutation still runs only through
+     *                       {@code bindings}. {@code null} keeps the legacy
+     *                       online-only behaviour.
+     */
+    public BindingCommandHandler(Bindings bindings, Groups groups, Profiles profiles,
+            LandResolver lands, SublandResolver sublands,
+            Function<String, Optional<UUID>> playerIds,
+            OfflinePlayerResolver offlinePlayers) {
+        this(bindings, groups, profiles, lands, sublands, playerIds, offlinePlayers,
+                PlayerScheduler.direct());
+    }
+
+    /**
+     * @param bindings durable operations; null replies unavailable without side effects
+     * @param groups group reference resolution; null fails every group subject closed
+     * @param profiles profile reference resolution; null fails every verb closed
+     * @param lands affected-land resolver; null or empty resolves fail closed
+     * @param sublands affected-subland resolver for {@code --in-subland};
+     *                 null or empty resolves fail closed
+     * @param playerIds player lookup (UUID text or online exact name); null
+     *                  resolves every name fail closed
+     * @param offlinePlayers async offline-name resolution; when present, a
+     *                       name the sync lookup misses is resolved on its
+     *                       explicit executor without blocking the caller, and
+     *                       the follow-up mutation still runs only through
+     *                       {@code bindings}. {@code null} keeps the legacy
+     *                       online-only behaviour.
+     * @param scheduler player-thread hop for every async continuation
+     *                  (subject resolution, profile resolution and mutation
+     *                  replies); {@code null} runs continuations inline on
+     *                  the completing thread
+     */
+    public BindingCommandHandler(Bindings bindings, Groups groups, Profiles profiles,
+            LandResolver lands, SublandResolver sublands,
+            Function<String, Optional<UUID>> playerIds,
+            OfflinePlayerResolver offlinePlayers,
+            PlayerScheduler scheduler) {
         this.bindings = bindings;
         this.groups = groups;
         this.profiles = profiles;
         this.lands = lands;
         this.sublands = sublands;
         this.playerIds = playerIds;
+        this.offlinePlayers = offlinePlayers;
+        this.scheduler = scheduler == null ? PlayerScheduler.direct() : scheduler;
     }
 
     @Override
@@ -217,28 +281,46 @@ public final class BindingCommandHandler implements LandCommand.Handler {
             }
         }
         Optional<SubLandId> scope = subland;
+        PlayerScheduler hop = scheduler;
         resolveSubject(actor, kind, subjectRaw.strip()).whenComplete((subject, failure) -> {
+            // The completion may arrive on the resolver executor: never touch
+            // the sink or the mutation seam here — hop to the player thread
+            // first. A retired scheduler drops the continuation fail-closed.
             try {
-                if (failure != null) {
-                    sink.reply("command.land.binding.failed",
-                            Map.of("reason", reasonOf(failure)));
-                    return;
-                }
-                if (subject == null) {
-                    sink.reply("command.land.binding.failed",
-                            Map.of("reason", "binding.failed"));
-                    return;
-                }
-                if (verb.equals("bind")) {
-                    runBind(actor, landId, scope.orElse(null), subject,
-                            profileRaw.strip(), sink);
-                } else {
-                    runUnbind(actor, landId, scope.orElse(null), subject, sink);
-                }
-            } catch (RuntimeException replyFailure) {
-                // Terminal reply path: never let a sink failure escape.
+                hop.runForPlayer(player, () -> {
+                    try {
+                        continueOnPlayerThread(actor, verb, landId, scope.orElse(null),
+                                subject, failure, profileRaw, sink);
+                    } catch (RuntimeException replyFailure) {
+                        // Terminal reply path: never let a sink failure escape.
+                    }
+                });
+            } catch (RuntimeException retired) {
+                // Scheduling itself failed: drop fail-closed without replying.
             }
         });
+    }
+
+    /** Player-thread body of {@link #handle}: input already captured up front. */
+    private void continueOnPlayerThread(UUID actor, String verb, LandId landId,
+            SubLandId sublandId, LandBindingRepository.Subject subject, Throwable failure,
+            String profileRaw, ReplySink sink) {
+        if (failure != null) {
+            sink.reply("command.land.binding.failed",
+                    Map.of("reason", reasonOf(failure)));
+            return;
+        }
+        if (subject == null) {
+            sink.reply("command.land.binding.failed",
+                    Map.of("reason", "binding.failed"));
+            return;
+        }
+        if (verb.equals("bind")) {
+            runBind(actor, landId, sublandId, subject,
+                    profileRaw.strip(), sink);
+        } else {
+            runUnbind(actor, landId, sublandId, subject, sink);
+        }
     }
 
     private void runBind(UUID actor, LandId landId, SubLandId sublandId,
@@ -335,13 +417,16 @@ public final class BindingCommandHandler implements LandCommand.Handler {
             UUID actor, String kind, String raw) {
         if (kind.equals("player")) {
             Optional<UUID> target = resolvePlayer(raw);
-            if (target.isEmpty() || target.get() == null) {
+            if (target.isPresent() && target.get() != null) {
+                return CompletableFuture.completedFuture(
+                        new LandBindingRepository.Subject(
+                                LandBindingRepository.SubjectKind.PLAYER, target.get()));
+            }
+            if (offlinePlayers == null) {
                 return CompletableFuture.failedFuture(
                         new BindingRejectedException("binding.invalid"));
             }
-            return CompletableFuture.completedFuture(
-                    new LandBindingRepository.Subject(
-                            LandBindingRepository.SubjectKind.PLAYER, target.get()));
+            return resolveOfflinePlayer(raw.strip());
         }
         CompletionStage<SubjectGroupRepository.GroupView> resolved;
         try {
@@ -359,6 +444,35 @@ public final class BindingCommandHandler implements LandCommand.Handler {
             }
             return new LandBindingRepository.Subject(
                     LandBindingRepository.SubjectKind.GROUP, view.id());
+        });
+    }
+
+    /**
+     * Resolves an offline player name on the resolver's explicit executor.
+     * The returned stage stays pending until the async lookup answers, so
+     * the region-facing caller never blocks; unknown names, failures and
+     * timeouts all surface as {@code binding.invalid} without leaking which
+     * cause fired. The follow-up mutation still runs only through the
+     * {@link Bindings} seam in the terminal callback — this path never
+     * touches a repository or domain collection directly.
+     */
+    private CompletionStage<LandBindingRepository.Subject> resolveOfflinePlayer(String raw) {
+        CompletionStage<Optional<UUID>> resolved;
+        try {
+            resolved = offlinePlayers.resolveAsync(raw, OFFLINE_RESOLVE_TIMEOUT);
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+        if (resolved == null) {
+            return CompletableFuture.failedFuture(
+                    new BindingRejectedException("binding.failed"));
+        }
+        return resolved.thenApply(found -> {
+            if (found == null || found.isEmpty() || found.get() == null) {
+                throw new BindingRejectedException("binding.invalid");
+            }
+            return new LandBindingRepository.Subject(
+                    LandBindingRepository.SubjectKind.PLAYER, found.get());
         });
     }
 

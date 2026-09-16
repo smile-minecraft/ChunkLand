@@ -47,7 +47,7 @@ public final class LandCommand {
     }
 
     public static final List<String> SUBCOMMANDS = List.of(
-            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile", "explain", "log", "manage");
+            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile", "explain", "inspect", "log", "manage");
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
@@ -194,6 +194,10 @@ public final class LandCommand {
                 denyExplain(sink);
                 return true;
             }
+            if (isInspect(sub)) {
+                denyInspect(sink);
+                return true;
+            }
             sink.reply("command.land.denied", Map.of("permission", perm));
             return true;
         }
@@ -202,6 +206,10 @@ public final class LandCommand {
             if (!checkManagementGate(sender, managed.get(), args)) {
                 if (isExplain(sub)) {
                     denyExplain(sink);
+                    return true;
+                }
+                if (isInspect(sub)) {
+                    denyInspect(sink);
                     return true;
                 }
                 sink.reply("command.land.denied", Map.of("permission", managed.get().name()));
@@ -223,6 +231,25 @@ public final class LandCommand {
      */
     private static boolean isExplain(String sub) {
         return "explain".equals(sub);
+    }
+
+    /**
+     * Whether the subcommand is the read-only land inspect. The
+     * subcommand is already lower-cased by the caller.
+     */
+    private static boolean isInspect(String sub) {
+        return "inspect".equals(sub);
+    }
+
+    /**
+     * Fail-closed generic denial for the inspect path. Every dispatcher-level
+     * inspect refusal — missing Bukkit node, domain-gate deny, unresolvable
+     * target or resolver failure — replies with the same empty-vars denial
+     * the handler itself uses, so the response never probes whether a land
+     * exists. The operation is still refused and the handler never runs.
+     */
+    private static void denyInspect(ReplySink sink) {
+        sink.reply("command.land.inspect.denied", Map.of());
     }
 
     /**
