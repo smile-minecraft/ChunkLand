@@ -12,6 +12,8 @@ import java.util.Objects;
  * on the outcome.
  *
  * <p>Thread-safe immutable value object.
+ *
+ * @since 0.1.0
  */
 public record MutationResult(MutationOutcome outcome, LandId landId, String diagnosticKey) {
 

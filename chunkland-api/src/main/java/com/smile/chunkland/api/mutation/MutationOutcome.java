@@ -2,6 +2,8 @@ package com.smile.chunkland.api.mutation;
 
 /**
  * Outcome of a mutation request (spec §85).
+ *
+ * @since 0.1.0
  */
 public enum MutationOutcome {
     /** Durably committed. */

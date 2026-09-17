@@ -7,6 +7,8 @@ package com.smile.chunkland.api.mutation;
  *
  * <p>This is the V1-3 contract core; later milestones add concrete request
  * shapes per kind (claim pricing, subland geometry, stable mutation API).
+ *
+ * @since 0.1.0
  */
 public enum MutationKind {
     LAND_CREATE,

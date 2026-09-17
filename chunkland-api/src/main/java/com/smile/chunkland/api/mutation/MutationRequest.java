@@ -21,6 +21,8 @@ import java.util.Set;
  * depending on the kind (e.g. a create has no target land id yet).
  *
  * <p>Thread-safe immutable value object.
+ *
+ * @since 0.1.0
  */
 public record MutationRequest(
         MutationKind kind,
