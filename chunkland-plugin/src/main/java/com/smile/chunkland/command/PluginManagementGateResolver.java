@@ -7,6 +7,7 @@ import com.smile.chunkland.runtime.index.LandRegistry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -17,16 +18,19 @@ import org.bukkit.entity.Player;
  * Production {@link ManagementGateResolver} for {@code /land} management
  * subcommands.
  *
- * <p>Actor, snapshot, steward flag and context provider come from live Bukkit
- * and registry state. The target land comes from a {@link TargetLandResolver}:
+ * <p>Actor, snapshot, bypass flag, steward flag and context provider come
+ * from live Bukkit and registry state. The target land comes from a
+ * {@link TargetLandResolver}:
  * the formal wiring resolves the land under the sender's current location
  * against the immutable snapshot, so management subcommands act on the land
  * the player is standing on. There is no named-land argument yet — tail args
  * on trust/ban style subcommands name the affected player, never a land.
  * Wilderness, unknown worlds, non-player senders and any unresolvable
- * position stay unresolved and fail closed. Admin bypass has no dedicated
- * state yet and resolves to {@code false} (fail-closed); a future bypass
- * milestone owns that flag.
+ * position stay unresolved and fail closed. The bypass flag comes only from
+ * the injected per-enable bypass memory for the resolved actor UUID —
+ * never from the bypass permission node — so holding the node alone
+ * authorises nothing; a missing or failing source resolves to {@code false}
+ * (fail-closed).
  */
 public final class PluginManagementGateResolver implements ManagementGateResolver {
 
@@ -109,14 +113,31 @@ public final class PluginManagementGateResolver implements ManagementGateResolve
     private final Supplier<LandRegistry> snapshots;
     private final Supplier<PermissionContextProvider> providers;
     private final TargetLandResolver targets;
+    private final Function<UUID, Boolean> bypassStates;
 
     public PluginManagementGateResolver(
             Supplier<LandRegistry> snapshots,
             Supplier<PermissionContextProvider> providers,
             TargetLandResolver targets) {
+        this(snapshots, providers, targets, null);
+    }
+
+    /**
+     * @param bypassStates per-enable bypass memory read for the resolved
+     *                     actor UUID; {@code null} or failing reads resolve
+     *                     to {@code false} (fail-closed). The permission node
+     *                     is never consulted here: only an explicit toggle
+     *                     flips the flag.
+     */
+    public PluginManagementGateResolver(
+            Supplier<LandRegistry> snapshots,
+            Supplier<PermissionContextProvider> providers,
+            TargetLandResolver targets,
+            Function<UUID, Boolean> bypassStates) {
         this.snapshots = snapshots;
         this.providers = providers;
         this.targets = targets == null ? TargetLandResolver.unresolved() : targets;
+        this.bypassStates = bypassStates;
     }
 
     @Override
@@ -147,8 +168,28 @@ public final class PluginManagementGateResolver implements ManagementGateResolve
         } catch (RuntimeException denied) {
             return Optional.empty();
         }
-        // No admin-bypass state is wired in this milestone; fail closed.
-        return Optional.of(new Request(actor.id(), target.get(), snapshot, false, steward, provider));
+        boolean bypass;
+        try {
+            bypass = readBypass(actor.id());
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        return Optional.of(new Request(actor.id(), target.get(), snapshot,
+                bypass, steward, provider));
+    }
+
+    /**
+     * Reads the explicit bypass flag for one actor. A missing source or a
+     * {@code null} answer resolves to {@code false}; a throwing source
+     * propagates so the caller fails the whole resolution closed. The
+     * bypass permission node is deliberately never consulted: only an
+     * explicit toggle flips the flag.
+     */
+    private boolean readBypass(UUID actor) {
+        if (bypassStates == null) {
+            return false;
+        }
+        return Boolean.TRUE.equals(bypassStates.apply(actor));
     }
 
     private static UUIDActor resolveActor(CommandSender sender) {

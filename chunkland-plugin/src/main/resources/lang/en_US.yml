@@ -11,7 +11,7 @@ message:
       unknown: 'Action: <payload>'
 command:
   land:
-    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|history|manage|admin]</gray>"
+    help: "<gray>Usage: /land [help|confirm|wand|claim|trust|untrust|default|binding|ban|unban|expand|shrink|unclaim|rename|delete|group|profile|explain|inspect|log|history|manage|bypass|admin]</gray>"
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -157,6 +157,12 @@ command:
       denied: "<red>Management GUI unavailable.</red>"
       bedrock:
         unsupported: "<yellow>That step is not available as a Bedrock form yet. Use /land <subcommand> in chat instead.</yellow>"
+    bypass:
+      console: "<red>Only players can toggle admin bypass.</red>"
+      usage: "<yellow>Usage: /land bypass [on|off]</yellow>"
+      on: "<green>Admin bypass enabled.</green>"
+      off: "<gray>Admin bypass disabled.</gray>"
+      failed: "<red>Admin bypass toggle failed: <reason>.</red>"
     admin:
       ledger:
         usage: "<yellow>Usage: /land admin ledger list [state] | show [operation] | resolve [operation] [RESOLVED|REFUNDED|IGNORED]</yellow>"

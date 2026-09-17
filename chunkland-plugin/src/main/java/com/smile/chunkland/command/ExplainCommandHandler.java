@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.Location;
 import org.bukkit.command.CommandSender;
@@ -53,6 +54,7 @@ public final class ExplainCommandHandler implements LandCommand.Handler {
 
     private final Supplier<LandRegistry> snapshots;
     private final Supplier<PermissionContextProvider> providers;
+    private final Function<UUID, Boolean> bypassStates;
 
     /**
      * @param snapshots live immutable snapshot source; {@code null} or failing
@@ -63,8 +65,26 @@ public final class ExplainCommandHandler implements LandCommand.Handler {
      */
     public ExplainCommandHandler(Supplier<LandRegistry> snapshots,
             Supplier<PermissionContextProvider> providers) {
+        this(snapshots, providers, null);
+    }
+
+    /**
+     * @param snapshots live immutable snapshot source; {@code null} or failing
+     *                  reads fail closed
+     * @param providers shared context provider source (the same instance the
+     *                  enforcement path reads); {@code null} or failing reads
+     *                  fail closed
+     * @param bypassStates per-enable bypass memory read for the sender UUID;
+     *                     {@code null} or failing reads resolve to {@code false}
+     *                     (fail-closed). The permission node is never consulted:
+     *                     only an explicit toggle flips the flag.
+     */
+    public ExplainCommandHandler(Supplier<LandRegistry> snapshots,
+            Supplier<PermissionContextProvider> providers,
+            Function<UUID, Boolean> bypassStates) {
         this.snapshots = snapshots;
         this.providers = providers;
+        this.bypassStates = bypassStates;
     }
 
     /** Parses one action name case-insensitively; unknown names yield empty. */
@@ -134,10 +154,11 @@ public final class ExplainCommandHandler implements LandCommand.Handler {
             return;
         }
         boolean steward = readSteward(sender);
+        boolean bypass = readBypass(actor);
         PermissionDecision gate;
         try {
             gate = ManagementPermissionGate.check(actor, target,
-                    ProtectionActionType.MANAGE_PERMISSION, snapshot, false, steward,
+                    ProtectionActionType.MANAGE_PERMISSION, snapshot, bypass, steward,
                     provider);
         } catch (RuntimeException denied) {
             sink.reply("command.land.explain.denied", Map.of());
@@ -236,6 +257,17 @@ public final class ExplainCommandHandler implements LandCommand.Handler {
             return sender.hasPermission(
                     PluginManagementGateResolver.SERVER_LAND_STEWARD_NODE);
         } catch (RuntimeException denied) {
+            return false;
+        }
+    }
+
+    private boolean readBypass(UUID actor) {
+        if (bypassStates == null || actor == null) {
+            return false;
+        }
+        try {
+            return Boolean.TRUE.equals(bypassStates.apply(actor));
+        } catch (RuntimeException unresolved) {
             return false;
         }
     }

@@ -47,8 +47,19 @@ public final class LandPermissions {
      */
     public static final String ORPHAN = "chunkland.admin.orphan";
 
+    /**
+     * Independent bypass-toggle authority for {@code /land bypass on|off}.
+     * Holding this node only allows <em>attempting</em> the switch; it never
+     * authorises a management mutation on its own. Only an explicit audited
+     * toggle flips the per-enable bypass memory the domain gate reads.
+     * Deliberately separate from {@code chunkland.admin.serverland} and the
+     * ledger/orphan nodes: holding those never grants bypass, and holding
+     * this never grants steward, ledger or orphan verdicts.
+     */
+    public static final String BYPASS = "chunkland.admin.bypass";
+
     public static final List<String> ALL_ORDERED = List.of(
-            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN, ORPHAN);
+            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN, ORPHAN, BYPASS);
 
     private static final Map<String, String> BY_SUBCOMMAND = Map.ofEntries(
             Map.entry("help", HELP),
@@ -74,6 +85,7 @@ public final class LandPermissions {
             Map.entry("log", LOG),
             Map.entry("history", HISTORY),
             Map.entry("manage", MANAGE),
+            Map.entry("bypass", BYPASS),
             Map.entry("admin", ADMIN)
     );
 

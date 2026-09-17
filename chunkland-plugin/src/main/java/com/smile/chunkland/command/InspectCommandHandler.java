@@ -16,6 +16,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -64,6 +65,7 @@ public final class InspectCommandHandler implements LandCommand.Handler {
     private final Limits limits;
     private final OfflinePlayerResolver players;
     private final PlayerScheduler scheduler;
+    private final Function<UUID, Boolean> bypassStates;
 
     /**
      * @param snapshots live immutable snapshot source; {@code null} or failing
@@ -101,11 +103,38 @@ public final class InspectCommandHandler implements LandCommand.Handler {
             Limits limits,
             OfflinePlayerResolver players,
             PlayerScheduler scheduler) {
+        this(snapshots, providers, limits, players, scheduler, null);
+    }
+
+    /**
+     * @param snapshots live immutable snapshot source; {@code null} or failing
+     *                  reads fail closed
+     * @param providers shared context provider source (the same instance the
+     *                  enforcement path reads); {@code null} or failing reads
+     *                  fail closed
+     * @param limits limit observables; {@code null} reports the summary
+     *               without limit entries
+     * @param players async player resolution for the optional player
+     *                argument; {@code null} fails that argument closed
+     * @param scheduler player-thread hop for the async player-argument reply;
+     *                  {@code null} replies inline on the completing thread
+     * @param bypassStates per-enable bypass memory read for the sender UUID;
+     *                     {@code null} or failing reads resolve to {@code false}
+     *                     (fail-closed). The permission node is never consulted:
+     *                     only an explicit toggle flips the flag.
+     */
+    public InspectCommandHandler(Supplier<LandRegistry> snapshots,
+            Supplier<PermissionContextProvider> providers,
+            Limits limits,
+            OfflinePlayerResolver players,
+            PlayerScheduler scheduler,
+            Function<UUID, Boolean> bypassStates) {
         this.snapshots = snapshots;
         this.providers = providers;
         this.limits = limits;
         this.players = players;
         this.scheduler = scheduler == null ? PlayerScheduler.direct() : scheduler;
+        this.bypassStates = bypassStates;
     }
 
     @Override
@@ -158,10 +187,11 @@ public final class InspectCommandHandler implements LandCommand.Handler {
             return;
         }
         boolean steward = readSteward(sender);
+        boolean bypass = readBypass(actor);
         PermissionDecision gate;
         try {
             gate = ManagementPermissionGate.check(actor, target,
-                    ProtectionActionType.MANAGE_PERMISSION, snapshot, false, steward,
+                    ProtectionActionType.MANAGE_PERMISSION, snapshot, bypass, steward,
                     provider);
         } catch (RuntimeException denied) {
             sink.reply("command.land.inspect.denied", Map.of());
@@ -320,6 +350,17 @@ public final class InspectCommandHandler implements LandCommand.Handler {
             return sender.hasPermission(
                     PluginManagementGateResolver.SERVER_LAND_STEWARD_NODE);
         } catch (RuntimeException denied) {
+            return false;
+        }
+    }
+
+    private boolean readBypass(UUID actor) {
+        if (bypassStates == null || actor == null) {
+            return false;
+        }
+        try {
+            return Boolean.TRUE.equals(bypassStates.apply(actor));
+        } catch (RuntimeException unresolved) {
             return false;
         }
     }

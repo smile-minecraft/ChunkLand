@@ -55,6 +55,9 @@ import com.smile.chunkland.command.GroupCommandHandler;
 import com.smile.chunkland.command.AdminCommandRouter;
 import com.smile.chunkland.command.InspectCommandHandler;
 import com.smile.chunkland.command.LandDeleteCommandHandler;
+import com.smile.chunkland.command.AdminBypassCommandHandler;
+import com.smile.chunkland.command.AdminBypassRecovery;
+import com.smile.chunkland.command.AdminBypassState;
 import com.smile.chunkland.command.LedgerAdminCommandHandler;
 import com.smile.chunkland.command.OrphanAdminCommandHandler;
 import com.smile.chunkland.command.ProfileCommandHandler;
@@ -274,6 +277,26 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private EnterLeaveListener enterLeaveListener;
     private LandCommand landCommand;
     private WandSafetyListener wandSafetyListener;
+    /**
+     * Per-enable player-scoped admin-bypass memory. A fresh instance is
+     * installed on every enable (default off) and cleared on disable, so no
+     * bypass survives a restart or a reload. Every management gate seam —
+     * the command resolver, the GUI open, explain/inspect and the Bedrock
+     * branch — reads this same instance; holding the bypass permission node
+     * alone never flips it.
+     */
+    private volatile AdminBypassState adminBypassStates;
+    /**
+     * Single shared bypass generation per enable: the production handler,
+     * its process id, recovery gate and close token. Disable closes the
+     * token before clearing the state so late callbacks stop before any
+     * further audit or state mutation; the fallback slot reuses the stored
+     * handler instead of building an ungated one.
+     */
+    private volatile AdminBypassCommandHandler bypassHandler;
+    private volatile java.util.UUID bypassProcess;
+    private volatile java.util.concurrent.CompletableFuture<Void> bypassRecoveryGate;
+    private volatile com.smile.chunkland.command.AdminBypassLifecycle bypassLifecycle;
     private SelectionSessionManager selectionSessionManager;
     private SelectionLifecycleListener selectionLifecycleListener;
     private SelectionVisualizationTaskController visualizationController;
@@ -441,7 +464,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         PermissionDecision gate;
         try {
             gate = ManagementPermissionGate.check(playerUuid, landId,
-                    ProtectionActionType.MANAGE_PERMISSION, snapshot, false, false, contexts);
+                    ProtectionActionType.MANAGE_PERMISSION, snapshot, readAdminBypass(playerUuid),
+                    false, contexts);
         } catch (RuntimeException denied) {
             return Optional.empty();
         }
@@ -642,6 +666,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // manager's structure-revision source reads the same live snapshot the
         // /land claim, expand and shrink flows publish and validate against.
         this.protectionStore = new LandRegistryStore();
+        // Fresh bypass memory per enable generation: every actor defaults to
+        // off, so no toggle survives a restart or a reload.
+        this.adminBypassStates = new AdminBypassState();
         SelectionStructureRevisionLookup structureRevisions =
                 buildSubLandStructureLookup(this.protectionStore);
         this.selectionStructureRevisions = structureRevisions;
@@ -1053,23 +1080,26 @@ public final class ChunkLandPlugin extends JavaPlugin {
                           expandRunner(), expandCurrentLand(this.protectionStore),
                            shrinkRunner(), expandCurrentLand(this.protectionStore),
                            shrinkTargetOwner(this.protectionStore), renameHandler, groupHandler,
-                           profileHandler, bindingHandler,
-                            buildExplainHandler(this.protectionStore, () -> atomicContexts),
+                            profileHandler, bindingHandler,
+                             buildExplainHandler(this.protectionStore, () -> atomicContexts,
+                                     adminBypassLookup()),
                             expandTargetChunks(this.protectionStore, registryReadiness),
                             economyCurrency(activeConfig.current()),
                             deleteHandler(), logHandler, buildManageHandler(() -> atomicContexts),
-                            buildInspectHandler(this.protectionStore, () -> atomicContexts,
-                                    inspectConfigs, inspectProviders,
-                                    buildOfflinePlayerResolver(getServer(),
-                                            this.resolveExecutor),
-                                    buildPlayerScheduler(this)),
+                             buildInspectHandler(this.protectionStore, () -> atomicContexts,
+                                     inspectConfigs, inspectProviders,
+                                     buildOfflinePlayerResolver(getServer(),
+                                             this.resolveExecutor),
+                                     buildPlayerScheduler(this),
+                                     adminBypassLookup()),
                             ledgerAdminHandler,
                             orphanAdminHandler,
                             buildHistoryHandler(() -> this.historyProvider,
                                     buildPlayerScheduler(this))));
         ManagementGateResolver landGateResolver = buildManagementGateResolver(this.protectionStore,
                 () -> atomicContexts,
-                PluginManagementGateResolver.TargetLandResolver.currentLocation());
+                PluginManagementGateResolver.TargetLandResolver.currentLocation(),
+                adminBypassLookup());
         // Bedrock 管理表單分支：與 Java 共用 gate resolver 與不可變快照模型，
         // 轉交的 handlers 直接引用正式 map 的其他槽位（絕不轉交 manage 自己，
         // 所以不會遞迴）。半接線時沒有分支，原本的 Java 路徑原樣保留。
@@ -1082,6 +1112,35 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 this::listOnlinePlayerNames);
         this.bedrockFormNavigator = bedrockManage == null ? null : bedrockManage.navigator();
         landHandlers.put("manage", wrapManageWithBedrock(landHandlers.get("manage"), bedrockManage));
+        // Admin bypass toggle: the node only allows attempting the switch;
+        // every attempt is audited before the actor-scoped memory flips,
+        // then closed by a committed or aborted terminal with the same
+        // attempt id. A missing audit source or memory keeps the slot
+        // fail-closed instead of toggling without a trail. Toggles wait
+        // for the recovery gate: while the full history scan is pending or
+        // has failed, every toggle fail-closes for a retryable next enable.
+        java.util.UUID bypassProcess = java.util.UUID.randomUUID();
+        java.util.concurrent.CompletableFuture<Void> bypassRecoveryGate =
+                new java.util.concurrent.CompletableFuture<>();
+        com.smile.chunkland.command.AdminBypassLifecycle bypassLifecycle =
+                new com.smile.chunkland.command.AdminBypassLifecycle();
+        AdminBypassCommandHandler bypassHandler = buildGatedBypassHandler(
+                auditReads, this.adminBypassStates, buildPlayerScheduler(this),
+                bypassProcess, bypassRecoveryGate, bypassLifecycle);
+        this.bypassHandler = bypassHandler;
+        this.bypassProcess = bypassProcess;
+        this.bypassRecoveryGate = bypassRecoveryGate;
+        this.bypassLifecycle = bypassLifecycle;
+        landHandlers.put("bypass", bypassHandler == null
+                ? (sender, args, sink) -> sink.reply("command.land.bypass.failed",
+                        Map.of("reason", "bypass.unavailable"))
+                : bypassHandler);
+        // Bypass audit recovery: each enable starts with a fresh off memory
+        // and a unique process id, so open attempts from crashed generations
+        // are aborted without ever touching current-generation writes. The
+        // full paged scan runs async; the gate opens only on success and
+        // stays closed (retryable next enable) on failure.
+        triggerBypassRecovery(auditReads, bypassProcess, bypassRecoveryGate, bypassLifecycle);
         this.landCommand = new LandCommand(
                 landHandlers, null, landGateResolver);
         // Wand safety listener: native Bukkit listener for selection wand protection.
@@ -1992,6 +2051,127 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Builds the {@code /land bypass} toggle over the shared audit history
+     * and the enable-generation bypass memory. Every attempt appends one
+     * row before flipping the actor-scoped state, then one terminal with
+     * the same attempt id; a null audit source, memory or scheduler keeps
+     * the slot fail-closed instead of running half-wired. Assembly failures
+     * degrade to null the same way.
+     */
+    static AdminBypassCommandHandler buildBypassHandler(
+            com.smile.chunkland.persistence.AuditRepository audits,
+            AdminBypassState states,
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
+        if (audits == null || states == null || scheduler == null) {
+            return null;
+        }
+        try {
+            return new AdminBypassCommandHandler(() -> audits,
+                    Clock.systemUTC()::instant, states, scheduler);
+        } catch (RuntimeException failure) {
+            return null;
+        }
+    }
+
+    /**
+     * Builds the gated bypass toggle for one enable generation: toggles
+     * stay fail-closed until the recovery gate completes normally. Late
+     * callbacks additionally stop once the shared lifecycle closes.
+     */
+    static AdminBypassCommandHandler buildGatedBypassHandler(
+            com.smile.chunkland.persistence.AuditRepository audits,
+            AdminBypassState states,
+            com.smile.chunkland.command.PlayerScheduler scheduler,
+            java.util.UUID processGeneration,
+            java.util.concurrent.CompletableFuture<Void> recoveryGate,
+            com.smile.chunkland.command.AdminBypassLifecycle lifecycle) {
+        if (audits == null || states == null || scheduler == null
+                || processGeneration == null || recoveryGate == null) {
+            return null;
+        }
+        try {
+            return new AdminBypassCommandHandler(() -> audits,
+                    Clock.systemUTC()::instant, states, scheduler,
+                    processGeneration, recoveryGate, lifecycle);
+        } catch (RuntimeException failure) {
+            return null;
+        }
+    }
+
+    /**
+     * Builds the gated bypass toggle for one enable generation: toggles
+     * stay fail-closed until the recovery gate completes normally.
+     */
+    static AdminBypassCommandHandler buildGatedBypassHandler(
+            com.smile.chunkland.persistence.AuditRepository audits,
+            AdminBypassState states,
+            com.smile.chunkland.command.PlayerScheduler scheduler,
+            java.util.UUID processGeneration,
+            java.util.concurrent.CompletableFuture<Void> recoveryGate) {
+        return buildGatedBypassHandler(
+                audits, states, scheduler, processGeneration, recoveryGate, null);
+    }
+
+    /**
+     * Fires the full paged bypass audit recovery without blocking enable.
+     * The gate opens only on success; on failure it completes
+     * exceptionally so toggles stay fail-closed and open attempts stay
+     * retryable on the next enable.
+     */
+    private void triggerBypassRecovery(com.smile.chunkland.persistence.AuditRepository audits,
+            java.util.UUID processGeneration,
+            java.util.concurrent.CompletableFuture<Void> gate,
+            com.smile.chunkland.command.AdminBypassLifecycle lifecycle) {
+        final com.smile.chunkland.persistence.AuditRepository snapshot = audits;
+        final java.util.UUID process = processGeneration;
+        final java.util.concurrent.CompletableFuture<Void> recoveryGate = gate;
+        final com.smile.chunkland.command.AdminBypassLifecycle token = lifecycle;
+        try {
+            AdminBypassRecovery.recover(() -> snapshot, Clock.systemUTC()::instant,
+                    AdminBypassRecovery.PAGE_SIZE, process, token).whenComplete((result, failure) -> {
+                try {
+                    if (failure != null) {
+                        getLogger().warning("ChunkLand bypass audit recovery failed; "
+                                + "toggles stay fail-closed and open attempts stay retryable "
+                                + "on the next enable: " + failure);
+                        recoveryGate.completeExceptionally(failure instanceof RuntimeException runtime
+                                ? runtime
+                                : new IllegalStateException(failure));
+                    } else if (result.failedAttemptIds().isEmpty()) {
+                        if (result.openFound() > 0) {
+                            getLogger().info("ChunkLand bypass audit recovery aborted "
+                                    + result.abortedWritten() + "/" + result.openFound()
+                                    + " open attempts.");
+                        }
+                        recoveryGate.complete(null);
+                    } else {
+                        getLogger().warning("ChunkLand bypass audit recovery partially failed; "
+                                + "toggles stay fail-closed and "
+                                + result.failedAttemptIds().size()
+                                + " open attempts stay retryable on the next enable.");
+                        recoveryGate.completeExceptionally(new IllegalStateException(
+                                "bypass recovery left " + result.failedAttemptIds().size()
+                                        + " open attempts unwritten"));
+                    }
+                } catch (RuntimeException ignored) {
+                    try {
+                        recoveryGate.completeExceptionally(ignored);
+                    } catch (RuntimeException nested) {
+                    }
+                }
+            });
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand bypass audit recovery failed to start; "
+                    + "toggles stay fail-closed and open attempts stay retryable "
+                    + "on the next enable: " + failure);
+            try {
+                recoveryGate.completeExceptionally(failure);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    /**
      * Builds the orphan-world handler over the claim bootstrap store,
      * rebuilder and versioned catalog guard. The guard snapshot is taken on
      * the command thread only, and the rebuilder refreshes the runtime after
@@ -2083,11 +2263,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Supplier<Optional<ExternalLimitProvider>> limitProviders,
             OfflinePlayerResolver players,
             com.smile.chunkland.command.PlayerScheduler scheduler) {
+        return buildInspectHandler(store, providers, configs, limitProviders,
+                players, scheduler, null);
+    }
+
+    static InspectCommandHandler buildInspectHandler(LandRegistryStore store,
+            Supplier<PermissionContextProvider> providers,
+            Supplier<ChunkLandConfig> configs,
+            Supplier<Optional<ExternalLimitProvider>> limitProviders,
+            OfflinePlayerResolver players,
+            com.smile.chunkland.command.PlayerScheduler scheduler,
+            java.util.function.Function<UUID, Boolean> bypassStates) {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
         Supplier<PermissionContextProvider> activeProviders = providers == null
                 ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
         return new InspectCommandHandler(active::snapshot, activeProviders,
-                buildInspectLimits(configs, limitProviders), players, scheduler);
+                buildInspectLimits(configs, limitProviders), players, scheduler, bypassStates);
     }
 
     /**
@@ -2317,10 +2508,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
      */
     static ExplainCommandHandler buildExplainHandler(LandRegistryStore store,
             Supplier<PermissionContextProvider> providers) {
+        return buildExplainHandler(store, providers, null);
+    }
+
+    static ExplainCommandHandler buildExplainHandler(LandRegistryStore store,
+            Supplier<PermissionContextProvider> providers,
+            java.util.function.Function<UUID, Boolean> bypassStates) {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
         Supplier<PermissionContextProvider> activeProviders = providers == null
                 ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
-        return new ExplainCommandHandler(active::snapshot, activeProviders);
+        return new ExplainCommandHandler(active::snapshot, activeProviders, bypassStates);
     }
 
     /**
@@ -2338,8 +2535,30 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 ? new LandRegistryStore() : this.protectionStore;
         ManagementGateResolver resolver = buildManagementGateResolver(
                 store, activeProviders,
-                PluginManagementGateResolver.TargetLandResolver.currentLocation());
+                PluginManagementGateResolver.TargetLandResolver.currentLocation(),
+                adminBypassLookup());
         return new ManageGuiCommandHandler(resolver, this::openManagementGuiOnRegion);
+    }
+
+    /**
+     * Shared per-enable bypass lookup for every management gate seam. Reads
+     * the enable-generation memory for one actor UUID; a missing memory, a
+     * null actor or any failure resolves to {@code false} (fail-closed).
+     * The bypass permission node is never consulted here: only an explicit
+     * audited toggle flips the flag, so holding the node alone authorises
+     * nothing.
+     */
+    java.util.function.Function<UUID, Boolean> adminBypassLookup() {
+        return uuid -> readAdminBypass(uuid);
+    }
+
+    private boolean readAdminBypass(UUID actor) {
+        try {
+            AdminBypassState states = this.adminBypassStates;
+            return states != null && actor != null && states.isOn(actor);
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
     }
 
     /**
@@ -3764,11 +3983,23 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * state yet and resolves to {@code false}.
      */
     static ManagementGateResolver buildManagementGateResolver(LandRegistryStore store) {
+        return buildManagementGateResolver(store, null);
+    }
+
+    /**
+     * Production resolver with an explicit bypass source, so the command
+     * dispatcher, the GUI entry, the Bedrock branch and the fail-closed
+     * fallback all read the same per-enable bypass memory. A {@code null}
+     * source keeps the legacy fail-closed behaviour.
+     */
+    static ManagementGateResolver buildManagementGateResolver(LandRegistryStore store,
+            java.util.function.Function<UUID, Boolean> bypassStates) {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
         return new PluginManagementGateResolver(
                 active::snapshot,
                 () -> new SnapshotPermissionContextProvider(LandRuleService.defaults(), null),
-                PluginManagementGateResolver.TargetLandResolver.currentLocation());
+                PluginManagementGateResolver.TargetLandResolver.currentLocation(),
+                bypassStates);
     }
 
     /**
@@ -3779,11 +4010,25 @@ public final class ChunkLandPlugin extends JavaPlugin {
             LandRegistryStore store,
             java.util.function.Supplier<PermissionContextProvider> providers,
             PluginManagementGateResolver.TargetLandResolver targets) {
+        return buildManagementGateResolver(store, providers, targets, null);
+    }
+
+    /**
+     * Production resolver with explicit sources and an explicit bypass
+     * source, so tests can inject a snapshot, provider, target and bypass
+     * memory without starting a server.
+     */
+    static ManagementGateResolver buildManagementGateResolver(
+            LandRegistryStore store,
+            java.util.function.Supplier<PermissionContextProvider> providers,
+            PluginManagementGateResolver.TargetLandResolver targets,
+            java.util.function.Function<UUID, Boolean> bypassStates) {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
         return new PluginManagementGateResolver(
                 active::snapshot,
                 providers == null ? () -> new SnapshotPermissionContextProvider(null, null) : providers,
-                targets);
+                targets,
+                bypassStates);
     }
 
     /**
@@ -4184,6 +4429,38 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         }
         this.decisionCache = null;
+        // Bypass lifecycle: close the generation first so late handler and
+        // recovery callbacks stop before any further audit or state
+        // mutation, fail any still-pending recovery gate, then drop the
+        // memory so the next enable starts with every actor off. Clearing
+        // comes before nulling so a concurrent reader observes either the
+        // old memory or empty, never a half-cleared set reused later.
+        try {
+            com.smile.chunkland.command.AdminBypassLifecycle token = this.bypassLifecycle;
+            if (token != null) {
+                token.close();
+            }
+        } catch (RuntimeException ignored) {
+        }
+        try {
+            java.util.concurrent.CompletableFuture<Void> gate = this.bypassRecoveryGate;
+            if (gate != null && !gate.isDone()) {
+                gate.completeExceptionally(new IllegalStateException("disabled"));
+            }
+        } catch (RuntimeException ignored) {
+        }
+        this.bypassHandler = null;
+        this.bypassProcess = null;
+        this.bypassRecoveryGate = null;
+        this.bypassLifecycle = null;
+        AdminBypassState bypass = this.adminBypassStates;
+        if (bypass != null) {
+            try {
+                bypass.clear();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        this.adminBypassStates = null;
         if (selectionLifecycleListener != null) {
             try {
                 HandlerList.unregisterAll(selectionLifecycleListener);
@@ -4369,19 +4646,44 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 // production dispatch with a production resolver when the store
                 // survived, otherwise with no resolver (management denies
                 // either way). The claim slot stays fail-safe without a saga.
+                // The fallback resolver reads the same per-enable bypass
+                // memory, and the bypass slot keeps its audit-first toggle
+                // when the audit store survived, else stays fail-closed.
                 LandRegistryStore store = this.protectionStore;
                 ManagementGateResolver resolver =
-                        store == null ? null : buildManagementGateResolver(store);
+                        store == null ? null : buildManagementGateResolver(store, adminBypassLookup());
                 SelectionSessionManager selections = this.selectionSessionManager;
                 Map<String, LandCommand.Handler> handlers = selections == null
                         ? LandCommand.defaultStubHandlers()
                         : buildLandHandlers(selections, null);
-                cmd = new LandCommand(handlers, null, resolver);
+                Map<String, LandCommand.Handler> fallbackHandlers = new HashMap<>(handlers);
+                fallbackHandlers.put("bypass", fallbackBypassHandler());
+                cmd = new LandCommand(fallbackHandlers, null, resolver);
             }
             ChunkLandMessagePipeline pipeline = this.landMessagePipeline.orElse(null);
             return cmd.dispatch(sender, args, pipeline);
         }
         return false;
+    }
+
+    /**
+     * Bypass toggle for the fail-closed command fallback: reuses the
+     * current enable's gated handler, so the recovery gate and lifecycle
+     * still apply when the cached command is gone. Without a stored
+     * handler only replies unavailable. Never throws and never toggles
+     * without a trail.
+     */
+    LandCommand.Handler fallbackBypassHandler() {
+        try {
+            AdminBypassCommandHandler handler = this.bypassHandler;
+            if (handler != null) {
+                return handler;
+            }
+        } catch (RuntimeException ignored) {
+            // Fall through to the fail-closed slot below.
+        }
+        return (sender, args, sink) -> sink.reply("command.land.bypass.failed",
+                Map.of("reason", "bypass.unavailable"));
     }
 
     @Override
