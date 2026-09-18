@@ -313,6 +313,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ClaimStartupBootstrap claimStartup;
     private OrphanWorldGuard orphanWorldGuard;
     private OrphanWorldCatalogListener orphanCatalogListener;
+    private GuiClickListener guiClickListener;
     private ClaimSaga claimSaga;
     private ExpandSaga expandSaga;
     private ShrinkSaga shrinkSaga;
@@ -1200,6 +1201,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         + catalogListenerFailure.getMessage());
                 orphanGuard.invalidate();
                 this.orphanCatalogListener = null;
+            }
+            try {
+                this.guiClickListener = new GuiClickListener(() -> this.guiNavigator);
+                registerGuiClickListener(this.guiClickListener);
+            } catch (RuntimeException clickListenerFailure) {
+                getLogger().warning("ChunkLand GUI click listener registration failed; "
+                        + "management GUI buttons stay unresponsive: "
+                        + clickListenerFailure.getMessage());
+                this.guiClickListener = null;
             }
         } catch (RuntimeException ex) {
             getLogger().warning("ChunkLand wand safety listener registration failed; disabling plugin: " + ex.getMessage());
@@ -2423,10 +2433,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * Builds the caller-owned hop back to a player's Folia thread for async
      * command continuations. The returned seam only bridges through
      * {@code player.getScheduler().run} — the same pattern as
-     * {@link #openManagementGuiOnRegion} — and drops the continuation
-     * fail-closed when the scheduler is retired or the player is gone, so a
-     * resolver-executor thread never touches a {@code Player}, a reply sink
-     * or any other Bukkit sender API directly.
+     * {@link #openManagementGuiOnRegion}. When the hop itself cannot be
+     * scheduled (retired scheduler, departed player, or a null scheduler
+     * handle) the failure is reported to the caller, which owns fail-closed
+     * handling: the audited bypass toggle falls back to its single inline
+     * reply, while read-only paths drop the reply. A resolver-executor
+     * thread still never touches a {@code Player}, a reply sink or any other
+     * Bukkit sender API directly on the success path.
      */
     static com.smile.chunkland.command.PlayerScheduler buildPlayerScheduler(
             org.bukkit.plugin.java.JavaPlugin plugin) {
@@ -2434,16 +2447,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return (player, task) -> {
             Objects.requireNonNull(player, "player");
             Objects.requireNonNull(task, "task");
-            try {
-                player.getScheduler().run(plugin, scheduled -> {
-                    try {
-                        task.run();
-                    } catch (RuntimeException ignored) {
-                        // Player-thread continuation must never escape.
-                    }
-                }, null);
-            } catch (RuntimeException retired) {
-                // Retired scheduler or departed player: drop fail-closed.
+            io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduled =
+                    player.getScheduler().run(plugin, started -> {
+                        try {
+                            task.run();
+                        } catch (RuntimeException ignored) {
+                            // Player-thread continuation must never escape.
+                        }
+                    }, null);
+            if (scheduled == null) {
+                throw new IllegalStateException("player scheduler retired");
             }
         };
     }
@@ -4137,6 +4150,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(listener, this);
     }
 
+    void registerGuiClickListener(GuiClickListener listener) {
+        getServer().getPluginManager().registerEvents(listener, this);
+    }
+
     /**
      * Production wand listener: safety cancelling plus corner selection on
      * the live session registry. Public so tests drive the same assembly
@@ -4511,6 +4528,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
             } catch (RuntimeException ignored) {
             }
             enterLeaveListener = null;
+        }
+        // GUI click bridge: unregister first so no click repopulates routing
+        // after the navigator below is closed and cleared.
+        if (guiClickListener != null) {
+            try {
+                HandlerList.unregisterAll(guiClickListener);
+            } catch (RuntimeException ignored) {
+            }
+            guiClickListener = null;
         }
         if (enterLeaveTracker != null) {
             try {

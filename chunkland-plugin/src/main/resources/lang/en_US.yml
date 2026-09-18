@@ -160,8 +160,8 @@ command:
     bypass:
       console: "<red>Only players can toggle admin bypass.</red>"
       usage: "<yellow>Usage: /land bypass [on|off]</yellow>"
-      on: "<green>Admin bypass enabled.</green>"
-      off: "<gray>Admin bypass disabled.</gray>"
+      "on": "<green>Admin bypass enabled.</green>"
+      "off": "<gray>Admin bypass disabled.</gray>"
       failed: "<red>Admin bypass toggle failed: <reason>.</red>"
     admin:
       ledger:

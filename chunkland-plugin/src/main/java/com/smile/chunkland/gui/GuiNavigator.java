@@ -28,6 +28,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * player-plus-generation identity. Both are idempotent. Cleanup never calls
  * the provider-wide shutdown: the service is shared with other plugins.</p>
  *
+ * <p>Paging over a live session: the upstream service holds at most one
+ * active session per player, so opening a second page while the previous one
+ * is still live is rejected with {@code SESSION_EXISTS}. Every navigation
+ * entry ({@link #open(UUID, GuiPage)}, {@link #push(UUID, GuiPage)},
+ * {@link #back(UUID)} and {@link #replace(UUID, GuiPage)}) therefore retries
+ * once through a close-then-reopen rollover: the tracked live session is
+ * closed with its exact player-plus-generation identity and the next page is
+ * opened once. A failed reopen keeps the failure fail-closed and restores
+ * the tracked stack; untracked players never trigger a close, so a foreign
+ * session is never touched.</p>
+ *
  * <p>Everything runs synchronously on the caller's thread; no scheduler, no
  * background work, no Bukkit access. Callers that need region-scoped Bukkit
  * work inside a button callback must schedule it through their own
@@ -41,6 +52,28 @@ public final class GuiNavigator {
 
     private final GuiService guiService;
     private final ConcurrentHashMap<UUID, Deque<Frame>> stacks = new ConcurrentHashMap<>();
+
+    /**
+     * Wire value the upstream service reports in {@link GuiResult#errorCode()}
+     * when the clicked slot is protected. It mirrors the public
+     * {@code SLOT_PROTECTED} error code constant shipped in the AceLib GUI
+     * package (verified against the release jar: the protected-slot branch of
+     * {@code validateClick} rejects with exactly this code). Only
+     * {@link GuiResult} public API is used here; no AceLib implementation
+     * type is referenced.
+     */
+    private static final String SLOT_PROTECTED_CODE = "ACELIB-GUI-010";
+
+    /**
+     * Wire value the upstream service reports in {@link GuiResult#errorCode()}
+     * when a second page is opened while the player still holds an active
+     * session. It mirrors the public {@code SESSION_EXISTS} error code
+     * constant shipped in the AceLib GUI package (verified against the
+     * release jar: the already-open branch of {@code openInventory} rejects
+     * with exactly this code). Only {@link GuiResult} public API is used
+     * here; no AceLib implementation type is referenced.
+     */
+    private static final String SESSION_EXISTS_CODE = "ACELIB-GUI-009";
 
     /**
      * @param guiService upstream service; may be {@code null}, in which case
@@ -57,7 +90,9 @@ public final class GuiNavigator {
 
     /**
      * Open {@code page} as the player's only screen, replacing any tracked
-     * stack. A failed open leaves the previous stack untouched.
+     * stack. A failed open leaves the previous stack untouched. When the
+     * player still holds the tracked live session the upstream rejects the
+     * open, so the live session is closed first and the open retried once.
      *
      * @return the authoritative upstream generation, or empty on any failure
      */
@@ -65,7 +100,7 @@ public final class GuiNavigator {
         if (playerUuid == null || page == null || guiService == null) {
             return Optional.empty();
         }
-        Optional<Long> generation = openUpstream(playerUuid, page);
+        Optional<Long> generation = openReplacingLiveSession(playerUuid, page, peekTop(playerUuid));
         if (generation.isEmpty()) {
             return Optional.empty();
         }
@@ -78,7 +113,9 @@ public final class GuiNavigator {
     }
 
     /**
-     * Open {@code page} on top of the player's current stack.
+     * Open {@code page} on top of the player's current stack. When the
+     * player still holds the tracked live session the upstream rejects the
+     * open, so the live session is closed first and the open retried once.
      *
      * @return the authoritative upstream generation, or empty on any failure
      *     (the existing stack is kept in that case)
@@ -87,7 +124,7 @@ public final class GuiNavigator {
         if (playerUuid == null || page == null || guiService == null) {
             return Optional.empty();
         }
-        Optional<Long> generation = openUpstream(playerUuid, page);
+        Optional<Long> generation = openReplacingLiveSession(playerUuid, page, peekTop(playerUuid));
         if (generation.isEmpty()) {
             return Optional.empty();
         }
@@ -99,7 +136,9 @@ public final class GuiNavigator {
     }
 
     /**
-     * Go back to the previous page. A failed re-open restores the popped
+     * Go back to the previous page. The live session popped off the top is
+     * closed first when the upstream still holds it, then the previous page
+     * is re-opened. A failed re-open restores the popped
      * frame and reports {@code false}. When the player sits on the first
      * (or no) page the session is closed instead and {@code false} is
      * returned.
@@ -129,7 +168,7 @@ public final class GuiNavigator {
             close(playerUuid);
             return false;
         }
-        Optional<Long> generation = openUpstream(playerUuid, previous);
+        Optional<Long> generation = openReplacingLiveSession(playerUuid, previous, popped);
         synchronized (stack) {
             if (generation.isPresent()) {
                 // Swap the stale previous frame for the re-opened one: the
@@ -148,8 +187,9 @@ public final class GuiNavigator {
 
     /**
      * Swap the top page for {@code page}, keeping the rest of the stack. An
-     * empty stack behaves like {@link #open(UUID, GuiPage)}; a failed open
-     * restores the previous top.
+     * empty stack behaves like {@link #open(UUID, GuiPage)}; the live top
+     * session is closed first when the upstream still holds it, then the
+     * replacement is opened. A failed open restores the previous top.
      *
      * @return the authoritative upstream generation, or empty on any failure
      */
@@ -171,7 +211,7 @@ public final class GuiNavigator {
         if (top == null) {
             return open(playerUuid, page);
         }
-        Optional<Long> generation = openUpstream(playerUuid, page);
+        Optional<Long> generation = openReplacingLiveSession(playerUuid, page, top);
         synchronized (stack) {
             if (generation.isPresent()) {
                 stack.push(new Frame(page, generation.orElseThrow()));
@@ -223,11 +263,18 @@ public final class GuiNavigator {
     }
 
     /**
-     * Dispatch one click. The upstream validation runs first; only an
-     * accepted click whose generation still matches the tracked top frame and
-     * whose slot carries a binding reaches its callback. Everything else is
-     * dropped silently. A throwing callback is absorbed so dispatch stays
-     * contained.
+     * Dispatch one click. The upstream validation runs first; an accepted
+     * click, or a click rejected only as a protected slot, whose generation
+     * still matches the tracked top frame and whose slot carries a binding
+     * reaches its callback. Everything else is dropped silently. A throwing
+     * callback is absorbed so dispatch stays contained.
+     *
+     * <p>A bound button always travels as a protected slot
+     * ({@link GuiPage#toArgument(UUID)}), so production reports the real
+     * button click as a {@code SLOT_PROTECTED} rejection — the upstream
+     * internal listener already cancelled it in the inventory view. The
+     * page binding stays the authority: a protected rejection without a
+     * binding for that exact slot is still dropped.</p>
      */
     public void handleClick(UUID playerUuid, long generation, int slot) {
         if (playerUuid == null || guiService == null) {
@@ -239,7 +286,7 @@ public final class GuiNavigator {
         } catch (RuntimeException ignored) {
             return;
         }
-        if (!isClickAccepted(validation)) {
+        if (!isClickAccepted(validation) && !isProtectedSlotRejection(validation)) {
             return;
         }
         Deque<Frame> stack = stacks.get(playerUuid);
@@ -320,12 +367,55 @@ public final class GuiNavigator {
     }
 
     private Optional<Long> openUpstream(UUID playerUuid, GuiPage page) {
-        GuiResult result;
-        try {
-            result = guiService.openInventory(page.toArgument(playerUuid));
-        } catch (RuntimeException ignored) {
+        return generationOf(playerUuid, tryOpenUpstream(playerUuid, page));
+    }
+
+    /**
+     * Open {@code page}, rolling over the tracked {@code live} session when
+     * the upstream still holds it. The first attempt goes out as-is; only an
+     * explicit {@code SESSION_EXISTS} rejection with a tracked live frame
+     * triggers one best-effort close of that exact player-plus-generation
+     * identity followed by a single reopen. Any other failure — including a
+     * failed reopen — stays fail-closed with no further upstream calls, and
+     * callers restore their tracked stack. A {@code null} live frame never
+     * triggers a close, so a session owned by another plugin is never
+     * touched.
+     */
+    private Optional<Long> openReplacingLiveSession(UUID playerUuid, GuiPage page, Frame live) {
+        GuiResult first = tryOpenUpstream(playerUuid, page);
+        Optional<Long> generation = generationOf(playerUuid, first);
+        if (generation.isPresent()) {
+            return generation;
+        }
+        if (live == null || !isSessionExistsRejection(first)) {
             return Optional.empty();
         }
+        closeUpstream(playerUuid, live);
+        return generationOf(playerUuid, tryOpenUpstream(playerUuid, page));
+    }
+
+    /** @return the player's tracked top frame, or {@code null} when untracked. */
+    private Frame peekTop(UUID playerUuid) {
+        Deque<Frame> stack = stacks.get(playerUuid);
+        if (stack == null) {
+            return null;
+        }
+        synchronized (stack) {
+            return stack.peek();
+        }
+    }
+
+    /** Raw upstream open; a throwing service reads as {@code null}. */
+    private GuiResult tryOpenUpstream(UUID playerUuid, GuiPage page) {
+        try {
+            return guiService.openInventory(page.toArgument(playerUuid));
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    /** Authoritative generation from a raw upstream result, or empty. */
+    private static Optional<Long> generationOf(UUID playerUuid, GuiResult result) {
         GuiSession session = result == null ? null : result.session();
         if (result == null || session == null || !playerUuid.equals(session.playerUuid())) {
             return Optional.empty();
@@ -334,6 +424,16 @@ public final class GuiNavigator {
             return Optional.empty();
         }
         return Optional.of(session.generation());
+    }
+
+    /**
+     * @return true only when the upstream rejected the open solely because
+     *     the player still holds an active session. Any other rejection
+     *     stays fail-closed without a close attempt.
+     */
+    private static boolean isSessionExistsRejection(GuiResult result) {
+        return result != null && result.isRejected()
+            && SESSION_EXISTS_CODE.equals(result.errorCode());
     }
 
     private void closeUpstream(UUID playerUuid, Frame top) {
@@ -350,5 +450,15 @@ public final class GuiNavigator {
     private static boolean isClickAccepted(GuiResult validation) {
         return validation != null
             && (validation.isAllowed() || validation.isAccepted() || validation.isSuccess());
+    }
+
+    /**
+     * @return true only when the upstream rejected the click solely because
+     *     the slot is protected. Any other rejection (unknown session, stale
+     *     generation, out-of-range slot) stays fail-closed.
+     */
+    private static boolean isProtectedSlotRejection(GuiResult validation) {
+        return validation != null && validation.isRejected()
+            && SLOT_PROTECTED_CODE.equals(validation.errorCode());
     }
 }

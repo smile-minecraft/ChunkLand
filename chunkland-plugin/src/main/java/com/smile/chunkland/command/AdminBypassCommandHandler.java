@@ -1269,7 +1269,18 @@ public final class AdminBypassCommandHandler implements LandCommand.Handler {
                 }
             });
         } catch (RuntimeException dropped) {
-            // A retired scheduler drops the reply; the audited toggle stands.
+            // The player-thread hop itself cannot be scheduled (retired
+            // scheduler, departed player): fall back to one inline attempt so
+            // every audited terminal still replies exactly once. The outlet
+            // stays fail-closed (offline stays silent, unsafe stays silent),
+            // and audit plus state already settled, so no invariant is moved.
+            // The success path still hops first; this only runs when the hop
+            // cannot be scheduled at all.
+            try {
+                sink.reply(key, vars, locale);
+            } catch (RuntimeException ignored) {
+                // A broken fallback outlet stays silent; the toggle already landed.
+            }
         }
     }
 }

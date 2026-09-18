@@ -160,8 +160,8 @@ command:
     bypass:
       console: "<red>只有玩家可以切換管理員豁免。</red>"
       usage: "<yellow>用法：/land bypass [on|off]</yellow>"
-      on: "<green>管理員豁免已啟用。</green>"
-      off: "<gray>管理員豁免已停用。</gray>"
+      "on": "<green>管理員豁免已啟用。</green>"
+      "off": "<gray>管理員豁免已停用。</gray>"
       failed: "<red>管理員豁免切換失敗：<reason>。</red>"
     admin:
       ledger:

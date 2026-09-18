@@ -6,8 +6,9 @@ import java.util.UUID;
 /**
  * Validated click delivered to a {@link GuiAction}. The generation is the one
  * the upstream session authority issued at open time; the navigator only
- * builds this context after {@code validateClick} accepted the click and the
- * tracked top frame still carries the same generation.
+ * builds this context after {@code validateClick} accepted the click — or
+ * reported it as a bound protected slot — and the tracked top frame still
+ * carries the same generation.
  *
  * @param playerUuid clicked player; never {@code null}
  * @param generation upstream session generation the click was validated against

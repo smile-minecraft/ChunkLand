@@ -1,6 +1,7 @@
 package com.smile.chunkland.gui;
 
 import com.smile.acelib.gui.GuiArgument;
+import com.smile.acelib.gui.GuiErrorCode;
 import com.smile.acelib.gui.GuiResult;
 import com.smile.acelib.gui.GuiService;
 import com.smile.acelib.gui.GuiSession;
@@ -15,8 +16,15 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Deterministic in-memory {@link GuiService} stand-in for framework tests.
  * Generations are issued from a local counter so every open is observable;
- * validation mirrors the production contract (unknown player or generation
- * mismatch is rejected, never throws). No threads, no sleeps.
+ * validation mirrors the production contract: unknown player or generation
+ * mismatch is rejected, an out-of-range slot is rejected, a protected slot
+ * is rejected with {@link GuiErrorCode#SLOT_PROTECTED} (the upstream
+ * internal listener cancels those clicks, so they never arrive as
+ * {@code allowed}), and only an in-range unprotected slot is allowed.
+ * A second open while the player still holds an active session is rejected
+ * with {@link GuiErrorCode#SESSION_EXISTS}, matching production: callers
+ * must close the live session before opening the next page.
+ * No threads, no sleeps.
  */
 final class FakeGuiService implements GuiService {
 
@@ -74,6 +82,9 @@ final class FakeGuiService implements GuiService {
         if (arg != null) {
             openedArgs.add(arg);
         }
+        if (arg != null && arg.playerUuid() != null && active.containsKey(arg.playerUuid())) {
+            return GuiResult.rejected(GuiErrorCode.SESSION_EXISTS, "already has an active session");
+        }
         if (rejectNextOpen) {
             rejectNextOpen = false;
             return GuiResult.rejected("SESSION_EXISTS", "occupied by fake");
@@ -122,10 +133,21 @@ final class FakeGuiService implements GuiService {
             return GuiResult.rejected("CLICK_REJECTED", "rejected by fake");
         }
         GuiSession current = active.get(uuid);
-        if (current != null && current.generation() == generation) {
-            return GuiResult.allowed(current);
+        if (current == null) {
+            return GuiResult.rejected(GuiErrorCode.SESSION_NOT_FOUND, "no active session");
         }
-        return GuiResult.rejected("GENERATION_MISMATCH", "stale click");
+        if (current.generation() != generation) {
+            return GuiResult.rejected(GuiErrorCode.GENERATION_MISMATCH, "stale click");
+        }
+        if (slot < 0 || slot >= current.size()) {
+            return GuiResult.rejected(GuiErrorCode.INVALID_INPUT,
+                "slot " + slot + " is outside session size " + current.size());
+        }
+        if (current.protectedSlots().contains(slot)) {
+            return GuiResult.rejected(GuiErrorCode.SLOT_PROTECTED,
+                "slot " + slot + " is protected");
+        }
+        return GuiResult.allowed(current);
     }
 
     @Override
