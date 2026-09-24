@@ -100,8 +100,14 @@ worlds:
   world_the_end:
     claim-enabled: false
 
-# Permission world/global defaults (Direct Trust foundation).
+# 權限的世界／全域預設（Direct Trust 基礎）。
 #
+# 對齊企劃 §28：ENTRY 預設為 ALLOW，讓未受 ban 的陌生人可進入已載入領地。
+# ban 仍在 landBindings 層以 DENY 優先；landAuth 未載入或不可驗證時維持 fail-closed。
+subject-defaults:
+  global:
+    ENTRY: ALLOW
+
 # `subject-defaults` answers "may this actor act?" per SUBJECT_PERMISSION
 # action; `rule-defaults` answers "can this mechanic happen here?" per
 # LAND_RULE. The two namespaces are separate typed maps and never fall back
@@ -113,12 +119,6 @@ worlds:
 # defaults and SubLand layers are NOT configured here (no durable source is
 # wired yet) and stay INHERIT.
 #
-#subject-defaults:
-#  global:
-#    BLOCK_BREAK: DENY
-#  worlds:
-#    world:
-#      BLOCK_BREAK: ALLOW
 #rule-defaults:
 #  global:
 #    PVP: DENY

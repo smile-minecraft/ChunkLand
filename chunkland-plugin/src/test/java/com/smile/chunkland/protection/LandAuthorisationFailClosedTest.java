@@ -1,6 +1,7 @@
 package com.smile.chunkland.protection;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -20,7 +21,11 @@ import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
 import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.trust.LandAuthorisationService;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -70,6 +75,20 @@ class LandAuthorisationFailClosedTest {
         return new PermissionDefaultsSnapshot(
                 Map.of(ProtectionActionType.ENTRY, PermissionState.ALLOW),
                 Map.of(), Map.of(), Map.of());
+    }
+
+    private static PermissionDefaultsSnapshot shippedEntryDefaults() {
+        InputStream resource = LandAuthorisationFailClosedTest.class.getResourceAsStream("/config.yml");
+        assertNotNull(resource, "/config.yml must be on the plugin test classpath");
+        try (resource) {
+            ChunkLandConfig config = ConfigSchema.parseYamlText(
+                    new String(resource.readAllBytes(), StandardCharsets.UTF_8));
+            return PermissionDefaultsSnapshot.resolve(config,
+                    name -> Optional.empty(), ignored -> {
+                    });
+        } catch (IOException failure) {
+            throw new UncheckedIOException("failed to read shipped config.yml", failure);
+        }
     }
 
     private static PermissionState decide(LandId land, UUID actor,
@@ -160,6 +179,65 @@ class LandAuthorisationFailClosedTest {
         assertEquals(PermissionState.ALLOW,
                 decideWithRules(land, STRANGER, ProtectionActionType.FIRE_SPREAD, lookup, rules),
                 "land-rule actions stay on their own chain and ignore ban storage validity");
+    }
+
+    @Test
+    void shippedConfigAllowsUnbannedStrangerEntryInLoadedLand() {
+        LandId land = new LandId(UUID.randomUUID());
+        SubjectPermissionLookup lookup = new ConfigSubjectPermissionLookup(
+                LandAuthorisationFailClosedTest::shippedEntryDefaults,
+                LandAuthorisationSnapshot::empty);
+
+        assertEquals(PermissionState.ALLOW,
+                decide(land, STRANGER, ProtectionActionType.ENTRY, lookup),
+                "the shipped ENTRY default must let an unbanned stranger enter a loaded land");
+    }
+
+    @Test
+    void shippedConfigStillDeniesBannedStrangerEntry() {
+        LandId land = new LandId(UUID.randomUUID());
+        LandAuthorisationSnapshot banned = LandAuthorisationSnapshot.copyOf(
+                Map.of(), Map.of(), Map.of(land, Set.of(STRANGER)));
+        SubjectPermissionLookup lookup = new ConfigSubjectPermissionLookup(
+                LandAuthorisationFailClosedTest::shippedEntryDefaults,
+                () -> banned);
+
+        assertEquals(PermissionState.DENY,
+                decide(land, STRANGER, ProtectionActionType.ENTRY, lookup),
+                "the shipped ENTRY default must not override an ENTRY ban");
+    }
+
+    @Test
+    void shippedConfigStillDeniesStrangerWhenLandAuthorisationUnloaded() {
+        LandId land = new LandId(UUID.randomUUID());
+        SubjectPermissionLookup lookup = new ConfigSubjectPermissionLookup(
+                LandAuthorisationFailClosedTest::shippedEntryDefaults,
+                LandAuthorisationSnapshot::unloaded);
+
+        assertEquals(PermissionState.DENY,
+                decide(land, STRANGER, ProtectionActionType.ENTRY, lookup),
+                "the shipped ENTRY default must remain fail-closed while land authorisation is unloaded");
+    }
+
+    @Test
+    void worldEntryDenyOverridesGlobalEntryAllow() {
+        LandId land = new LandId(UUID.randomUUID());
+        ChunkLandConfig config = ConfigSchema.parseYamlText(""
+                + "subject-defaults:\n"
+                + "  global:\n"
+                + "    ENTRY: ALLOW\n"
+                + "  worlds:\n"
+                + "    world:\n"
+                + "      ENTRY: DENY\n");
+        PermissionDefaultsSnapshot defaults = PermissionDefaultsSnapshot.resolve(config,
+                name -> Optional.of("world".equals(name) ? WORLD : null), ignored -> {
+                });
+        SubjectPermissionLookup lookup = new ConfigSubjectPermissionLookup(
+                () -> defaults, LandAuthorisationSnapshot::empty);
+
+        assertEquals(PermissionState.DENY,
+                decide(land, STRANGER, ProtectionActionType.ENTRY, lookup),
+                "a world ENTRY DENY must win over the global ENTRY ALLOW");
     }
 
     @Test
