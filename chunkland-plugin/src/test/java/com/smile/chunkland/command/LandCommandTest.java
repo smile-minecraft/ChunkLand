@@ -250,11 +250,36 @@ class LandCommandTest {
     }
 
     @Test
+    void helpRendersGroupedLinesInBothLocales() throws Exception {
+        for (String tag : new String[]{"en_US", "zh_TW"}) {
+            String template = helpTemplate(tag);
+            String rendered = plain(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().deserialize(template));
+            String[] lines = rendered.split("\\R", -1);
+            assertTrue(lines.length >= 2, tag + " help must render on multiple lines");
+            for (String title : helpGroupTitles(tag)) {
+                assertTrue(rendered.contains(title), tag + " help must include group title " + title);
+            }
+            assertFalse(template.contains("<click:"), tag + " help must not gain click actions");
+        }
+    }
+
+    @Test
+    void helpListsEverySubcommandInBothLocales() throws Exception {
+        for (String tag : new String[]{"en_US", "zh_TW"}) {
+            String rendered = plain(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage()
+                    .deserialize(helpTemplate(tag)));
+            for (String subcommand : LandCommand.SUBCOMMANDS) {
+                assertTrue(rendered.contains(subcommand), tag + " help must list /land " + subcommand);
+            }
+        }
+    }
+
+    @Test
     void unknownSubcommandRoutesToUnknownKey() {
         List<String> keys = new ArrayList<>();
-        Map<String,List<String>> varsCap = new HashMap<>();
+        Map<String,Map<String,Object>> varsCap = new HashMap<>();
         LandCommand cmd = new LandCommand(LandCommand.defaultStubHandlers(), (s,p) -> new ReplySink(){
-            public void reply(String k, Map<String,Object> v){ keys.add(k); varsCap.put(k, new ArrayList<>(v.keySet())); }
+            public void reply(String k, Map<String,Object> v){ keys.add(k); varsCap.put(k, Map.copyOf(v)); }
             public void reply(String k, Map<String,Object> v, Locale l){ keys.add(k); }
         });
         CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
@@ -262,6 +287,7 @@ class LandCommandTest {
         // need perm true for unknown? unknown does not check perm, it directly replies
         assertTrue(cmd.dispatch(sender, new String[]{"foobar"}, null));
         assertTrue(keys.contains("command.land.unknown"));
+        assertEquals(Map.of("subcommand", "foobar"), varsCap.get("command.land.unknown"));
     }
 
     @Test
@@ -457,6 +483,18 @@ class LandCommandTest {
         }
     }
 
+    private static String helpTemplate(String tag) throws Exception {
+        YamlConfiguration cfg = new YamlConfiguration();
+        cfg.load(new File("src/main/resources/lang/" + tag + ".yml"));
+        return cfg.getString("command.land.help");
+    }
+
+    private static String[] helpGroupTitles(String tag) {
+        return "zh_TW".equals(tag)
+                ? new String[]{"領地操作", "權限管理", "查詢", "管理員"}
+                : new String[]{"Land actions", "Permissions", "Queries", "Administration"};
+    }
+
     private static java.util.Set<String> commandLandKeys(String tag) throws Exception {
         YamlConfiguration cfg = new YamlConfiguration();
         cfg.load(new File("src/main/resources/lang/"+tag+".yml"));
@@ -545,6 +583,26 @@ class LandCommandTest {
         assertTrue(comp.isEmpty(), "player failure must not fallback to broadcast component");
         assertEquals(0, cs.broadcastCalls, "must not call broadcast fallback on player failure");
         assertEquals(0, cs.chatCalls);
+    }
+
+    @Test
+    void replySinkBedrockFallbackKeepsGroupedHelpWithoutClick() throws Exception {
+        CountingSender cs = new CountingSender();
+        ChunkLandMessagePipeline pipeline = buildPipeline(true, cs);
+        UUID id = UUID.randomUUID();
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayList<Component> comp = new CopyOnWriteArrayList<>();
+        Player player = playerWithPerms(id, Locale.US, Map.of(), out, comp);
+        PipelineReplySink sink = new PipelineReplySink(player, pipeline);
+
+        sink.reply("command.land.help", Map.of());
+
+        assertEquals(1, cs.chatFallbackCalls);
+        String rendered = plain(cs.lastChat);
+        assertTrue(rendered.contains("\n"), "Bedrock fallback must preserve grouped help lines");
+        assertTrue(rendered.contains("subland"));
+        assertTrue(rendered.contains("admin"));
+        assertNull(cs.lastChat.clickEvent(), "help must not gain click actions");
     }
 
     @Test
