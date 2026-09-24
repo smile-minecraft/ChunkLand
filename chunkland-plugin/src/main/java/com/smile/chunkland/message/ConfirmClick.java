@@ -216,7 +216,7 @@ public final class ConfirmClick {
             current = current.children(rewrittenChildren);
         }
         ClickEvent click = current.clickEvent();
-        if (click != null && isConfirmClick(click.value())) {
+        if (click != null && isConfirmClick(AdventureClickPayload.read(click))) {
             ClickEvent stamped = stampPreservingAction(click, command);
             if (stamped != null) {
                 current = current.clickEvent(stamped);
@@ -241,8 +241,8 @@ public final class ConfirmClick {
         }
         ClickEvent click = current.clickEvent();
         if (click != null
-                && click.action() == ClickEvent.Action.SUGGEST_COMMAND
-                && isDeleteConfirmClick(click.value())) {
+                && AdventureClickPayload.isSuggestCommand(click)
+                && isDeleteConfirmClick(AdventureClickPayload.read(click))) {
             current = current.clickEvent(ClickEvent.suggestCommand(command));
             return new RewriteResult(current, true);
         }
@@ -255,10 +255,10 @@ public final class ConfirmClick {
      * outside run/suggest are left alone (the caller then fails closed).
      */
     private static ClickEvent stampPreservingAction(ClickEvent click, String command) {
-        if (click.action() == ClickEvent.Action.RUN_COMMAND) {
+        if (AdventureClickPayload.isRunCommand(click)) {
             return ClickEvent.runCommand(command);
         }
-        if (click.action() == ClickEvent.Action.SUGGEST_COMMAND) {
+        if (AdventureClickPayload.isSuggestCommand(click)) {
             return ClickEvent.suggestCommand(command);
         }
         return null;

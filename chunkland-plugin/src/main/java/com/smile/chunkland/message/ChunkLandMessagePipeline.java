@@ -335,7 +335,7 @@ public class ChunkLandMessagePipeline {
         }
         ClickEvent click = component.clickEvent();
         if (click != null) {
-            String value = click.value();
+            String value = AdventureClickPayload.read(click);
             if (value != null) {
                 Matcher cm = LEFTOVER_TAG.matcher(value);
                 while (cm.find()) {
