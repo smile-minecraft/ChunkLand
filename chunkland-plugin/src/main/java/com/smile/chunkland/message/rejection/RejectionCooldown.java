@@ -8,6 +8,7 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Per-player, per-action throttle for protection rejection notices.
@@ -19,7 +20,10 @@ import java.util.concurrent.ConcurrentMap;
  *
  * <p>Time comes from an injected {@link SelectionClock} so tests advance a
  * fake clock instead of sleeping the event thread. All state lives in a
- * {@link ConcurrentHashMap}; the event thread never blocks.
+ * {@link ConcurrentHashMap}; each key's check-and-update runs atomically in
+ * {@link ConcurrentMap#compute}, so concurrent denies cannot both acquire the
+ * same send slot. The critical section only reads and writes one in-memory
+ * timestamp; it performs no blocking I/O.
  */
 public final class RejectionCooldown {
 
@@ -56,11 +60,15 @@ public final class RejectionCooldown {
         Instant now = clock.now();
         Objects.requireNonNull(now, "clock must not return null");
         Key key = new Key(playerId, action);
-        Instant previous = lastSent.get(key);
-        if (previous != null && Duration.between(previous, now).compareTo(cooldown) < 0) {
-            return false;
-        }
-        lastSent.put(key, now);
-        return true;
+        AtomicBoolean acquired = new AtomicBoolean();
+        lastSent.compute(key, (ignored, previous) -> {
+            if (previous != null
+                    && Duration.between(previous, now).compareTo(cooldown) < 0) {
+                return previous;
+            }
+            acquired.set(true);
+            return now;
+        });
+        return acquired.get();
     }
 }
