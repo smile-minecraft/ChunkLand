@@ -46,17 +46,27 @@ class SelectionVisualizationGeometryTest {
     }
 
     @Test
-    void singleChunkYieldsFourSegmentsAndEightSamplesPerEdge() {
+    void singleChunkYieldsFourSegmentsAndFivePointColumnsPerSample() {
         SelectionVisualizationGeometry.Frame frame =
                 SelectionVisualizationGeometry.plan(singleChunk(64), GENEROUS, 8.0, 70.0, 8.0);
 
         assertEquals(4, frame.segmentCount());
         assertEquals(false, frame.truncated());
-        assertEquals(32, frame.points().size(), "eight samples on each of four edges doubles the density");
-        for (SelectionVisualizationGeometry.Point point : frame.points()) {
-            assertEquals(68.0, point.y(), "point plane is clamped into the viewer band");
-            assertTrue(point.x() >= 0.0 && point.x() <= 16.0, "x in chunk: " + point);
-            assertTrue(point.z() >= 0.0 && point.z() <= 16.0, "z in chunk: " + point);
+        assertEquals(160, frame.points().size(), "eight samples on each of four edges, five points per column");
+        // Base is 68.0 (point+1 clamped into the viewer band); each sample expands to base-2..base+2.
+        for (int index = 0; index < frame.points().size(); index += 5) {
+            SelectionVisualizationGeometry.Point base = frame.points().get(index + 2);
+            double x = base.x();
+            double z = base.z();
+            assertEquals(68.0, base.y(), "column centre is the unchanged base plane");
+            for (int dy = -2; dy <= 2; dy++) {
+                SelectionVisualizationGeometry.Point columnPoint = frame.points().get(index + dy + 2);
+                assertEquals(x, columnPoint.x(), "column shares x at index " + index);
+                assertEquals(z, columnPoint.z(), "column shares z at index " + index);
+                assertEquals(68.0 + dy, columnPoint.y(), 1e-9, "column spacing is 1.0 covering base+-2");
+            }
+            assertTrue(x >= 0.0 && x <= 16.0, "x in chunk: " + base);
+            assertTrue(z >= 0.0 && z <= 16.0, "z in chunk: " + base);
         }
     }
 
@@ -71,10 +81,10 @@ class SelectionVisualizationGeometryTest {
 
         assertEquals(2, first.segmentCount());
         assertEquals(true, first.truncated());
-        assertEquals(16, first.points().size());
+        assertEquals(80, first.points().size());
         assertEquals(first.points(), second.points());
-        // Sorted order keeps NORTH then EAST: the first sample sits on the north edge (z == 0).
-        SelectionVisualizationGeometry.Point head = first.points().get(0);
+        // Sorted order keeps NORTH then EAST: the first column sits on the north edge (z == 0).
+        SelectionVisualizationGeometry.Point head = first.points().get(2);
         assertEquals(1.0, head.x());
         assertEquals(68.0, head.y());
         assertEquals(0.0, head.z());
@@ -92,7 +102,7 @@ class SelectionVisualizationGeometryTest {
 
         assertEquals(6, frame.segmentCount());
         assertEquals(false, frame.truncated());
-        assertEquals(48, frame.points().size());
+        assertEquals(240, frame.points().size());
     }
 
     @Test
@@ -127,8 +137,10 @@ class SelectionVisualizationGeometryTest {
                 SelectionVisualizationGeometry.plan(chunkOnly, GENEROUS, 8.0, 70.5, 8.0);
 
         assertEquals(4, frame.segmentCount());
-        for (SelectionVisualizationGeometry.Point point : frame.points()) {
-            assertEquals(70.5, point.y());
+        for (int index = 0; index < frame.points().size(); index += 5) {
+            for (int dy = -2; dy <= 2; dy++) {
+                assertEquals(70.5 + dy, frame.points().get(index + dy + 2).y(), 1e-9);
+            }
         }
     }
 
@@ -142,8 +154,11 @@ class SelectionVisualizationGeometryTest {
         SelectionVisualizationGeometry.Frame frame =
                 SelectionVisualizationGeometry.plan(level, GENEROUS, 8.0, 70.0, 8.0);
 
-        for (SelectionVisualizationGeometry.Point point : frame.points()) {
-            assertEquals(70.0, point.y(), "point+1 inside the band is kept unchanged");
+        for (int index = 0; index < frame.points().size(); index += 5) {
+            for (int dy = -2; dy <= 2; dy++) {
+                assertEquals(70.0 + dy, frame.points().get(index + dy + 2).y(), 1e-9,
+                        "point+1 inside the band stays the column centre");
+            }
         }
     }
 
@@ -153,8 +168,11 @@ class SelectionVisualizationGeometryTest {
                 SelectionVisualizationGeometry.plan(singleChunk(10), GENEROUS, 8.0, 70.0, 8.0);
 
         double expected = 70.0 - SelectionVisualizationGeometry.PLANE_BELOW_VIEWER;
-        for (SelectionVisualizationGeometry.Point point : frame.points()) {
-            assertEquals(expected, point.y(), "a cave click must not drop the plane out of sight");
+        for (int index = 0; index < frame.points().size(); index += 5) {
+            for (int dy = -2; dy <= 2; dy++) {
+                assertEquals(expected + dy, frame.points().get(index + dy + 2).y(), 1e-9,
+                        "a cave click must not drop the column out of sight");
+            }
         }
     }
 
@@ -164,8 +182,11 @@ class SelectionVisualizationGeometryTest {
                 SelectionVisualizationGeometry.plan(singleChunk(200), GENEROUS, 8.0, 70.0, 8.0);
 
         double expected = 70.0 + SelectionVisualizationGeometry.PLANE_ABOVE_VIEWER;
-        for (SelectionVisualizationGeometry.Point point : frame.points()) {
-            assertEquals(expected, point.y(), "a sky click must not raise the plane out of sight");
+        for (int index = 0; index < frame.points().size(); index += 5) {
+            for (int dy = -2; dy <= 2; dy++) {
+                assertEquals(expected + dy, frame.points().get(index + dy + 2).y(), 1e-9,
+                        "a sky click must not raise the column out of sight");
+            }
         }
     }
 
@@ -185,14 +206,14 @@ class SelectionVisualizationGeometryTest {
         assertEquals(6, tick2.size());
         assertEquals(all.subList(0, 6), tick0);
         assertEquals(all.subList(6, 12), tick1);
-        // 32 points with a budget of 6: the third tick wraps around.
+        // 160 points with a budget of 6: the third tick continues without wrapping yet.
         assertEquals(
                 List.of(all.get(12), all.get(13), all.get(14), all.get(15), all.get(16), all.get(17)),
                 tick2);
         // A full cycle realigns once the window start returns to zero.
         assertEquals(tick0, frame.window(size / 2, 6));
         // Extremely large tick indices wrap without overflow.
-        assertEquals(frame.window(size - 1, 6), frame.window(Long.MAX_VALUE, 6));
+        assertEquals(frame.window(Math.floorMod(Long.MAX_VALUE, (long) size), 6), frame.window(Long.MAX_VALUE, 6));
     }
 
     @Test
@@ -200,7 +221,7 @@ class SelectionVisualizationGeometryTest {
         SelectionVisualizationGeometry.Frame frame =
                 SelectionVisualizationGeometry.plan(singleChunk(64), GENEROUS, 8.0, 70.0, 8.0);
 
-        assertEquals(frame.points(), frame.window(3, 128));
+        assertEquals(frame.points(), frame.window(3, 256));
         assertEquals(frame.points(), frame.window(0, frame.points().size()));
     }
 }

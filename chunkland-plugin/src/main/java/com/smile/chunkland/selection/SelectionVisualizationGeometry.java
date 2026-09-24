@@ -23,9 +23,13 @@ import java.util.Set;
  * fall back to the viewer height.
  *
  * <p>Planning is deterministic: segments are sorted by chunk then direction, the
- * segment cap keeps a prefix, each edge is sampled at fixed fractions, and the
- * per-tick {@link Frame#window(long, int)} rotates over the ordered points so a
+ * segment cap keeps a prefix, each edge is sampled at fixed fractions, each
+ * sample is expanded to a five-point vertical column (base-2 to base+2, spacing
+ * 1.0) so the boundary stays readable on uneven terrain, and the per-tick
+ * {@link Frame#window(long, int)} rotates over the ordered points so a
  * large boundary shimmers across ticks instead of exceeding the particle budget.
+ * Column height is visibility compensation only: it never represents protection
+ * depth or the selection Y range.
  */
 public final class SelectionVisualizationGeometry {
 
@@ -39,6 +43,15 @@ public final class SelectionVisualizationGeometry {
 
     /** The render plane is never pushed more than this far above the viewer. */
     static final double PLANE_ABOVE_VIEWER = 8.0;
+
+    /** Points per boundary sample: the vertical column around the base plane. */
+    static final int COLUMN_POINTS = 5;
+
+    /** Half height of the vertical column in blocks (base-2 to base+2). */
+    static final double COLUMN_HALF_HEIGHT = 2.0;
+
+    /** Vertical spacing between column points in blocks. */
+    static final double COLUMN_SPACING = 1.0;
 
     private SelectionVisualizationGeometry() {
         // static utility only
@@ -144,7 +157,7 @@ public final class SelectionVisualizationGeometry {
         }
         boolean truncated = visible.size() > budget.maxSegments();
         List<BoundarySegment> kept = truncated ? visible.subList(0, budget.maxSegments()) : visible;
-        List<Point> points = new ArrayList<>(kept.size() * SAMPLE_FRACTIONS.length);
+        List<Point> points = new ArrayList<>(kept.size() * SAMPLE_FRACTIONS.length * COLUMN_POINTS);
         for (BoundarySegment segment : kept) {
             long[] edge = segment.edgeEndpoints();
             double x0 = (double) edge[0] * 16.0;
@@ -152,10 +165,14 @@ public final class SelectionVisualizationGeometry {
             double x1 = (double) edge[2] * 16.0;
             double z1 = (double) edge[3] * 16.0;
             for (double fraction : SAMPLE_FRACTIONS) {
-                points.add(new Point(
-                        x0 + (x1 - x0) * fraction,
-                        planeY,
-                        z0 + (z1 - z0) * fraction));
+                double x = x0 + (x1 - x0) * fraction;
+                double z = z0 + (z1 - z0) * fraction;
+                // Five-point vertical column around the base plane: pure arithmetic
+                // offsets only, never a terrain read. Column height compensates
+                // visibility on uneven ground; it is not protection depth.
+                for (double dy = -COLUMN_HALF_HEIGHT; dy <= COLUMN_HALF_HEIGHT; dy += COLUMN_SPACING) {
+                    points.add(new Point(x, planeY + dy, z));
+                }
             }
         }
         return new Frame(points, kept.size(), truncated);

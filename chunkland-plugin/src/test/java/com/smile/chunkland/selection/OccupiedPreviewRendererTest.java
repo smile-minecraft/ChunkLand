@@ -107,8 +107,14 @@ class OccupiedPreviewRendererTest {
 
         assertFalse(fixture.sink.emitted.isEmpty());
         for (double[] point : fixture.sink.emitted) {
-            assertEquals(66.0, point[1], "the preview uses the requested plane");
+            assertTrue(point[1] >= 64.0 && point[1] <= 68.0,
+                    "the preview column stays around the requested plane: " + point[1]);
         }
+        // The shared geometry path expands each sample to base-2..base+2 (base 66.0 here).
+        assertTrue(fixture.sink.emitted.stream().anyMatch(point -> point[1] == 64.0),
+                "column reaches base-2");
+        assertTrue(fixture.sink.emitted.stream().anyMatch(point -> point[1] == 68.0),
+                "column reaches base+2");
         // The outline reaches the diagonal chunk's far corner (chunk 2 -> x in [32, 48]).
         assertTrue(fixture.sink.emitted.stream().anyMatch(point -> point[0] >= 32.0 && point[0] <= 48.0));
         assertEquals(2, fixture.ticks.handles.size(), "the loop reschedules itself");

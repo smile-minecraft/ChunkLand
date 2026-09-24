@@ -85,7 +85,7 @@ selection:
   # render-distance-blocks: segments culled beyond this viewer distance (8-128).
   # refresh-interval-ticks: ticks between renders (1-200).
   visualization-max-segments: 256
-  visualization-max-particles-per-tick: 256
+  visualization-max-particles-per-tick: 512
   visualization-render-distance-blocks: 64
   visualization-refresh-interval-ticks: 10
 

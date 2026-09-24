@@ -21,7 +21,7 @@ public record SelectionVisualizationBudget(
         int refreshIntervalTicks) {
     public static final int DEFAULT_MAX_SEGMENTS = 256;
     public static final int MAX_SEGMENTS_LIMIT = 4096;
-    public static final int DEFAULT_MAX_PARTICLES_PER_TICK = 256;
+    public static final int DEFAULT_MAX_PARTICLES_PER_TICK = 512;
     public static final int MAX_PARTICLES_PER_TICK_LIMIT = 1024;
     public static final int DEFAULT_RENDER_DISTANCE_BLOCKS = 64;
     public static final int RENDER_DISTANCE_BLOCKS_LIMIT = 128;

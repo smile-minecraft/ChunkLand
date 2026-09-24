@@ -38,11 +38,11 @@ class SelectionVisualizationBudgetConfigTest {
 
         for (ChunkLandConfig config : List.of(missingSection, emptySection)) {
             assertEquals(256, config.selection().visualizationMaxSegments());
-            assertEquals(256, config.selection().visualizationMaxParticlesPerTick());
+            assertEquals(512, config.selection().visualizationMaxParticlesPerTick());
             assertEquals(64, config.selection().visualizationRenderDistanceBlocks());
             assertEquals(10, config.selection().visualizationRefreshIntervalTicks());
             assertEquals(
-                    new com.smile.chunkland.selection.SelectionVisualizationBudget(256, 256, 64, 10),
+                    new com.smile.chunkland.selection.SelectionVisualizationBudget(256, 512, 64, 10),
                     config.selection().visualizationBudget());
         }
     }
