@@ -97,7 +97,7 @@ command:
       console: "<red>Only players can delete land.</red>"
       no_target: "<yellow>Stand on the land you want to delete and target it first.</yellow>"
       usage: "<yellow>Usage: /land delete confirm <revision></yellow>"
-      confirm: "<yellow>This will permanently delete the land and refund its full cost. Run /land delete confirm <revision> to proceed.</yellow>"
+      confirm: "<yellow>This will permanently delete the land and refund its full cost. Run /land delete confirm <revision> to proceed.</yellow> <hover:show_text:'<gray>Click to fill the confirm command into the chat box</gray>'><click:suggest_command:'/land delete confirm <revision>'><green>[Fill command]</green></click></hover>"
       stale: "<yellow>That delete confirmation has expired. Please review the latest details and try again.</yellow>"
       success: "<green>Land <land_name> deleted: <chunk_count> chunks. Refunded <refund>.</green>"
       compensation_pending: "<yellow>Land deleted: <chunk_count> chunks. The refund of <refund> is still being processed.</yellow>"
