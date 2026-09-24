@@ -118,6 +118,25 @@ class GuiNavigatorTest {
     }
 
     @Test
+    void backRecoversAfterOneCloseFailureBeforeReopeningPreviousPage() {
+        FakeGuiService gui = new FakeGuiService();
+        GuiNavigator navigator = new GuiNavigator(gui);
+        navigator.open(ALICE, page("main", 1)).orElseThrow();
+        navigator.push(ALICE, page("second", 2)).orElseThrow();
+        assertEquals(navigator.currentGeneration(ALICE).orElseThrow().longValue(),
+            gui.activeSessionOf(ALICE).generation());
+        gui.rejectNextClose();
+
+        boolean back = navigator.back(ALICE);
+        assertEquals(3, gui.closeCalls().size(),
+            "the initial rollover plus the failed and successful back close");
+        assertTrue(back);
+        assertEquals("main", navigator.currentPage(ALICE).orElseThrow().id());
+        assertEquals(1, navigator.depth(ALICE));
+        assertEquals("title-main", gui.openedArgs().get(gui.openedArgs().size() - 1).title());
+    }
+
+    @Test
     void replaceOverLiveSessionSwapsTopWithFreshGeneration() {
         FakeGuiService gui = new FakeGuiService();
         GuiNavigator navigator = new GuiNavigator(gui);

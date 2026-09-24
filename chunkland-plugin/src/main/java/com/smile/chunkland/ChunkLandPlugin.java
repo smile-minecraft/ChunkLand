@@ -480,19 +480,25 @@ public final class ChunkLandPlugin extends JavaPlugin {
             @Override
             public void openDetails(GuiClickContext click) {
                 try {
-                    navigator.push(click.playerUuid(),
-                            ManagementGuiPages.detailsPage(shared, this));
-                } catch (RuntimeException ignored) {
-                    // Navigation stays fail-closed; the current page is kept.
+                    if (navigator.push(click.playerUuid(),
+                            ManagementGuiPages.detailsPage(shared, this)).isEmpty()) {
+                        getLogger().warning("ChunkLand management GUI detail navigation failed");
+                    }
+                } catch (RuntimeException failure) {
+                    getLogger().warning("ChunkLand management GUI detail navigation threw: "
+                            + failure.getClass().getSimpleName());
                 }
             }
 
             @Override
             public void back(GuiClickContext click) {
                 try {
-                    navigator.back(click.playerUuid());
-                } catch (RuntimeException ignored) {
-                    // Navigation stays fail-closed; the current page is kept.
+                    if (!navigator.back(click.playerUuid())) {
+                        getLogger().warning("ChunkLand management GUI back navigation failed");
+                    }
+                } catch (RuntimeException failure) {
+                    getLogger().warning("ChunkLand management GUI back navigation threw: "
+                            + failure.getClass().getSimpleName());
                 }
             }
 
@@ -507,8 +513,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         };
         try {
-            return navigator.open(playerUuid, ManagementGuiPages.rootPage(actions));
-        } catch (RuntimeException unresolved) {
+            Optional<Long> generation = navigator.open(playerUuid, ManagementGuiPages.rootPage(actions));
+            if (generation.isEmpty()) {
+                getLogger().warning("ChunkLand management GUI open failed");
+            }
+            return generation;
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand management GUI open threw: "
+                    + failure.getClass().getSimpleName());
             return Optional.empty();
         }
     }
@@ -894,7 +906,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // closed without touching the provider.
         this.guiNavigator = capabilities
                 .map(Capabilities::guiService)
-                .map(service -> service == null ? null : new GuiNavigator(service))
+                .map(service -> service == null ? null : new GuiNavigator(service, getLogger()))
                 .orElse(null);
         DirectTrustCommandHandler.LandResolver trustLands =
                 currentLocationLandResolver(this.protectionStore);

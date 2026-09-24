@@ -41,6 +41,7 @@ final class FakeGuiService implements GuiService {
     private volatile boolean rejectNextOpen;
     private volatile boolean rejectAllClicks;
     private volatile boolean throwOnOpen;
+    private volatile boolean rejectNextClose;
 
     void rejectNextOpen() {
         rejectNextOpen = true;
@@ -52,6 +53,10 @@ final class FakeGuiService implements GuiService {
 
     void throwOnOpen() {
         throwOnOpen = true;
+    }
+
+    void rejectNextClose() {
+        rejectNextClose = true;
     }
 
     long shutdownCount() {
@@ -106,6 +111,10 @@ final class FakeGuiService implements GuiService {
     @Override
     public GuiResult closeInventory(UUID uuid, long generation) {
         closeCalls.add(new CloseCall(uuid, generation));
+        if (rejectNextClose) {
+            rejectNextClose = false;
+            return GuiResult.rejected(GuiErrorCode.GENERATION_MISMATCH, "stale close");
+        }
         GuiSession current = active.get(uuid);
         if (current != null && current.generation() == generation) {
             active.remove(uuid);

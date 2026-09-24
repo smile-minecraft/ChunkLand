@@ -13,6 +13,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Per-player GUI navigation over the shared upstream {@link GuiService}.
@@ -51,6 +53,7 @@ public final class GuiNavigator {
     }
 
     private final GuiService guiService;
+    private final Logger logger;
     private final ConcurrentHashMap<UUID, Deque<Frame>> stacks = new ConcurrentHashMap<>();
 
     /**
@@ -80,7 +83,17 @@ public final class GuiNavigator {
      *     every operation fails closed and {@link #isAvailable()} is false
      */
     public GuiNavigator(GuiService guiService) {
+        this(guiService, Logger.getLogger(GuiNavigator.class.getName()));
+    }
+
+    /**
+     * @param guiService upstream service; may be {@code null}
+     * @param logger failure-path logger; may be {@code null}, which disables
+     *     navigator diagnostics
+     */
+    public GuiNavigator(GuiService guiService, Logger logger) {
         this.guiService = guiService;
+        this.logger = logger;
     }
 
     /** @return false when no upstream service is held; all ops then fail closed. */
@@ -366,32 +379,52 @@ public final class GuiNavigator {
         return Set.copyOf(stacks.keySet());
     }
 
-    private Optional<Long> openUpstream(UUID playerUuid, GuiPage page) {
-        return generationOf(playerUuid, tryOpenUpstream(playerUuid, page));
-    }
-
     /**
-     * Open {@code page}, rolling over the tracked {@code live} session when
-     * the upstream still holds it. The first attempt goes out as-is; only an
-     * explicit {@code SESSION_EXISTS} rejection with a tracked live frame
-     * triggers one best-effort close of that exact player-plus-generation
-     * identity followed by a single reopen. Any other failure — including a
-     * failed reopen — stays fail-closed with no further upstream calls, and
-     * callers restore their tracked stack. A {@code null} live frame never
-     * triggers a close, so a session owned by another plugin is never
-     * touched.
+     * Close the tracked session before opening {@code page}. A close failure
+     * gets one bounded retry; reopening is attempted only after the upstream
+     * confirms that the tracked session is gone. If the upstream still reports
+     * {@code SESSION_EXISTS}, the active session is checked before one final
+     * close-and-reopen attempt. A mismatched generation remains fail-closed so
+     * a session that replaced the tracked one is never touched.
      */
     private Optional<Long> openReplacingLiveSession(UUID playerUuid, GuiPage page, Frame live) {
+        if (live != null) {
+            GuiResult closed = closeUpstream(playerUuid, live);
+            if (!isCloseComplete(closed)) {
+                if (hasActiveSession(playerUuid)) {
+                    log(Level.WARNING, "GUI rollover close failed; retrying once");
+                    closed = closeUpstream(playerUuid, live);
+                }
+                if (!isCloseComplete(closed) && hasActiveSession(playerUuid)) {
+                    log(Level.WARNING, "GUI rollover aborted after close retry failed");
+                    return Optional.empty();
+                }
+            }
+        }
         GuiResult first = tryOpenUpstream(playerUuid, page);
         Optional<Long> generation = generationOf(playerUuid, first);
         if (generation.isPresent()) {
             return generation;
         }
-        if (live == null || !isSessionExistsRejection(first)) {
+        if (!isSessionExistsRejection(first) || !hasActiveSession(playerUuid)) {
+            log(Level.WARNING, "GUI rollover reopen failed");
             return Optional.empty();
         }
-        closeUpstream(playerUuid, live);
-        return generationOf(playerUuid, tryOpenUpstream(playerUuid, page));
+        log(Level.FINE, "GUI rollover reopen found an active session; retrying close");
+        if (live == null) {
+            log(Level.WARNING, "GUI rollover refused to close an untracked session");
+            return Optional.empty();
+        }
+        GuiResult closed = closeUpstream(playerUuid, live);
+        if (!isCloseComplete(closed) && hasActiveSession(playerUuid)) {
+            log(Level.WARNING, "GUI rollover retry close failed");
+            return Optional.empty();
+        }
+        Optional<Long> retried = generationOf(playerUuid, tryOpenUpstream(playerUuid, page));
+        if (retried.isEmpty()) {
+            log(Level.WARNING, "GUI rollover reopen retry failed");
+        }
+        return retried;
     }
 
     /** @return the player's tracked top frame, or {@code null} when untracked. */
@@ -436,14 +469,38 @@ public final class GuiNavigator {
             && SESSION_EXISTS_CODE.equals(result.errorCode());
     }
 
-    private void closeUpstream(UUID playerUuid, Frame top) {
+    private GuiResult closeUpstream(UUID playerUuid, Frame top) {
         if (top == null || guiService == null) {
-            return;
+            return null;
         }
         try {
-            guiService.closeInventory(playerUuid, top.generation());
+            return guiService.closeInventory(playerUuid, top.generation());
         } catch (RuntimeException ignored) {
-            // Cleanup stays best-effort; tracking is already dropped.
+            return null;
+        }
+    }
+
+    private boolean hasActiveSession(UUID playerUuid) {
+        try {
+            GuiResult active = guiService.getActiveSession(playerUuid);
+            return active != null && active.session() != null
+                && playerUuid.equals(active.session().playerUuid());
+        } catch (RuntimeException ignored) {
+            return true;
+        }
+    }
+
+    private static boolean isCloseComplete(GuiResult result) {
+        return result != null
+            && (result.isSuccess() || result.isAccepted() || result.isAllowed()
+                || "CLOSED".equals(String.valueOf(result.state()))
+                || "ACELIB-GUI-008".equals(result.errorCode())
+                || "SESSION_NOT_FOUND".equals(result.errorCode()));
+    }
+
+    private void log(Level level, String message) {
+        if (logger != null) {
+            logger.log(level, message);
         }
     }
 
