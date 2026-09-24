@@ -195,13 +195,9 @@ land:
     success: "<green>領地 <land_name> 已刪除。已退費 <refund>，共 <chunk_count> 個區塊。</green>"
 protection:
   rejection:
-    denied: "<red>在 <land_name> 中動作 <action> 被拒絕 — 擁有者 <owner>。原因：<reason></red>"
     action_denied: "<red>動作 <action> 被拒絕。<reason></red>"
-    limit: "<red>已達上限：<current>/<max> <limit_type>。</red>"
-    cooldown: "<yellow>請等待 <remaining> 秒後再試。</yellow>"
-    economy: "<red>付款失敗：需付 <price> — <reason>。</red>"
-  allow:
-    silent: "<gray>已允許。</gray>"
+    entry_denied: "<yellow>你無法進入這塊領地。</yellow>"
+    banned_inside: "<red>你位於禁止進入的領地內。</red>"
 claim:
   recovery_pending: "<yellow>領地資料仍在復原中，請稍後再試。</yellow>"
   recovery_failed: "<red>領地資料復原失敗，請聯繫管理員。</red>"

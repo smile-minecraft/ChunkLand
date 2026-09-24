@@ -27,6 +27,14 @@ import org.bukkit.entity.Player;
  */
 public final class RejectionNotifier {
 
+    /**
+     * Stable marker carried as the decision explanation for the banned-inside
+     * stop. The renderer matches on this exact value to select the
+     * {@code banned_inside} template, so the raw marker never reaches a
+     * player as visible text.
+     */
+    public static final String BANNED_INSIDE_REASON = "chunkland:banned-inside";
+
     /** Sends an already-built notice; production adapters wrap the pipeline. */
     public interface Sender {
         void send(Player player, Component message);

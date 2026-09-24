@@ -1344,7 +1344,7 @@ public final class ProtectionListener implements Listener {
             notifier.notifyDenied(player, ProtectionActionType.ENTRY,
                     new PermissionDecision(PermissionState.DENY,
                             DecisionSource.SUBJECT_PERMISSION,
-                            "Banned inside this land: movement denied until pushed out"));
+                            RejectionNotifier.BANNED_INSIDE_REASON));
         } catch (RuntimeException ignored) {
         }
     }

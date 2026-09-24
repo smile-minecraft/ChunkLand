@@ -73,6 +73,7 @@ import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.MessageSettings;
 import com.smile.chunkland.config.ConfigReloadListener;
 import com.smile.chunkland.config.ChunkLandConfig;
 import com.smile.chunkland.config.LimitSettings;
@@ -99,6 +100,10 @@ import com.smile.chunkland.limit.OwnerQuotaHydrator;
 import com.smile.chunkland.limit.OwnerQuotaService;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import com.smile.chunkland.message.M0MessageProbe;
+import com.smile.chunkland.message.rejection.PipelineRejectionRenderer;
+import com.smile.chunkland.message.rejection.PlayerRegionRejectionSender;
+import com.smile.chunkland.message.rejection.RejectionCooldown;
+import com.smile.chunkland.message.rejection.RejectionNotifier;
 import com.smile.chunkland.message.PlayerPreferredLocaleService;
 import com.smile.chunkland.message.PlayerSettingsLocaleListener;
 import com.smile.chunkland.api.event.ChunkLandEventBus;
@@ -180,6 +185,8 @@ import com.smile.chunkland.wand.WandSafetyListener;
 import com.smile.chunkland.wand.WandSelectionNotifier;
 import com.smile.chunkland.wand.SelectionWandClickHandler;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -1180,7 +1187,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // closed inside the adapter.
         EntryBanLookup banLookup = new EntryBanLookup(
                 this.protectionStore::snapshot, this.landAuthorisationCache::snapshot);
-        this.protectionListener = new ProtectionListener(this.protectionEngine, null, banLookup);
+        this.protectionListener = new ProtectionListener(this.protectionEngine,
+                buildRejectionNotifier(this.landMessagePipeline.orElse(null),
+                        buildPlayerScheduler(this), rejectionCooldownSeconds(activeConfig)),
+                banLookup);
         try {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
@@ -2439,6 +2449,41 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 return Map.of();
             }
         };
+    }
+
+    /**
+     * Reads the rejection throttle window from the live config. A missing or
+     * unreadable value falls back to the configured default (2s), so a
+     * config without a {@code messages} section still notifies sanely.
+     */
+    public static int rejectionCooldownSeconds(ConfigService activeConfig) {
+        try {
+            return activeConfig.current().messages().cooldownSeconds();
+        } catch (RuntimeException ex) {
+            return MessageSettings.defaults().cooldownSeconds();
+        }
+    }
+
+    /**
+     * Builds the production rejection notifier: ActionBar notices hop to the
+     * player's region thread, render through the shared pipeline, and throttle
+     * per {@code (player, action)}. A missing pipeline or scheduler keeps the
+     * listener silent instead (fail-closed): enforcement never depends on
+     * messaging, and no lifecycle is added (discarded with the listener).
+     */
+    public static RejectionNotifier buildRejectionNotifier(ChunkLandMessagePipeline pipeline,
+            com.smile.chunkland.command.PlayerScheduler scheduler, int cooldownSeconds) {
+        int seconds = Math.max(0, cooldownSeconds);
+        RejectionCooldown cooldown = new RejectionCooldown(Instant::now,
+                Duration.ofSeconds(seconds));
+        if (pipeline == null || scheduler == null) {
+            return new RejectionNotifier(null,
+                    (player, action, decision) -> {
+                        throw new IllegalStateException("rejection pipeline absent");
+                    }, cooldown);
+        }
+        return new RejectionNotifier(new PlayerRegionRejectionSender(scheduler),
+                new PipelineRejectionRenderer(pipeline), cooldown);
     }
 
     /**

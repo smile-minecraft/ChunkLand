@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentMap;
 public final class RejectionCooldown {
 
     /** Default quiet window between two notices for one {@code (player, action)}. */
-    public static final Duration DEFAULT_COOLDOWN = Duration.ofSeconds(3);
+    public static final Duration DEFAULT_COOLDOWN = Duration.ofSeconds(2);
 
     /** Cooldown key: one window per denied player and action. */
     private record Key(UUID playerId, ProtectionActionType action) {

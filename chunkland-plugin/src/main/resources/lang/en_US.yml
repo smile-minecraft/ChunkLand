@@ -195,13 +195,9 @@ land:
     success: "<green>Land <land_name> deleted. Refunded <refund> for <chunk_count> chunks.</green>"
 protection:
   rejection:
-    denied: "<red>Action <action> denied in <land_name> — owner <owner>. <reason></red>"
     action_denied: "<red>Action <action> denied. <reason></red>"
-    limit: "<red>Limit reached: <current>/<max> <limit_type>.</red>"
-    cooldown: "<yellow>Please wait <remaining>s before next action.</yellow>"
-    economy: "<red>Payment failed: price <price> — <reason>.</red>"
-  allow:
-    silent: "<gray>Allowed.</gray>"
+    entry_denied: "<yellow>You cannot enter this land.</yellow>"
+    banned_inside: "<red>You are inside a land you are banned from.</red>"
 claim:
   recovery_pending: "<yellow>Land data is still recovering. Please try again in a moment.</yellow>"
   recovery_failed: "<red>Land data recovery failed. Please contact an administrator.</red>"

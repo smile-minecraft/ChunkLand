@@ -88,4 +88,45 @@ class RejectionMessagingStructureTest {
                     locale + " template must carry the reason");
         }
     }
+
+    @Test
+    void bannedInsideUsesStableMarkerNeverRawEnglish() throws IOException {
+        String src = readListener();
+        assertTrue(src.contains("BANNED_INSIDE_REASON"),
+                "ban-inside notice must carry the stable marker constant");
+        assertFalse(src.contains("Banned inside this land"),
+                "raw English reason must never be composed for the player");
+    }
+
+    @Test
+    void entryTemplatesExistInBothLocales() throws Exception {
+        for (String locale : new String[]{"en_US", "zh_TW"}) {
+            YamlConfiguration cfg = new YamlConfiguration();
+            cfg.load(new File(findModuleDir()
+                    + "/src/main/resources/lang/" + locale + ".yml"));
+            assertNotNull(cfg.getString("protection.rejection.entry_denied"),
+                    locale + " missing protection.rejection.entry_denied");
+            assertNotNull(cfg.getString("protection.rejection.banned_inside"),
+                    locale + " missing protection.rejection.banned_inside");
+        }
+    }
+
+    @Test
+    void orphanKeysStayRemoved() throws Exception {
+        String[] orphans = {
+            "protection.rejection.denied",
+            "protection.rejection.limit",
+            "protection.rejection.cooldown",
+            "protection.rejection.economy",
+            "protection.allow.silent",
+        };
+        for (String locale : new String[]{"en_US", "zh_TW"}) {
+            YamlConfiguration cfg = new YamlConfiguration();
+            cfg.load(new File(findModuleDir()
+                    + "/src/main/resources/lang/" + locale + ".yml"));
+            for (String key : orphans) {
+                assertNull(cfg.getString(key), locale + " must not carry orphan key " + key);
+            }
+        }
+    }
 }
