@@ -29,14 +29,16 @@ public final class GuiPage {
     private final int size;
     private final Map<Integer, GuiButton> buttons;
     private final List<String> lines;
+    private final List<RenderItem> renderItems;
 
     private GuiPage(String id, String title, int size, Map<Integer, GuiButton> buttons,
-            List<String> lines) {
+            List<String> lines, List<RenderItem> renderItems) {
         this.id = id;
         this.title = title;
         this.size = size;
         this.buttons = buttons;
         this.lines = lines;
+        this.renderItems = renderItems;
     }
 
     /**
@@ -51,7 +53,7 @@ public final class GuiPage {
      * @param buttons slot bindings; never {@code null} (may be empty)
      */
     public static GuiPage of(String id, String title, int size, List<GuiButton> buttons) {
-        return of(id, title, size, buttons, List.of());
+        return of(id, title, size, buttons, List.of(), List.of());
     }
 
     /**
@@ -68,10 +70,23 @@ public final class GuiPage {
      */
     public static GuiPage of(String id, String title, int size, List<GuiButton> buttons,
             List<String> lines) {
+        return of(id, title, size, buttons, lines, List.of());
+    }
+
+    /**
+     * Build an immutable page with visible text lines and Bukkit-free render
+     * item bindings. Render items carry only the slot, text, and a material
+     * hint; the Bukkit adapter owns material lookup and inventory mutation.
+     *
+     * @param renderItems display items in slot order; never {@code null}
+     */
+    public static GuiPage of(String id, String title, int size, List<GuiButton> buttons,
+            List<String> lines, List<RenderItem> renderItems) {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(title, "title");
         Objects.requireNonNull(buttons, "buttons");
         Objects.requireNonNull(lines, "lines");
+        Objects.requireNonNull(renderItems, "renderItems");
         if (id.isEmpty()) {
             throw new IllegalArgumentException("id must not be empty");
         }
@@ -90,8 +105,41 @@ public final class GuiPage {
             }
             copy.put(button.slot(), button);
         }
+        Set<Integer> itemSlots = new java.util.HashSet<>();
+        for (RenderItem item : renderItems) {
+            Objects.requireNonNull(item, "renderItem");
+            if (item.slot() >= size) {
+                throw new IllegalArgumentException(
+                    "render slot " + item.slot() + " is outside page size " + size);
+            }
+            if (!itemSlots.add(item.slot())) {
+                throw new IllegalArgumentException("duplicate render slot: " + item.slot());
+            }
+        }
         List<String> owned = List.copyOf(lines);
-        return new GuiPage(id, title, size, Collections.unmodifiableMap(copy), owned);
+        return new GuiPage(id, title, size, Collections.unmodifiableMap(copy), owned,
+                List.copyOf(renderItems));
+    }
+
+    /**
+     * Bukkit-free description of one visible inventory item.
+     *
+     * @param slot zero-based inventory slot
+     * @param name visible item name
+     * @param lore visible lore lines in display order
+     * @param materialHint stable semantic hint resolved by the Bukkit adapter
+     */
+    public record RenderItem(int slot, String name, List<String> lore, String materialHint) {
+
+        public RenderItem {
+            if (slot < 0) {
+                throw new IllegalArgumentException("slot must not be negative: " + slot);
+            }
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(lore, "lore");
+            Objects.requireNonNull(materialHint, "materialHint");
+            lore = List.copyOf(lore);
+        }
     }
 
     public String id() {
@@ -119,6 +167,11 @@ public final class GuiPage {
     /** @return visible text lines in display order; unmodifiable, may be empty. */
     public List<String> lines() {
         return lines;
+    }
+
+    /** @return visible item bindings in display order; unmodifiable, may be empty. */
+    public List<RenderItem> renderItems() {
+        return renderItems;
     }
 
     /** @return the binding for {@code slot}, or empty when the slot has none. */

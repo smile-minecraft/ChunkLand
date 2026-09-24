@@ -58,7 +58,9 @@ public final class ManagementGuiPages {
             seam.openDetails(click);
         });
         return GuiPage.of(ROOT_PAGE_ID, "Land Management", ROOT_SIZE, List.of(entry),
-                List.of("Open the permission detail view."));
+                List.of("Open the permission detail view."),
+                List.of(new GuiPage.RenderItem(ENTRY_SLOT,
+                        "Open the permission detail view.", List.of(), "entry")));
     }
 
     /**
@@ -80,6 +82,7 @@ public final class ManagementGuiPages {
         int capacity = DETAILS_SIZE - 1;
         List<GuiButton> buttons = new ArrayList<>(rows.size() + 1);
         List<String> lines = new ArrayList<>(rows.size() * 2 + 1);
+        List<GuiPage.RenderItem> renderItems = new ArrayList<>(rows.size() + 1);
         int deny = 0;
         int allow = 0;
         for (int index = 0; index < rows.size() && index < capacity; index++) {
@@ -98,18 +101,20 @@ public final class ManagementGuiPages {
                     + " @ " + row.layer().name()
                     + (row.conflict() ? " !CONFLICT" : "");
             lines.add(head);
-            if (row.conflict()) {
-                for (String remedy : model.remediesFor(row)) {
-                    lines.add("  - " + remedy);
-                }
-            }
+            List<String> itemLore = row.conflict()
+                    ? model.remediesFor(row).stream().map(remedy -> "  - " + remedy).toList()
+                    : List.of();
+            renderItems.add(new GuiPage.RenderItem(index, head, itemLore,
+                    row.outcome() == PermissionState.DENY ? "deny" : "allow"));
+            lines.addAll(itemLore);
         }
         buttons.add(new GuiButton(BACK_SLOT, click -> {
             Objects.requireNonNull(click, "click");
             seam.back(click);
         }));
+        renderItems.add(new GuiPage.RenderItem(BACK_SLOT, "Back", List.of(), "back"));
         String title = "Land Permissions (" + deny + " DENY, " + allow + " ALLOW)";
-        return GuiPage.of(DETAILS_PAGE_ID, title, DETAILS_SIZE, buttons, lines);
+        return GuiPage.of(DETAILS_PAGE_ID, title, DETAILS_SIZE, buttons, lines, renderItems);
     }
 
     /**
@@ -123,8 +128,9 @@ public final class ManagementGuiPages {
             Objects.requireNonNull(click, "click");
             seam.back(click);
         });
+        List<String> lines = ManagementGuiModel.unavailable().remediesFor(null);
         return GuiPage.of(UNAVAILABLE_PAGE_ID,
                 "Land Management (unavailable)", DETAILS_SIZE, List.of(back),
-                ManagementGuiModel.unavailable().remediesFor(null));
+                lines, List.of(new GuiPage.RenderItem(BACK_SLOT, "Back", lines, "unavailable")));
     }
 }

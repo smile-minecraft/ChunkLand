@@ -138,6 +138,11 @@ class NoAceLibImplDependencyTest {
                 || ref.startsWith("com.smile.acelib.gui.GuiArgument$")
                 || ref.equals("com.smile.acelib.gui.GuiResult")
                 || ref.equals("com.smile.acelib.gui.GuiSession")
+                // The GUI content adapter is limited to the supported async-update
+                // value types; it never uses an AceLib implementation class.
+                || ref.equals("com.smile.acelib.gui.GuiPage")
+                || ref.startsWith("com.smile.acelib.gui.GuiPage$")
+                || ref.equals("com.smile.acelib.gui.GuiAsyncRequest")
                 || ref.equals("com.smile.acelib.form.FormService")
                 || ref.startsWith("com.smile.acelib.form.FormService$")
                 || ref.equals("com.smile.acelib.form.FormSpec")
@@ -237,6 +242,16 @@ class NoAceLibImplDependencyTest {
     void stringLiteralWithImplReferenceIsIgnored() {
         String src = "package x;\nclass Y { String s = \"com.smile.acelib.AceLibPlugin\"; }\n";
         assertNull(findForbiddenReference(src), "string literals must be ignored");
+    }
+
+    @Test
+    void allowedAsyncGuiValueTypesAreOk() {
+        String src = "package x;\n"
+            + "class Y { com.smile.acelib.gui.GuiPage<String> p; "
+            + "com.smile.acelib.gui.GuiPage$Kind k; "
+            + "com.smile.acelib.gui.GuiAsyncRequest r; }\n";
+        assertNull(findForbiddenReference(src),
+            "the adapter may use the supported async-update value types");
     }
 
     @Test

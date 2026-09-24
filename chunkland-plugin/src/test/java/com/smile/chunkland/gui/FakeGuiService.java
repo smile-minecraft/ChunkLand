@@ -1,6 +1,7 @@
 package com.smile.chunkland.gui;
 
 import com.smile.acelib.gui.GuiArgument;
+import com.smile.acelib.gui.GuiAsyncRequest;
 import com.smile.acelib.gui.GuiErrorCode;
 import com.smile.acelib.gui.GuiResult;
 import com.smile.acelib.gui.GuiService;
@@ -32,16 +33,32 @@ final class FakeGuiService implements GuiService {
     record CloseCall(UUID playerUuid, long generation) {
     }
 
+    /** Exact async update begin arguments observed by the renderer tests. */
+    record BeginCall(UUID playerUuid, long sessionGeneration, int pageIndex) {
+    }
+
+    /** Exact async apply inputs observed by the renderer tests. */
+    record ApplyCall(GuiAsyncRequest request, com.smile.acelib.gui.GuiPage<?> page,
+            Runnable renderer) {
+    }
+
     private final AtomicLong generations = new AtomicLong(100L);
+    private final AtomicLong asyncRequestGenerations = new AtomicLong(100L);
     private final Map<UUID, GuiSession> active = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> latestAsyncRequests = new ConcurrentHashMap<>();
     private final List<GuiArgument> openedArgs = new CopyOnWriteArrayList<>();
     private final List<CloseCall> closeCalls = new CopyOnWriteArrayList<>();
+    private final List<BeginCall> beginCalls = new CopyOnWriteArrayList<>();
+    private final List<ApplyCall> applyCalls = new CopyOnWriteArrayList<>();
     private final List<String> validateCalls = new CopyOnWriteArrayList<>();
     private final AtomicLong shutdownCount = new AtomicLong();
+    private final AtomicLong rendererCalls = new AtomicLong();
     private volatile boolean rejectNextOpen;
     private volatile boolean rejectAllClicks;
     private volatile boolean throwOnOpen;
     private volatile boolean rejectNextClose;
+    private volatile boolean rejectNextAsyncBegin;
+    private volatile boolean rejectNextAsyncApply;
 
     void rejectNextOpen() {
         rejectNextOpen = true;
@@ -59,6 +76,14 @@ final class FakeGuiService implements GuiService {
         rejectNextClose = true;
     }
 
+    void rejectNextAsyncBegin() {
+        rejectNextAsyncBegin = true;
+    }
+
+    void rejectNextAsyncApply() {
+        rejectNextAsyncApply = true;
+    }
+
     long shutdownCount() {
         return shutdownCount.get();
     }
@@ -73,6 +98,18 @@ final class FakeGuiService implements GuiService {
 
     List<String> validateCalls() {
         return List.copyOf(validateCalls);
+    }
+
+    List<BeginCall> beginCalls() {
+        return List.copyOf(beginCalls);
+    }
+
+    List<ApplyCall> applyCalls() {
+        return List.copyOf(applyCalls);
+    }
+
+    long rendererCalls() {
+        return rendererCalls.get();
     }
 
     GuiSession activeSessionOf(UUID playerUuid) {
@@ -160,8 +197,71 @@ final class FakeGuiService implements GuiService {
     }
 
     @Override
+    public GuiResult beginAsyncUpdate(UUID playerUuid, long sessionGeneration,
+            int pageIndex) {
+        beginCalls.add(new BeginCall(playerUuid, sessionGeneration, pageIndex));
+        if (rejectNextAsyncBegin) {
+            rejectNextAsyncBegin = false;
+            return GuiResult.rejected("STALE", "fake stale begin");
+        }
+        GuiSession current = active.get(playerUuid);
+        if (current == null) {
+            return GuiResult.rejected("SESSION_NOT_FOUND", "fake session missing");
+        }
+        if (current.generation() != sessionGeneration) {
+            return GuiResult.rejected("ACELIB-GUI-011", "fake generation mismatch");
+        }
+        long requestGeneration = asyncRequestGenerations.incrementAndGet();
+        latestAsyncRequests.put(playerUuid, requestGeneration);
+        GuiAsyncRequest request = newAsyncRequest(playerUuid, sessionGeneration,
+                pageIndex, requestGeneration);
+        return GuiResult.success(current, request);
+    }
+
+    @Override
+    public <T> GuiResult applyAsyncUpdate(GuiAsyncRequest request,
+            com.smile.acelib.gui.GuiPage<T> page, Runnable renderer) {
+        applyCalls.add(new ApplyCall(request, page, renderer));
+        if (rejectNextAsyncApply) {
+            rejectNextAsyncApply = false;
+            return GuiResult.rejected("ACELIB-GUI-016", "fake stale apply");
+        }
+        if (request == null) {
+            return GuiResult.failed("ACELIB-GUI-012", "fake missing request");
+        }
+        GuiSession current = active.get(request.playerUuid());
+        if (current == null || current.generation() != request.sessionGeneration()) {
+            return GuiResult.rejected("ACELIB-GUI-011", "fake session mismatch");
+        }
+        Long latest = latestAsyncRequests.get(request.playerUuid());
+        if (latest == null || latest != request.requestGeneration()) {
+            return GuiResult.rejected("ACELIB-GUI-016", "fake request mismatch");
+        }
+        rendererCalls.incrementAndGet();
+        try {
+            renderer.run();
+            return GuiResult.success(current);
+        } catch (RuntimeException failure) {
+            return GuiResult.failed("ACELIB-GUI-012", failure.getMessage());
+        }
+    }
+
+    @Override
     public String getModuleStatus() {
         return "fake-gui";
+    }
+
+    private static GuiAsyncRequest newAsyncRequest(UUID playerUuid, long sessionGeneration,
+            int pageIndex, long requestGeneration) {
+        try {
+            var constructor = GuiAsyncRequest.class.getDeclaredConstructor(
+                    UUID.class, long.class, int.class, long.class);
+            constructor.setAccessible(true);
+            return constructor.newInstance(playerUuid, sessionGeneration, pageIndex,
+                    requestGeneration);
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("fake async request construction failed", failure);
+        }
     }
 
     @Override

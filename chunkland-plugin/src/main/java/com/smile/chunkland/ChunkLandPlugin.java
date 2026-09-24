@@ -9,6 +9,7 @@ import com.smile.acelib.scheduler.AceLibScheduler;
 import com.smile.acelib.scheduler.SafeScheduler;
 import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
+import com.smile.chunkland.adapter.gui.GuiContentRenderer;
 import com.smile.chunkland.api.ChunkLandApi;
 import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.api.money.Money;
@@ -86,6 +87,7 @@ import com.smile.chunkland.economy.VaultServiceDiscovery;
 import com.smile.chunkland.gui.GuiNavigator;
 import com.smile.chunkland.gui.BedrockFormNavigator;
 import com.smile.chunkland.gui.GuiClickContext;
+import com.smile.chunkland.gui.GuiPage;
 import com.smile.chunkland.gui.ManagementGuiActions;
 import com.smile.chunkland.gui.ManagementGuiModel;
 import com.smile.chunkland.gui.ManagementGuiPages;
@@ -278,6 +280,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<M0CapabilityProbe> capabilityProbe = Optional.empty();
     private Optional<Capabilities> capabilities = Optional.empty();
     private GuiNavigator guiNavigator;
+    private GuiContentRenderer guiContentRenderer;
     private BedrockFormNavigator bedrockFormNavigator;
     private Optional<ConfigService> configService = Optional.empty();
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
@@ -492,9 +495,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
             @Override
             public void openDetails(GuiClickContext click) {
                 try {
-                    if (navigator.push(click.playerUuid(),
-                            ManagementGuiPages.detailsPage(shared, this)).isEmpty()) {
+                    GuiPage page = ManagementGuiPages.detailsPage(shared, this);
+                    Optional<Long> generation = navigator.push(click.playerUuid(), page);
+                    if (generation.isEmpty()) {
                         getLogger().warning("ChunkLand management GUI detail navigation failed");
+                    } else {
+                        renderManagementPage(click.playerUuid(), generation.orElseThrow(), page);
                     }
                 } catch (RuntimeException failure) {
                     getLogger().warning("ChunkLand management GUI detail navigation threw: "
@@ -507,6 +513,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 try {
                     if (!navigator.back(click.playerUuid())) {
                         getLogger().warning("ChunkLand management GUI back navigation failed");
+                    } else {
+                        Optional<Long> generation = navigator.currentGeneration(click.playerUuid());
+                        if (generation.isPresent()) {
+                            navigator.currentPage(click.playerUuid()).ifPresent(page ->
+                                    renderManagementPage(click.playerUuid(), generation.orElseThrow(), page));
+                        }
                     }
                 } catch (RuntimeException failure) {
                     getLogger().warning("ChunkLand management GUI back navigation threw: "
@@ -525,15 +537,25 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         };
         try {
-            Optional<Long> generation = navigator.open(playerUuid, ManagementGuiPages.rootPage(actions));
+            GuiPage page = ManagementGuiPages.rootPage(actions);
+            Optional<Long> generation = navigator.open(playerUuid, page);
             if (generation.isEmpty()) {
                 getLogger().warning("ChunkLand management GUI open failed");
+            } else {
+                renderManagementPage(playerUuid, generation.orElseThrow(), page);
             }
             return generation;
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand management GUI open threw: "
                     + failure.getClass().getSimpleName());
             return Optional.empty();
+        }
+    }
+
+    private void renderManagementPage(UUID playerUuid, long generation, GuiPage page) {
+        GuiContentRenderer renderer = this.guiContentRenderer;
+        if (renderer != null) {
+            renderer.render(playerUuid, generation, page);
         }
     }
 
@@ -919,6 +941,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.guiNavigator = capabilities
                 .map(Capabilities::guiService)
                 .map(service -> service == null ? null : new GuiNavigator(service, getLogger()))
+                .orElse(null);
+        this.guiContentRenderer = capabilities
+                .map(Capabilities::guiService)
+                .map(service -> service == null ? null : new GuiContentRenderer(service,
+                        playerUuid -> getServer().getPlayer(playerUuid)))
                 .orElse(null);
         DirectTrustCommandHandler.LandResolver trustLands =
                 currentLocationLandResolver(this.protectionStore);
@@ -4740,6 +4767,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // disable idempotent.
         GuiNavigator navigator = this.guiNavigator;
         this.guiNavigator = null;
+        this.guiContentRenderer = null;
         if (navigator != null) {
             try {
                 navigator.closeAll();
