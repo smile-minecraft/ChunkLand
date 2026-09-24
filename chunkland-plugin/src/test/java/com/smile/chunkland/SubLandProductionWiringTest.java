@@ -324,9 +324,9 @@ class SubLandProductionWiringTest {
             assertEquals("command.land.subland.preview", sink.keys.get(0));
             assertEquals(session.sessionGeneration(), sink.vars.get(0).get("generation"));
             assertEquals(session.selectionRevision(), sink.vars.get(0).get("revision"));
-            assertTrue(String.valueOf(sink.vars.get(0).get("value"))
-                    .contains("/land subland create " + session.sessionGeneration()
-                            + " " + session.selectionRevision() + " den"));
+            assertEquals("/land subland create " + session.sessionGeneration()
+                    + " " + session.selectionRevision() + " den",
+                    sink.vars.get(0).get("value"));
             assertTrue(env.confirm.accept(env.actor, session.sessionGeneration(),
                     session.selectionRevision(), env.selections, ignored -> OptionalLong.of(0L))
                     .isPresent(), "preview must not consume the live SubLand token");
@@ -346,7 +346,28 @@ class SubLandProductionWiringTest {
             sink.await();
             assertEquals("command.land.subland.preview", sink.keys.get(0));
             assertEquals("delete", sink.vars.get(0).get("land_name"));
+            assertEquals("/land subland delete " + env.selections.sessionFor(env.actor)
+                            .orElseThrow().sessionGeneration() + " "
+                            + env.selections.sessionFor(env.actor).orElseThrow().selectionRevision(),
+                    sink.vars.get(0).get("value"));
             assertFalse(String.valueOf(sink.vars.get(0).get("land_name")).isBlank());
+        }
+    }
+
+    @Test
+    void updatePreviewKeepsTheNameInNextCommand() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent();
+            SelectionSession session = env.startSession(0L, null);
+            CapturingSink sink = new CapturingSink(1);
+
+            env.handler().handle(player(env.actor),
+                    new String[]{"subland", "update", "study"}, sink);
+
+            sink.await();
+            assertEquals("/land subland update " + session.sessionGeneration()
+                    + " " + session.selectionRevision() + " study",
+                    sink.vars.get(0).get("value"));
         }
     }
 

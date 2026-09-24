@@ -218,8 +218,10 @@ public final class SubLandCommandHandler implements LandCommand.Handler {
         }
         SelectionSession session = live.get();
         String name = "delete".equals(op) ? op : nameFrom(args, 2);
+        String commandName = "delete".equals(op) ? null : name;
         String command = "/land subland " + op + " " + session.sessionGeneration()
-                + " " + session.selectionRevision() + (name == null || name.isBlank() ? "" : " " + name);
+                + " " + session.selectionRevision()
+                + (commandName == null || commandName.isBlank() ? "" : " " + commandName);
         sink.reply("command.land.subland.preview", Map.of(
                 "action", op,
                 "generation", session.sessionGeneration(),
