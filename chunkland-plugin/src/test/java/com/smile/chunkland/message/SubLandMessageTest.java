@@ -26,6 +26,9 @@ class SubLandMessageTest {
         "command.land.subland.console",
         "command.land.subland.usage",
         "command.land.subland.no_selection",
+        "command.land.subland.selected",
+        "command.land.subland.preview",
+        "command.land.subland.extended",
         "command.land.subland.created",
         "command.land.subland.updated",
         "command.land.subland.deleted",
@@ -73,18 +76,25 @@ class SubLandMessageTest {
         ChunkLandMessagePipeline enPipe = buildPipeline(Locale.US);
         Locale zhLocale = Locale.forLanguageTag("zh-TW");
         ChunkLandMessagePipeline zhPipe = buildPipeline(zhLocale);
-        Map<String, Map<String, Object>> varsByKey = Map.of(
-                "command.land.subland.console", Map.of(),
-                "command.land.subland.usage", Map.of(),
-                "command.land.subland.no_selection", Map.of(),
-                "command.land.subland.created", Map.of("name", "Meadow"),
-                "command.land.subland.updated", Map.of("name", "Meadow"),
-                "command.land.subland.deleted", Map.of(),
-                "command.land.subland.stale", Map.of(),
-                "command.land.subland.confirm_depth",
-                    Map.of("reason", "SubLand minY (40) is below the parent effective floor (60)"),
-                "command.land.subland.failed", Map.of("reason", "overlap"),
-                "command.land.subland.degraded", Map.of("reason", "runtime rebuild pending"));
+        Map<String, Map<String, Object>> varsByKey = Map.ofEntries(
+                Map.entry("command.land.subland.console", Map.of()),
+                Map.entry("command.land.subland.usage", Map.of()),
+                Map.entry("command.land.subland.no_selection", Map.of()),
+                Map.entry("command.land.subland.selected",
+                        Map.of("generation", 1L, "revision", 2L, "land_name", "Home")),
+                Map.entry("command.land.subland.preview",
+                        Map.of("action", "create", "generation", 1L, "revision", 2L,
+                                "land_name", "Meadow", "value", "/land subland create 1 2 Meadow")),
+                Map.entry("command.land.subland.extended", Map.of("count", 3)),
+                Map.entry("command.land.subland.created", Map.of("name", "Meadow")),
+                Map.entry("command.land.subland.updated", Map.of("name", "Meadow")),
+                Map.entry("command.land.subland.deleted", Map.of()),
+                Map.entry("command.land.subland.stale", Map.of()),
+                Map.entry("command.land.subland.confirm_depth",
+                        Map.of("reason", "SubLand minY (40) is below the parent effective floor (60)",
+                                "value", "/land subland extend 1 2")),
+                Map.entry("command.land.subland.failed", Map.of("reason", "overlap")),
+                Map.entry("command.land.subland.degraded", Map.of("reason", "runtime rebuild pending")));
         for (String key : SUBLAND_KEYS) {
             Map<String, Object> vars = varsByKey.get(key);
             String enPlain = plain(enPipe.renderForBroadcast(key, vars, Locale.US));
@@ -96,6 +106,18 @@ class SubLandMessageTest {
             assertFalse(zhPlain.contains(key), "zh render leaks raw key for " + key);
             assertNotEquals(enPlain, zhPlain, "zh render must differ from en for " + key);
         }
+    }
+
+    @Test
+    void depthReplyIncludesTheConcreteExtendCommand() throws Exception {
+        ChunkLandMessagePipeline pipe = buildPipeline(Locale.US);
+        String rendered = plain(pipe.renderForBroadcast(
+                "command.land.subland.confirm_depth",
+                Map.of("reason", "depth below floor",
+                        "value", "/land subland extend 3 4"),
+                Locale.US));
+        assertTrue(rendered.contains("/land subland extend 3 4"));
+        assertFalse(rendered.contains("<value>"));
     }
 
     @Test

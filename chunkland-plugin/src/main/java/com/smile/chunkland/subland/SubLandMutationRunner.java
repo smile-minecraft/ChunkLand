@@ -2,6 +2,8 @@ package com.smile.chunkland.subland;
 
 import com.smile.chunkland.api.event.SubLandPostEvent;
 import com.smile.chunkland.api.event.SubLandPreEvent;
+import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.Cuboid;
 import com.smile.chunkland.api.event.SubLandPreEvent.Operation;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
@@ -15,12 +17,18 @@ import com.smile.chunkland.event.bukkit.SubLandPreBukkitEvent;
 import com.smile.chunkland.persistence.LandRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
 import com.smile.chunkland.runtime.index.LandRegistry;
+import com.smile.chunkland.runtime.vertical.DepthExtendRequest;
+import com.smile.chunkland.runtime.vertical.DepthWriteResult;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
+import com.smile.chunkland.selection.SelectionPoint;
+import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.subland.SubLandConfirmService.Accepted;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -99,6 +107,15 @@ public final class SubLandMutationRunner {
         CompletionStage<LandRegistry> rebuildAndPublish();
     }
 
+    /** Result of one successful SubLand depth-extension operation. */
+    public record DepthExtensionResult(int chunkCount) {
+        public DepthExtensionResult {
+            if (chunkCount <= 0) {
+                throw new IllegalArgumentException("chunkCount must be positive");
+            }
+        }
+    }
+
     private final LandRepository lands;
     private final SubLandAtomicCommit atomic;
     private final LandRegistryStore store;
@@ -106,6 +123,8 @@ public final class SubLandMutationRunner {
     private final SubLandConfirmService confirm;
     private final SubLandDepthSource depths;
     private final DepthExtensionPort depthPort;
+    private final SubLandDepthExtendPort depthExtender;
+    private final SubLandDepthConfirmations depthConfirmations;
     private final LimitSettings limits;
     private final Clock clock;
     private final PublicEvents events;
@@ -185,6 +204,28 @@ public final class SubLandMutationRunner {
             Clock clock,
             PublicEvents events,
             RuntimePublisher publisher) {
+        this(lands, atomic, store, selections, confirm, depths, depthPort, limits, clock,
+                events, publisher, null, null);
+    }
+
+    /**
+     * Full production constructor with the existing durable depth store seam
+     * and the actor-scoped confirmation set shared with the command handler.
+     */
+    public SubLandMutationRunner(
+            LandRepository lands,
+            SubLandAtomicCommit atomic,
+            LandRegistryStore store,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            DepthExtensionPort depthPort,
+            LimitSettings limits,
+            Clock clock,
+            PublicEvents events,
+            RuntimePublisher publisher,
+            SubLandDepthExtendPort depthExtender,
+            SubLandDepthConfirmations depthConfirmations) {
         this.lands = Objects.requireNonNull(lands, "lands");
         this.atomic = Objects.requireNonNull(atomic, "atomic");
         this.store = Objects.requireNonNull(store, "store");
@@ -192,10 +233,30 @@ public final class SubLandMutationRunner {
         this.confirm = Objects.requireNonNull(confirm, "confirm");
         this.depths = Objects.requireNonNull(depths, "depths");
         this.depthPort = Objects.requireNonNull(depthPort, "depthPort");
+        this.depthExtender = depthExtender;
+        this.depthConfirmations = depthConfirmations;
         this.limits = Objects.requireNonNull(limits, "limits");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.events = events == null ? PublicEvents.noop() : events;
         this.publisher = Objects.requireNonNull(publisher, "publisher");
+    }
+
+    /** Production convenience constructor using the standard runtime publisher. */
+    public SubLandMutationRunner(
+            LandRepository lands,
+            SubLandAtomicCommit atomic,
+            LandRegistryStore store,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            DepthExtensionPort depthPort,
+            LimitSettings limits,
+            Clock clock,
+            PublicEvents events,
+            SubLandDepthExtendPort depthExtender,
+            SubLandDepthConfirmations depthConfirmations) {
+        this(lands, atomic, store, selections, confirm, depths, depthPort, limits, clock,
+                events, defaultPublisher(lands, store), depthExtender, depthConfirmations);
     }
 
     /**
@@ -247,7 +308,7 @@ public final class SubLandMutationRunner {
             try {
                 next = SubLandService.applyCreate(parent, candidate,
                         parent.subLands().size(), limits.maxSublandsPerLand(),
-                        effectiveMinY, depthPort);
+                        effectiveMinY, actor, depthPort);
             } catch (RuntimeException rejected) {
                 confirm.releaseIfNotSuccess(actor, accepted);
                 return this.<SubLandSnapshot>failed(rejected);
@@ -260,6 +321,12 @@ public final class SubLandMutationRunner {
                                     accepted.session().sessionGeneration(),
                                     accepted.session().selectionRevision(),
                                     depthConfirmed, effectiveMinY, clock.instant()))
+                    .exceptionallyCompose(failure -> {
+                        if (depthConfirmed) {
+                            depthPort.onDurableFailure(actor, accepted.parentId(), candidate.cuboid().minY());
+                        }
+                        return this.<Void>failed(failure);
+                    })
                     .thenCompose(ignored -> rebuildRuntime()
                             .thenApply(ignoredRegistry -> {
                                 // Public Post: exactly once, after the atomic
@@ -333,7 +400,7 @@ public final class SubLandMutationRunner {
             LandSnapshot next;
             try {
                 next = SubLandService.applyUpdate(parent, candidate,
-                        accepted.structureRevision(), effectiveMinY, depthPort);
+                        accepted.structureRevision(), effectiveMinY, actor, depthPort);
             } catch (RuntimeException rejected) {
                 confirm.releaseIfNotSuccess(actor, accepted);
                 return this.<SubLandSnapshot>failed(rejected);
@@ -346,6 +413,12 @@ public final class SubLandMutationRunner {
                                     accepted.session().sessionGeneration(),
                                     accepted.session().selectionRevision(),
                                     depthConfirmed, effectiveMinY, clock.instant()))
+                    .exceptionallyCompose(failure -> {
+                        if (depthConfirmed) {
+                            depthPort.onDurableFailure(actor, accepted.parentId(), candidate.cuboid().minY());
+                        }
+                        return this.<Void>failed(failure);
+                    })
                     .thenCompose(ignored -> rebuildRuntime()
                             .thenApply(ignoredRegistry -> {
                                 // Public Post: exactly once, after the atomic
@@ -439,6 +512,127 @@ public final class SubLandMutationRunner {
                         return this.<Void>failed(failure);
                     });
         });
+    }
+
+    /**
+     * Durably extend the parent's protected depth for every chunk covered by
+     * the live SubLand selection. All durable writes use the existing depth
+     * store seam; the confirmation is recorded only after every result is a
+     * successful applied or already-deep-enough outcome.
+     */
+    public CompletionStage<DepthExtensionResult> extend(UUID actor, Accepted accepted) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(accepted, "accepted");
+        Cuboid cuboid = cuboidOf(accepted.session());
+        if (cuboid == null) {
+            return failed(new IllegalStateException("SubLand selection has no complete cuboid"));
+        }
+        if (depthExtender == null || depthConfirmations == null) {
+            return failed(new IllegalStateException("SubLand depth extension is unavailable"));
+        }
+
+        final CompletionStage<Optional<LandSnapshot>> parentStage;
+        try {
+            parentStage = lands.findById(accepted.parentId());
+        } catch (RuntimeException failure) {
+            return failed(failure);
+        }
+        if (parentStage == null) {
+            return failed(new IllegalStateException("land repository returned null"));
+        }
+
+        CompletionStage<DepthExtensionResult> work;
+        try {
+            work = parentStage.thenCompose(parentOpt -> {
+                if (parentOpt == null || parentOpt.isEmpty()) {
+                    return this.<DepthExtensionResult>failed(
+                            new IllegalStateException("unknown parent land " + accepted.parentId()));
+                }
+                LandSnapshot parent = parentOpt.get();
+                if (parent.structureRevision() != accepted.structureRevision()) {
+                    return this.<DepthExtensionResult>failed(new IllegalStateException(
+                            "stale parent structure revision: expected " + accepted.structureRevision()
+                                    + " but live is " + parent.structureRevision()));
+                }
+                List<ChunkKey> covered;
+                try {
+                    covered = new ArrayList<>(cuboid.coveredChunks(accepted.session().worldId()));
+                } catch (RuntimeException invalid) {
+                    return this.<DepthExtensionResult>failed(invalid);
+                }
+                if (covered.isEmpty() || !parent.chunks().containsAll(covered)) {
+                    return this.<DepthExtensionResult>failed(new IllegalStateException(
+                            "SubLand selection is outside the parent land"));
+                }
+
+                List<CompletionStage<DepthWriteResult>> writes = new ArrayList<>(covered.size());
+                for (ChunkKey chunk : covered) {
+                    DepthExtendRequest request = new DepthExtendRequest(
+                            chunk, accepted.parentId(), actor, cuboid.minY(), cuboid.minY());
+                    final CompletionStage<DepthWriteResult> write;
+                    try {
+                        write = depthExtender.extend(request);
+                    } catch (RuntimeException failure) {
+                        return this.<DepthExtensionResult>failed(failure);
+                    }
+                    if (write == null) {
+                        return this.<DepthExtensionResult>failed(
+                                new IllegalStateException("depth store returned null"));
+                    }
+                    writes.add(write.thenApply(result -> validateDepthResult(result, request)));
+                }
+                CompletableFuture<Void> all = CompletableFuture.allOf(
+                        writes.stream().map(CompletionStage::toCompletableFuture)
+                                .toArray(CompletableFuture[]::new));
+                return all.thenApply(ignored -> {
+                    if (!depthConfirmations.record(
+                            actor, accepted.session(), accepted.parentId(), cuboid.minY())) {
+                        throw new IllegalStateException("SubLand depth confirmation could not be recorded");
+                    }
+                    return new DepthExtensionResult(covered.size());
+                });
+            });
+        } catch (RuntimeException failure) {
+            work = failed(failure);
+        }
+        return work.whenComplete((ignored, failure) ->
+                confirm.releaseIfNotSuccess(actor, accepted));
+    }
+
+    private static DepthWriteResult validateDepthResult(
+            DepthWriteResult result, DepthExtendRequest request) {
+        if (result == null || !request.chunk().equals(result.chunk())
+                || !request.landId().equals(result.landId())) {
+            throw new IllegalStateException("depth store returned an invalid result");
+        }
+        if (result.applied()) {
+            return result;
+        }
+        if (result.afterStored() <= request.requestedDepth()) {
+            return result;
+        }
+        throw new IllegalStateException("depth extension did not reach the requested depth");
+    }
+
+    static Cuboid cuboidOf(SelectionSession session) {
+        Optional<SelectionPoint> first = session.pointA();
+        Optional<SelectionPoint> second = session.pointB();
+        if (first.isEmpty() || second.isEmpty()) {
+            return null;
+        }
+        try {
+            SelectionPoint a = first.get();
+            SelectionPoint b = second.get();
+            return new Cuboid(
+                    Math.min(a.blockX(), b.blockX()),
+                    Math.min(a.blockY(), b.blockY()),
+                    Math.min(a.blockZ(), b.blockZ()),
+                    Math.max(a.blockX(), b.blockX()),
+                    Math.max(a.blockY(), b.blockY()),
+                    Math.max(a.blockZ(), b.blockZ()));
+        } catch (RuntimeException invalid) {
+            return null;
+        }
     }
 
     /**

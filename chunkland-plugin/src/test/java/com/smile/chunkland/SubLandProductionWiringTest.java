@@ -1,6 +1,7 @@
 package com.smile.chunkland;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -14,6 +15,7 @@ import com.smile.chunkland.api.land.LandName;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.land.SubLandId;
+import com.smile.chunkland.api.land.SubLandSnapshot;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.ReplySink;
 import com.smile.chunkland.command.SubLandCommandHandler;
@@ -39,6 +41,7 @@ import com.smile.chunkland.selection.SelectionTimeoutScheduler;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
 import com.smile.chunkland.subland.DepthExtensionPort;
 import com.smile.chunkland.subland.SubLandConfirmService;
+import com.smile.chunkland.subland.SubLandEntryLookup;
 import com.smile.chunkland.subland.SubLandDepthSource;
 import com.smile.chunkland.subland.SubLandMutationRunner;
 import java.lang.reflect.Proxy;
@@ -57,6 +60,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.junit.jupiter.api.Test;
@@ -114,6 +119,10 @@ class SubLandProductionWiringTest {
             return new SubLandCommandHandler(selections, confirm, runner(), structures());
         }
 
+        SubLandCommandHandler handler(SubLandEntryLookup entries) {
+            return new SubLandCommandHandler(selections, confirm, runner(), structures(), entries);
+        }
+
         void saveParent() {
             parentId = new LandId(UUID.randomUUID());
             LandName name = LandName.of("Home");
@@ -133,6 +142,13 @@ class SubLandProductionWiringTest {
                     Optional.of(new SelectionPoint(world, 0, 60, 0)),
                     Optional.of(new SelectionPoint(world, 15, 70, 15)),
                     baseRevision, NOW));
+        }
+
+        SelectionSession startEmptySession(long baseRevision, SubLandId target) {
+            return selections.start(SelectionSession.initial(
+                    actor, world, SelectionMode.CREATE_SUBLAND,
+                    Optional.of(parentId), Optional.ofNullable(target),
+                    Optional.empty(), Optional.empty(), baseRevision, NOW));
         }
 
         @Override
@@ -194,6 +210,172 @@ class SubLandProductionWiringTest {
                     }
                     return null;
                 });
+    }
+
+    private static Player playerAt(UUID id, UUID worldId, int x, int z) {
+        World world = (World) Proxy.newProxyInstance(
+                World.class.getClassLoader(), new Class<?>[]{World.class},
+                (proxy, method, args) -> method.getName().equals("getUID") ? worldId : null);
+        Location location = new Location(world, x, 64, z);
+        return (Player) Proxy.newProxyInstance(
+                Player.class.getClassLoader(), new Class<?>[]{Player.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getUniqueId" -> id;
+                    case "getLocation" -> location;
+                    case "hasPermission" -> true;
+                    case "getName" -> "Tester";
+                    default -> null;
+                });
+    }
+
+    @Test
+    void selectRejectsLandOwnedByAnotherPlayer() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent();
+            LandSnapshot parent = env.lands.findById(env.parentId).toCompletableFuture().join().orElseThrow();
+            UUID other = UUID.randomUUID();
+            CapturingSink sink = new CapturingSink(1);
+
+            env.handler((worldId, blockX, blockZ) -> Optional.of(parent)).handle(
+                    playerAt(other, env.world, 0, 0),
+                    new String[]{"subland", "select"}, sink);
+
+            sink.await();
+            assertEquals("command.land.subland.no_selection", sink.keys.get(0));
+            assertTrue(env.selections.sessionFor(other).isEmpty());
+        }
+    }
+
+    @Test
+    void selectCreatesCreateSubLandSessionForOwnedLand() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent();
+            LandSnapshot parent = env.lands.findById(env.parentId).toCompletableFuture().join().orElseThrow();
+            CapturingSink sink = new CapturingSink(1);
+
+            env.handler((worldId, blockX, blockZ) -> Optional.of(parent)).handle(
+                    playerAt(env.actor, env.world, 0, 0),
+                    new String[]{"subland", "select"}, sink);
+
+            sink.await();
+            assertEquals("command.land.subland.selected", sink.keys.get(0));
+            SelectionSession session = env.selections.sessionFor(env.actor).orElseThrow();
+            assertEquals(SelectionMode.CREATE_SUBLAND, session.mode());
+            assertEquals(Optional.of(parent.id()), session.targetLandId());
+            assertEquals(parent.structureRevision(), session.baseStructureRevision());
+            assertTrue(session.pointA().isEmpty());
+            assertTrue(session.pointB().isEmpty());
+        }
+    }
+
+    @Test
+    void selectNameRequiresOneUniqueExistingSubLand() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent();
+            SubLandSnapshot den = new SubLandSnapshot(
+                    new SubLandId(UUID.randomUUID()), env.parentId, "den",
+                    new Cuboid(0, 60, 0, 15, 70, 15), env.world);
+            env.subs.save(den).toCompletableFuture().join();
+            LandSnapshot parent = env.lands.findById(env.parentId).toCompletableFuture().join().orElseThrow();
+            SubLandEntryLookup entries = (worldId, blockX, blockZ) -> Optional.of(parent);
+
+            CapturingSink success = new CapturingSink(1);
+            env.handler(entries).handle(playerAt(env.actor, env.world, 0, 0),
+                    new String[]{"subland", "select", "den"}, success);
+            success.await();
+            assertEquals("command.land.subland.selected", success.keys.get(0));
+            assertEquals(Optional.of(den.id()),
+                    env.selections.sessionFor(env.actor).orElseThrow().targetSubLandId());
+
+            env.selections.cancel(env.actor);
+            CapturingSink missingSink = new CapturingSink(1);
+            env.handler(entries).handle(playerAt(env.actor, env.world, 0, 0),
+                    new String[]{"subland", "select", "missing"}, missingSink);
+            missingSink.await();
+            assertEquals("command.land.subland.no_selection", missingSink.keys.get(0));
+            assertTrue(env.selections.sessionFor(env.actor).isEmpty());
+
+            SubLandSnapshot duplicate = new SubLandSnapshot(
+                    new SubLandId(UUID.randomUUID()), env.parentId, "den",
+                    new Cuboid(16, 60, 0, 31, 70, 15), env.world);
+            env.subs.save(duplicate).toCompletableFuture().join();
+            LandSnapshot ambiguous = env.lands.findById(env.parentId).toCompletableFuture().join().orElseThrow();
+            CapturingSink duplicateSink = new CapturingSink(1);
+            env.handler((worldId, blockX, blockZ) -> Optional.of(ambiguous)).handle(
+                    playerAt(env.actor, env.world, 0, 0),
+                    new String[]{"subland", "select", "den"}, duplicateSink);
+            duplicateSink.await();
+            assertEquals("command.land.subland.no_selection", duplicateSink.keys.get(0));
+            assertTrue(env.selections.sessionFor(env.actor).isEmpty());
+        }
+    }
+
+    @Test
+    void createWithoutTokensReturnsLiveSessionPreview() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent();
+            SelectionSession session = env.startSession(0L, null);
+            CapturingSink sink = new CapturingSink(1);
+
+            env.handler().handle(player(env.actor),
+                    new String[]{"subland", "create", "den"}, sink);
+
+            sink.await();
+            assertEquals("command.land.subland.preview", sink.keys.get(0));
+            assertEquals(session.sessionGeneration(), sink.vars.get(0).get("generation"));
+            assertEquals(session.selectionRevision(), sink.vars.get(0).get("revision"));
+            assertTrue(String.valueOf(sink.vars.get(0).get("value"))
+                    .contains("/land subland create " + session.sessionGeneration()
+                            + " " + session.selectionRevision() + " den"));
+            assertTrue(env.confirm.accept(env.actor, session.sessionGeneration(),
+                    session.selectionRevision(), env.selections, ignored -> OptionalLong.of(0L))
+                    .isPresent(), "preview must not consume the live SubLand token");
+        }
+    }
+
+    @Test
+    void deletePreviewUsesOperationNameInsteadOfEmptyName() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent();
+            env.startSession(0L, null);
+            CapturingSink sink = new CapturingSink(1);
+
+            env.handler().handle(player(env.actor),
+                    new String[]{"subland", "delete"}, sink);
+
+            sink.await();
+            assertEquals("command.land.subland.preview", sink.keys.get(0));
+            assertEquals("delete", sink.vars.get(0).get("land_name"));
+            assertFalse(String.valueOf(sink.vars.get(0).get("land_name")).isBlank());
+        }
+    }
+
+    @Test
+    void extendWithoutPointsFailsClosedBeforeMutation() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent();
+            env.startEmptySession(0L, null);
+            CapturingSink sink = new CapturingSink(1);
+
+            env.handler().handle(player(env.actor),
+                    new String[]{"subland", "extend", "0", "0"}, sink);
+
+            sink.await();
+            assertEquals("command.land.subland.no_selection", sink.keys.get(0));
+        }
+    }
+
+    @Test
+    void selectWithoutNameWithoutLandFailsClosed() throws Exception {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            CapturingSink sink = new CapturingSink(1);
+
+            env.handler().handle(player(env.actor),
+                    new String[]{"subland", "select"}, sink);
+
+            sink.await();
+            assertEquals("command.land.subland.no_selection", sink.keys.get(0));
+        }
     }
 
     @Test

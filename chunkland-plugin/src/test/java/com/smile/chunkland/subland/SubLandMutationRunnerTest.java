@@ -21,6 +21,7 @@ import com.smile.chunkland.persistence.SqliteAuditRepository;
 import com.smile.chunkland.persistence.SqliteChunkRepository;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.SqliteSubLandRepository;
+import com.smile.chunkland.persistence.SubLandAtomicCommit;
 import com.smile.chunkland.persistence.SubLandRepository;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.selection.SelectionMode;
@@ -273,6 +274,38 @@ class SubLandMutationRunnerTest {
             // The parent stored depth itself is never rewritten by the SubLand path.
             assertEquals(Map.of(new ChunkKey(WORLD, 0, 0), 50), env.chunks
                     .listDepthsByLand(env.parentId).toCompletableFuture().join());
+        }
+    }
+
+    @Test
+    void durableCreateFailureRestoresDepthConfirmationForRetry() {
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"))) {
+            env.saveParent(0);
+            SubLandDepthConfirmations depthConfirmations = new SubLandDepthConfirmations(
+                    env.selections, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(30));
+            Accepted accepted = env.startSession(0L, null);
+            SelectionSession session = env.selections.sessionFor(ACTOR).orElseThrow();
+            assertTrue(depthConfirmations.record(ACTOR, session, env.parentId, 30));
+            SubLandSnapshot deep = candidate(env.parentId, "deep",
+                    new Cuboid(0, 30, 0, 15, 70, 15));
+            SubLandMutationRunner failing = new SubLandMutationRunner(
+                    env.lands,
+                    new SubLandAtomicCommit(env.store, step -> {
+                        throw new IllegalStateException("injected durable failure");
+                    }),
+                    env.registry, env.selections, env.confirm,
+                    SubLandDepthSource.constant(50), depthConfirmations,
+                    LimitSettings.defaults(), Clock.fixed(NOW, ZoneOffset.UTC),
+                    null, null, depthConfirmations);
+            assertThrows(CompletionException.class, () -> failing.create(ACTOR, accepted, deep)
+                    .toCompletableFuture().join());
+
+            Accepted retry = env.confirm.accept(ACTOR,
+                    accepted.session().sessionGeneration(), accepted.session().selectionRevision(),
+                    env.selections, landId -> OptionalLong.of(0L)).orElseThrow();
+            env.runner(depthConfirmations).create(ACTOR, retry, deep).toCompletableFuture().join();
+            assertTrue(env.subs.findById(deep.id()).toCompletableFuture().join().isPresent());
+            assertEquals(0, depthConfirmations.size());
         }
     }
 

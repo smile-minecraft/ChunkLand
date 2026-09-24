@@ -236,6 +236,14 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             } catch (RuntimeException ex) {
                 return;
             }
+            if (current != null && current.mode() == SelectionMode.CREATE_SUBLAND) {
+                if (!worldId.equals(current.worldId())) {
+                    notifyOutside(player);
+                    return;
+                }
+                extendSubLandSession(playerId, player, current, point);
+                return;
+            }
             Instant now;
             try {
                 now = clock.now();
@@ -363,19 +371,68 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         }
     }
 
+    private void extendSubLandSession(
+            UUID playerId, Player player, SelectionSession current, SelectionPoint point) {
+        if (current.targetLandId().isEmpty()) {
+            notifyOutside(player);
+            return;
+        }
+        final SelectionLandContext context;
+        try {
+            context = landLookup.landAt(
+                    point.worldId(), Math.floorDiv(point.blockX(), 16),
+                    Math.floorDiv(point.blockZ(), 16));
+        } catch (RuntimeException ex) {
+            notifyUnavailable(playerId, player);
+            return;
+        }
+        if (context == null || !current.targetLandId().get().equals(context.landId())) {
+            notifyOutside(player);
+            return;
+        }
+        Optional<SelectionPoint> cornerA;
+        Optional<SelectionPoint> cornerB;
+        WandFeedback.Kind kind;
+        if (current.pointA().isEmpty()) {
+            cornerA = Optional.of(point);
+            cornerB = Optional.empty();
+            kind = WandFeedback.Kind.FIRST_POINT;
+        } else if (current.pointB().isEmpty()) {
+            cornerA = current.pointA();
+            cornerB = Optional.of(point);
+            kind = WandFeedback.Kind.SECOND_POINT;
+        } else {
+            cornerA = current.pointA();
+            cornerB = Optional.of(point);
+            kind = WandFeedback.Kind.RESIZED;
+        }
+        SelectionUpdate update;
+        try {
+            update = new SelectionUpdate(
+                    cornerA, cornerB, current.selectedChunks(), current.pendingChanges());
+        } catch (RuntimeException ex) {
+            return;
+        }
+        Optional<SelectionSession> updated;
+        try {
+            updated = manager.updateSelection(playerId, current, update);
+        } catch (RuntimeException ex) {
+            return;
+        }
+        if (updated != null && updated.isPresent()) {
+            clearBlockedNotice(playerId);
+            feedback.send(player, kind, subLandSizeVars(updated.get()));
+        }
+    }
+
     private void extendSession(
             UUID playerId,
             Player player,
             SelectionSession current,
             SelectionEditService edits,
             SelectionPoint point) {
-        // Only the wand-owned modes may grow here. A CREATE_SUBLAND session is
-        // driven by the SubLand flow and must never be reinterpreted as a
-        // claim/edit rectangle by a stray wand hit.
-        if (current.mode() != SelectionMode.CREATE_LAND
-                && current.mode() != SelectionMode.EDIT_SELECTION) {
-            return;
-        }
+        // Only the wand-owned claim/edit modes use the rectangle editor.
+        // CREATE_SUBLAND is routed above and never reinterpreted as a claim/edit.
         // The first corner always stays; the new click moves the second corner.
         // A session that holds only the second corner is repaired the same way.
         boolean resize = current.pointA().isPresent() && current.pointB().isPresent();
@@ -468,6 +525,10 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         feedback.send(player, WandFeedback.Kind.UNAVAILABLE, Map.of());
     }
 
+    private void notifyOutside(Player player) {
+        feedback.send(player, WandFeedback.Kind.SUBLAND_OUTSIDE, Map.of());
+    }
+
     /** Resolve the land owning a rejected candidate chunk, for the boundary preview. */
     private Optional<LandId> occupiedLandAt(Optional<ChunkKey> chunk) {
         if (chunk == null || chunk.isEmpty()) {
@@ -534,6 +595,26 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         return SelectionRectangleDimensions.from(session.selectedChunks())
                 .map(SelectionRectangleDimensions::messageVars)
                 .orElse(Map.of());
+    }
+
+    private static Map<String, Object> subLandSizeVars(SelectionSession session) {
+        Optional<SelectionPoint> first = session.pointA();
+        Optional<SelectionPoint> second = session.pointB();
+        if (first.isEmpty() || second.isEmpty()) {
+            return Map.of();
+        }
+        SelectionPoint a = first.get();
+        SelectionPoint b = second.get();
+        try {
+            int minChunkX = Math.floorDiv(Math.min(a.blockX(), b.blockX()), 16);
+            int maxChunkX = Math.floorDiv(Math.max(a.blockX(), b.blockX()), 16);
+            int minChunkZ = Math.floorDiv(Math.min(a.blockZ(), b.blockZ()), 16);
+            int maxChunkZ = Math.floorDiv(Math.max(a.blockZ(), b.blockZ()), 16);
+            return new SelectionRectangleDimensions(
+                    maxChunkX - minChunkX + 1, maxChunkZ - minChunkZ + 1).messageVars();
+        } catch (RuntimeException invalid) {
+            return Map.of();
+        }
     }
 
     /** Read the player id without ever letting a Bukkit failure escape the event path. */

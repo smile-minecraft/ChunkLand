@@ -54,6 +54,19 @@ public final class SubLandService {
             int maxSublandsPerLand,
             int effectiveMinY,
             DepthExtensionPort depthPort) {
+        return applyCreate(parent, candidate, existingCount, maxSublandsPerLand,
+                effectiveMinY, null, depthPort);
+    }
+
+    /** Actor-aware create variant used by the production confirmation set. */
+    public static LandSnapshot applyCreate(
+            LandSnapshot parent,
+            SubLandSnapshot candidate,
+            int existingCount,
+            int maxSublandsPerLand,
+            int effectiveMinY,
+            java.util.UUID actor,
+            DepthExtensionPort depthPort) {
         Objects.requireNonNull(parent, "parent");
         Objects.requireNonNull(candidate, "candidate");
         if (existingCount < 0) {
@@ -72,7 +85,7 @@ public final class SubLandService {
             throw new IllegalStateException(
                     "max-sublands-per-land reached (" + existingCount + "/" + maxSublandsPerLand + ")");
         }
-        requireDepthOrConfirmation(parent, candidate, effectiveMinY, depthPort);
+        requireDepthOrConfirmation(parent, candidate, effectiveMinY, actor, depthPort);
         return parent.addSubLand(candidate);
     }
 
@@ -93,6 +106,18 @@ public final class SubLandService {
             long expectedStructureRevision,
             int effectiveMinY,
             DepthExtensionPort depthPort) {
+        return applyUpdate(parent, candidate, expectedStructureRevision,
+                effectiveMinY, null, depthPort);
+    }
+
+    /** Actor-aware update variant used by the production confirmation set. */
+    public static LandSnapshot applyUpdate(
+            LandSnapshot parent,
+            SubLandSnapshot candidate,
+            long expectedStructureRevision,
+            int effectiveMinY,
+            java.util.UUID actor,
+            DepthExtensionPort depthPort) {
         Objects.requireNonNull(parent, "parent");
         Objects.requireNonNull(candidate, "candidate");
         requirePrecise(candidate);
@@ -103,7 +128,7 @@ public final class SubLandService {
             throw new IllegalStateException("unknown SubLand id: " + candidate.id());
         }
         SubLandTopologyValidator.validate(parent, candidate);
-        requireDepthOrConfirmation(parent, candidate, effectiveMinY, depthPort);
+        requireDepthOrConfirmation(parent, candidate, effectiveMinY, actor, depthPort);
         List<SubLandSnapshot> next = new ArrayList<>(parent.subLands().size());
         for (SubLandSnapshot sub : parent.subLands()) {
             next.add(sub.id().equals(candidate.id()) ? candidate : sub);
@@ -150,13 +175,19 @@ public final class SubLandService {
             LandSnapshot parent,
             SubLandSnapshot candidate,
             int effectiveMinY,
+            java.util.UUID actor,
             DepthExtensionPort depthPort) {
         int requestedMinY = candidate.cuboid().minY();
         if (requestedMinY >= effectiveMinY) {
             return;
         }
-        if (depthPort != null
-                && depthPort.isDepthExtendConfirmed(parent.id(), effectiveMinY, requestedMinY)) {
+        boolean confirmed = actor == null
+                ? depthPort != null
+                        && depthPort.isDepthExtendConfirmed(parent.id(), effectiveMinY, requestedMinY)
+                : depthPort != null
+                        && depthPort.isDepthExtendConfirmed(
+                                actor, parent.id(), effectiveMinY, requestedMinY);
+        if (confirmed) {
             return;
         }
         throw new DepthExtendConfirmationRequired(effectiveMinY, requestedMinY);

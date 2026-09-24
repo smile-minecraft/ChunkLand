@@ -27,6 +27,8 @@ public interface WandFeedback {
         RESIZED("selection.wand.resized"),
         /** The click hit an existing land the selection may not cover. */
         BLOCKED("selection.wand.blocked"),
+        /** The click is outside the active SubLand parent land. */
+        SUBLAND_OUTSIDE("selection.wand.subland_outside"),
         /** Land data is not hydrated yet, so the click cannot be judged safely. */
         UNAVAILABLE("selection.wand.unavailable"),
         /** The wand came back to the main hand; the range restarts clean. */

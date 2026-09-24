@@ -935,6 +935,56 @@ class SelectionWandClickHandlerTest {
     }
 
     @Test
+    void activeSubLandSessionReceivesWandPoint() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.ownLand(OWN_LAND, 7L, Set.of(
+                new ChunkKey(WORLD_ID, 0, 0), new ChunkKey(WORLD_ID, 1, 0)));
+        harness.manager.start(SelectionSession.initial(
+                PLAYER_ID, WORLD_ID, SelectionMode.CREATE_SUBLAND,
+                Optional.of(OWN_LAND), Optional.empty(),
+                Optional.empty(), Optional.empty(), 7L, NOW));
+
+        harness.handler().onWandRightClick(player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH);
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(Optional.of(new SelectionPoint(WORLD_ID, 0, 64, 0)), session.pointA());
+        assertTrue(session.pointB().isEmpty());
+
+        harness.handler().onWandRightClick(player, blockAt(fakeWorld(), 15, 64, 15), BlockFace.NORTH);
+        SelectionSession completed = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(Optional.of(new SelectionPoint(WORLD_ID, 15, 64, 15)), completed.pointB());
+        assertEquals(List.of(WandFeedback.Kind.FIRST_POINT, WandFeedback.Kind.SECOND_POINT),
+                harness.feedbackKinds());
+        assertEquals(Map.of("width", 1, "height", 1), harness.feedback.get(1).vars(),
+                "SubLand feedback must carry real dimensions");
+
+        harness.handler().onWandRightClick(player, blockAt(fakeWorld(), 31, 64, 15), BlockFace.NORTH);
+        assertEquals(List.of(WandFeedback.Kind.FIRST_POINT, WandFeedback.Kind.SECOND_POINT,
+                        WandFeedback.Kind.RESIZED), harness.feedbackKinds());
+        assertEquals(Map.of("width", 2, "height", 1), harness.feedback.get(2).vars(),
+                "SubLand resize feedback must carry the resized dimensions");
+    }
+
+    @Test
+    void activeSubLandClickOutsideParentIsIgnoredWithFeedback() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        harness.ownLand(OWN_LAND, 3L, 0, 0);
+        harness.otherPlayerLand(OTHER_LAND, 1L, 1, 0);
+        harness.manager.start(SelectionSession.initial(
+                PLAYER_ID, WORLD_ID, SelectionMode.CREATE_SUBLAND,
+                Optional.of(OWN_LAND), Optional.empty(),
+                Optional.empty(), Optional.empty(), 3L, NOW));
+
+        harness.handler().onWandRightClick(player, blockAt(fakeWorld(), 16, 64, 0), BlockFace.NORTH);
+
+        SelectionSession session = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertTrue(session.pointA().isEmpty());
+        assertEquals(List.of(WandFeedback.Kind.SUBLAND_OUTSIDE), harness.feedbackKinds());
+    }
+
+    @Test
     void firstPointOnOwnLandOpensEditTargetWithStructureRevision() {
         Harness harness = new Harness();
         Player player = playerWith(wandStack());
@@ -1092,7 +1142,7 @@ class SelectionWandClickHandlerTest {
     }
 
     @Test
-    void subLandSessionIsNeverReinterpretedByWandClicks() {
+    void subLandSessionReceivesWandClicksWithoutReenteringClaimFlow() {
         Harness harness = new Harness();
         Player player = playerWith(wandStack());
         harness.ownLand(OWN_LAND, 3L, 0, 0);
@@ -1106,11 +1156,13 @@ class SelectionWandClickHandlerTest {
         harness.handler().onWandUse(new WandClickHandler.Context(
                 player, blockAt(fakeWorld(), 1, 64, 1), BlockFace.NORTH, false));
 
-        assertSame(subland, harness.manager.sessionFor(PLAYER_ID).orElseThrow(),
-                "a CREATE_SUBLAND session must not be mutated by a stray wand hit");
-        assertTrue(harness.feedback.isEmpty());
+        SelectionSession after = harness.manager.sessionFor(PLAYER_ID).orElseThrow();
+        assertEquals(SelectionMode.CREATE_SUBLAND, after.mode());
+        assertEquals(Optional.of(OWN_LAND), after.targetLandId());
+        assertEquals(Optional.of(new SelectionPoint(WORLD_ID, 1, 64, 1)), after.pointA());
+        assertEquals(List.of(WandFeedback.Kind.FIRST_POINT), harness.feedbackKinds());
         assertTrue(harness.visualization.starts.isEmpty());
-        assertTrue(harness.visualization.refreshes.isEmpty());
+        assertEquals(1, harness.visualization.refreshes.size());
     }
 
     @Test

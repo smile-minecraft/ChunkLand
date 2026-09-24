@@ -28,6 +28,7 @@ class SelectionMessageTest {
             "selection.wand.second_point",
             "selection.wand.resized",
             "selection.wand.blocked",
+            "selection.wand.subland_outside",
             "selection.wand.unavailable",
             "selection.wand.reset",
             "selection.wand.abandoned",

@@ -89,6 +89,7 @@ import com.smile.chunkland.gui.GuiClickContext;
 import com.smile.chunkland.gui.ManagementGuiActions;
 import com.smile.chunkland.gui.ManagementGuiModel;
 import com.smile.chunkland.gui.ManagementGuiPages;
+import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.limit.ExternalLimitProvider;
 import com.smile.chunkland.api.limit.LimitResult;
 import com.smile.chunkland.api.history.WorldHistoryProvider;
@@ -126,6 +127,7 @@ import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.persistence.AuditRepository;
 import com.smile.chunkland.persistence.SqliteAuditRepository;
 import com.smile.chunkland.persistence.SubLandAtomicCommit;
+import com.smile.chunkland.persistence.DepthExtendStore;
 import com.smile.chunkland.persistence.PermissionProfileRepository;
 import com.smile.chunkland.persistence.SubjectGroupRepository;
 import com.smile.chunkland.protection.EntryBanLookup;
@@ -175,7 +177,10 @@ import com.smile.chunkland.selection.SelectionVisualizationRenderer;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
 import com.smile.chunkland.subland.DepthExtensionPort;
 import com.smile.chunkland.subland.SubLandConfirmService;
+import com.smile.chunkland.subland.SubLandDepthConfirmations;
+import com.smile.chunkland.subland.SubLandDepthExtendPort;
 import com.smile.chunkland.subland.SubLandDepthSource;
+import com.smile.chunkland.subland.SubLandEntryLookup;
 import com.smile.chunkland.subland.SubLandMutationRunner;
 import com.smile.chunkland.rename.LandRenameService;
 import com.smile.chunkland.trust.LandAuthorisationService;
@@ -3005,6 +3010,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
         };
     }
 
+    /** Runtime-only land lookup for the SubLand select command. */
+    static SubLandEntryLookup buildSubLandEntryLookup(LandRegistryStore store) {
+        if (store == null) {
+            return SubLandEntryLookup.unavailable();
+        }
+        return (worldId, blockX, blockZ) -> {
+            try {
+                LandSnapshot land = store.snapshot().findLand(
+                        worldId, Math.floorDiv(blockX, 16), Math.floorDiv(blockZ, 16));
+                return land == null ? Optional.empty() : Optional.of(land);
+            } catch (RuntimeException failure) {
+                return Optional.empty();
+            }
+        };
+    }
+
     /**
      * Production effective-floor source for SubLand depth checks, resolved
      * from the runtime's stored per-chunk depths with the legacy fallback for
@@ -3065,6 +3086,21 @@ public final class ChunkLandPlugin extends JavaPlugin {
             LimitSettings limits,
             Clock clock,
             PublicEvents events) {
+        return buildSubLandRunner(persistence, registry, selections, confirm, depths, limits,
+                clock, events, null, null);
+    }
+
+    static SubLandMutationRunner buildSubLandRunner(
+            PersistenceStore persistence,
+            LandRegistryStore registry,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            LimitSettings limits,
+            Clock clock,
+            PublicEvents events,
+            SubLandDepthExtendPort depthExtender,
+            SubLandDepthConfirmations depthConfirmations) {
         if (persistence == null || registry == null || selections == null
                 || confirm == null || depths == null || limits == null || clock == null) {
             return null;
@@ -3076,10 +3112,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 selections,
                 confirm,
                 depths,
-                DepthExtensionPort.denyAll(),
+                depthConfirmations == null
+                        ? DepthExtensionPort.denyAll() : depthConfirmations,
                 limits,
                 clock,
-                events);
+                events,
+                depthExtender,
+                depthConfirmations);
     }
 
     /**
@@ -3091,10 +3130,21 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SubLandConfirmService confirm,
             SubLandMutationRunner runner,
             SelectionStructureRevisionLookup structures) {
-        if (selections == null || confirm == null || runner == null || structures == null) {
+        return buildSubLandHandler(selections, confirm, runner, structures,
+                SubLandEntryLookup.unavailable());
+    }
+
+    static SubLandCommandHandler buildSubLandHandler(
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandMutationRunner runner,
+            SelectionStructureRevisionLookup structures,
+            SubLandEntryLookup entries) {
+        if (selections == null || confirm == null || runner == null || structures == null
+                || entries == null) {
             return null;
         }
-        return new SubLandCommandHandler(selections, confirm, runner, structures);
+        return new SubLandCommandHandler(selections, confirm, runner, structures, entries);
     }
 
     /**
@@ -4004,9 +4054,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SubLandConfirmService confirm = new SubLandConfirmService();
             SubLandDepthSource depths = buildSubLandDepthSource(registry);
             SelectionStructureRevisionLookup lookup = buildSubLandStructureLookup(registry);
+            SubLandDepthConfirmations depthConfirmations =
+                    new SubLandDepthConfirmations(selections, Clock.systemUTC());
+            SubLandDepthExtendPort depthExtender =
+                    new DepthExtendStore(bootstrap.store())::extend;
             SubLandMutationRunner runner = buildSubLandRunner(
                     bootstrap.store(), registry, selections, confirm, depths,
-                    activeConfig.current().limits(), Clock.systemUTC(), this.publicEvents);
+                    activeConfig.current().limits(), Clock.systemUTC(), this.publicEvents,
+                    depthExtender, depthConfirmations);
             if (runner == null) {
                 getLogger().warning("ChunkLand subland flow assembly failed; "
                         + "/land subland stays fail-closed: runner unavailable");
@@ -4014,7 +4069,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
             this.subLandConfirm = confirm;
             this.subLandRunner = runner;
-            return new SubLandCommandHandler(selections, confirm, runner, lookup);
+            return buildSubLandHandler(selections, confirm, runner, lookup,
+                    buildSubLandEntryLookup(registry));
         } catch (RuntimeException failure) {
             getLogger().warning("ChunkLand subland flow assembly failed; "
                     + "/land subland stays fail-closed: " + failure.getMessage());

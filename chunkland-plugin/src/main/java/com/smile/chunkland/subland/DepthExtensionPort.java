@@ -27,6 +27,25 @@ public interface DepthExtensionPort {
      */
     boolean isDepthExtendConfirmed(LandId parentId, int effectiveMinY, int requestedMinY);
 
+    /**
+     * Actor-aware confirmation query used by the SubLand runner. The default
+     * keeps existing test lambdas source-compatible while the production
+     * in-memory implementation can bind a confirmation to the actor.
+     */
+    default boolean isDepthExtendConfirmed(
+            java.util.UUID actor, LandId parentId, int effectiveMinY, int requestedMinY) {
+        return isDepthExtendConfirmed(parentId, effectiveMinY, requestedMinY);
+    }
+
+    /**
+     * Called after the durable mutation stage fails before commit. A
+     * confirmation that was consumed by the domain check may be restored by
+     * implementations that keep retryable, actor-scoped state.
+     */
+    default void onDurableFailure(
+            java.util.UUID actor, LandId parentId, int requestedMinY) {
+    }
+
     /** Deny-everything seam for tests and unwired production paths (fail-closed). */
     static DepthExtensionPort denyAll() {
         return (parentId, effectiveMinY, requestedMinY) -> false;
