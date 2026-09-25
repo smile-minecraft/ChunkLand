@@ -304,6 +304,7 @@ public final class SubjectGroupRepository {
             }
             failureInjector.accept(Step.AFTER_MEMBER);
             OwnerAclEpochs.increment(conn, ownerKey);
+            bumpReferencingLands(conn, groupId, timestamp.toEpochMilli());
             insertAudit(conn, memberAudit(actor, groupId, before, member,
                     presentBefore, true, "group-member-add", timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
@@ -338,6 +339,7 @@ public final class SubjectGroupRepository {
             }
             failureInjector.accept(Step.AFTER_MEMBER);
             OwnerAclEpochs.increment(conn, ownerKey);
+            bumpReferencingLands(conn, groupId, timestamp.toEpochMilli());
             insertAudit(conn, memberAudit(actor, groupId, before, member,
                     presentBefore, false, "group-member-remove", timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
@@ -402,6 +404,7 @@ public final class SubjectGroupRepository {
             List<AffectedBinding> affected = collectBindings(conn, groupId);
             deleteGroupBindings(conn, groupId);
             failureInjector.accept(Step.AFTER_BINDING_DELETE);
+            bumpAffectedLands(conn, affected, timestamp.toEpochMilli());
             deleteMembers(conn, groupId);
             deleteGroup(conn, groupId);
             failureInjector.accept(Step.AFTER_GROUP);
@@ -503,6 +506,54 @@ public final class SubjectGroupRepository {
     }
 
     // ---- durable writes (inside the caller's transaction) ----
+
+    /**
+     * Move the authorisation generation of every land bound to one group.
+     * Membership changes alter binding visibility without touching the
+     * binding rows, so without this bump a revision pinned at gate time
+     * would miss the revocation.
+     */
+    private static void bumpReferencingLands(Connection conn, UUID groupId, long now)
+            throws SQLException {
+        try (PreparedStatement query = conn.prepareStatement(
+                "SELECT DISTINCT land_id FROM land_bindings"
+                        + " WHERE subject_type = 'GROUP' AND subject_id = ?")) {
+            query.setBytes(1, UuidBlob.encode(groupId));
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    bumpPolicyRevision(conn, UuidBlob.decode(rows.getBytes(1)), now);
+                }
+            }
+        }
+    }
+
+    /**
+     * Move the authorisation generation of every land-scope land in a
+     * collected affected-binding list. Subland scopes name no land-level
+     * decision input, so only {@code LAND} entries bump.
+     */
+    private static void bumpAffectedLands(Connection conn, List<AffectedBinding> affected,
+            long now) throws SQLException {
+        for (AffectedBinding binding : affected) {
+            if (binding != null && "LAND".equals(binding.scope())
+                    && binding.landId() != null) {
+                bumpPolicyRevision(conn, binding.landId(), now);
+            }
+        }
+    }
+
+    private static void bumpPolicyRevision(Connection conn, UUID landId, long now)
+            throws SQLException {
+        try (PreparedStatement bump = conn.prepareStatement(
+                "UPDATE lands SET land_policy_revision = land_policy_revision + 1,"
+                        + " updated_at = ? WHERE id = ?")) {
+            bump.setLong(1, now);
+            bump.setBytes(2, UuidBlob.encode(landId));
+            if (bump.executeUpdate() != 1) {
+                throw new SQLException("land disappeared during commit: " + landId);
+            }
+        }
+    }
 
     private static void deleteGroupBindings(Connection conn, UUID groupId) throws SQLException {
         try (PreparedStatement delete = conn.prepareStatement(

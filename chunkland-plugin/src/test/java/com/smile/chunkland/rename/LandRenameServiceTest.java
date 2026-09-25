@@ -111,11 +111,12 @@ class LandRenameServiceTest {
             assertEquals("Garden", durable.displayName());
             assertEquals("garden", durable.nameKey());
             assertEquals(2, durable.structureRevision());
-            assertEquals(5, durable.landPolicyRevision());
+            assertEquals(4, durable.landPolicyRevision(),
+                    "rename is not an authorisation change and must not move the generation");
             LandSnapshot runtime = fix.registry.snapshot().land(land);
             assertEquals("Garden", runtime.displayName());
             assertEquals("garden", runtime.nameKey());
-            assertEquals(5, runtime.landPolicyRevision());
+            assertEquals(4, runtime.landPolicyRevision());
         }
     }
 

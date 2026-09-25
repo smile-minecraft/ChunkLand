@@ -14,17 +14,17 @@ command:
     help: |-
       <gray>用法：/land <subcommand> [參數]</gray>
       <yellow>領地操作</yellow>
-      <gray>  help      wand     claim    confirm</gray>
-      <gray>  expand    shrink   unclaim  rename</gray>
-      <gray>  delete    subland</gray>
+      <gray>  <hover:show_text:'<gray>顯示指令總覽。</gray>'><click:suggest_command:'/land help'>help      </click></hover><hover:show_text:'<gray>領取選區魔杖。</gray>'><click:suggest_command:'/land wand'>wand     </click></hover><hover:show_text:'<gray>圈選範圍並建立領地。</gray>'><click:suggest_command:'/land claim'>claim    </click></hover><hover:show_text:'<gray>確認待處理的圈地。</gray>'><click:suggest_command:'/land confirm'>confirm</click></hover></gray>
+      <gray>  <hover:show_text:'<gray>擴張領地。</gray>'><click:suggest_command:'/land expand'>expand    </click></hover><hover:show_text:'<gray>縮減領地。</gray>'><click:suggest_command:'/land shrink'>shrink   </click></hover><hover:show_text:'<gray>放棄選取範圍的領地。</gray>'><click:suggest_command:'/land unclaim'>unclaim  </click></hover><hover:show_text:'<gray>重新命名領地。</gray>'><click:suggest_command:'/land rename'>rename</click></hover> </gray>
+      <gray>  <hover:show_text:'<gray>刪除領地。</gray>'><click:suggest_command:'/land delete'>delete    </click></hover><hover:show_text:'<gray>管理子領地。</gray>'><click:suggest_command:'/land subland'>subland  </click></hover>                </gray>
       <yellow>權限管理</yellow>
-      <gray>  trust     untrust  default  binding</gray>
-      <gray>  ban       unban    group    manage</gray>
+      <gray>  <hover:show_text:'<gray>信任玩家為領地成員。</gray>'><click:suggest_command:'/land trust'>trust     </click></hover><hover:show_text:'<gray>移除領地信任成員。</gray>'><click:suggest_command:'/land untrust'>untrust  </click></hover><hover:show_text:'<gray>變更領地預設權限。</gray>'><click:suggest_command:'/land default'>default  </click></hover><hover:show_text:'<gray>綁定玩家或群組到權限組合。</gray>'><click:suggest_command:'/land binding'>binding</click></hover></gray>
+      <gray>  <hover:show_text:'<gray>封鎖玩家進入領地。</gray>'><click:suggest_command:'/land ban'>ban       </click></hover><hover:show_text:'<gray>解除玩家封鎖。</gray>'><click:suggest_command:'/land unban'>unban    </click></hover><hover:show_text:'<gray>管理主體群組。</gray>'><click:suggest_command:'/land group'>group    </click></hover><hover:show_text:'<gray>開啟管理介面。</gray>'><click:suggest_command:'/land manage'>manage</click></hover> </gray>
       <yellow>查詢</yellow>
-      <gray>  profile   explain  inspect  log</gray>
-      <gray>  history</gray>
+      <gray>  <hover:show_text:'<gray>管理權限組合。</gray>'><click:suggest_command:'/land profile'>profile   </click></hover><hover:show_text:'<gray>查詢單一權限判定說明。</gray>'><click:suggest_command:'/land explain'>explain  </click></hover><hover:show_text:'<gray>查看領地資訊。</gray>'><click:suggest_command:'/land inspect'>inspect  </click></hover><hover:show_text:'<gray>查詢審計紀錄。</gray>'><click:suggest_command:'/land log'>log</click></hover>    </gray>
+      <gray>  <hover:show_text:'<gray>查看附近方塊歷史。</gray>'><click:suggest_command:'/land history'>history   </click></hover>                         </gray>
       <yellow>管理員</yellow>
-      <gray>  bypass    admin</gray>
+      <gray>  <hover:show_text:'<gray>切換管理員豁免。</gray>'><click:suggest_command:'/land bypass'>bypass    </click></hover><hover:show_text:'<gray>管理員工具。</gray>'><click:suggest_command:'/land admin'>admin    </click></hover>                </gray>
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>缺少權限 <permission>。</red>"
@@ -179,6 +179,110 @@ command:
       "on": "<green>管理員豁免已啟用。</green>"
       "off": "<gray>管理員豁免已停用。</gray>"
       failed: "<red>管理員豁免切換失敗：<reason>。</red>"
+    help_detail:
+      prompt: "<gray>提示：在 /land help 後面加上子指令名稱，可查看完整說明與用法。</gray>"
+      unknown_hint: "<red>未知子指令 <subcommand>。請使用 /land help 查看全部子指令。</red>"
+      permission: "<gray>權限：<permission></gray>"
+      help:
+        short: "<gray>顯示指令總覽。</gray>"
+        detail: "<gray>依用途分組列出全部 /land 子指令：領地操作、權限管理、查詢與管理員。</gray>"
+        usage: "<yellow>用法：/land help</yellow>"
+      confirm:
+        short: "<gray>確認待處理的圈地。</gray>"
+        detail: "<gray>以確認碼、版本與領地名稱確認選取範圍的圈地。</gray>"
+        usage: "<yellow>用法：/land confirm <generation> <revision> <land_name></yellow>"
+      wand:
+        short: "<gray>領取選區魔杖。</gray>"
+        detail: "<gray>發放用來標記圈地角落的選區魔杖。</gray>"
+        usage: "<yellow>用法：/land wand</yellow>"
+      claim:
+        short: "<gray>圈選範圍並建立領地。</gray>"
+        detail: "<gray>以指定名稱把目前魔杖選取範圍建立為領地。</gray>"
+        usage: "<yellow>用法：/land claim <land_name></yellow>"
+      trust:
+        short: "<gray>信任玩家為領地成員。</gray>"
+        detail: "<gray>授予指定玩家領地信任成員的存取權。</gray>"
+        usage: "<yellow>用法：/land trust <player></yellow>"
+      untrust:
+        short: "<gray>移除領地信任成員。</gray>"
+        detail: "<gray>撤銷指定玩家在此領地的信任成員權限。</gray>"
+        usage: "<yellow>用法：/land untrust <player></yellow>"
+      default:
+        short: "<gray>變更領地預設權限。</gray>"
+        detail: "<gray>設定整個領地對單一保護動作的預設結果。</gray>"
+        usage: "<yellow>用法：/land default <action> [ALLOW|DENY|INHERIT]</yellow>"
+      binding:
+        short: "<gray>綁定玩家或群組到權限組合。</gray>"
+        detail: "<gray>在此領地建立、更新或移除通用權限綁定。</gray>"
+        usage: "<yellow>用法：/land binding (bind|unbind) player <player> <profile> | group <group> <profile> [--in-subland]</yellow>"
+      ban:
+        short: "<gray>封鎖玩家進入領地。</gray>"
+        detail: "<gray>拒絕指定玩家進入與使用此領地。</gray>"
+        usage: "<yellow>用法：/land ban <player></yellow>"
+      unban:
+        short: "<gray>解除玩家封鎖。</gray>"
+        detail: "<gray>恢復指定玩家對此領地的存取權。</gray>"
+        usage: "<yellow>用法：/land unban <player></yellow>"
+      subland:
+        short: "<gray>管理子領地。</gray>"
+        detail: "<gray>選取、建立、更新、刪除或延伸此領地的子領地。</gray>"
+        usage: "<yellow>用法：/land subland (select|create|update|delete|extend) [generation revision] [名稱]</yellow>"
+      expand:
+        short: "<gray>擴張領地。</gray>"
+        detail: "<gray>把選取範圍併入腳下的領地。</gray>"
+        usage: "<yellow>用法：/land expand</yellow>"
+      shrink:
+        short: "<gray>縮減領地。</gray>"
+        detail: "<gray>從領地移除選取範圍並退費。</gray>"
+        usage: "<yellow>用法：/land shrink</yellow>"
+      unclaim:
+        short: "<gray>放棄選取範圍的領地。</gray>"
+        detail: "<gray>放棄此領地內選取範圍的佔有（與縮減同流程）。</gray>"
+        usage: "<yellow>用法：/land unclaim</yellow>"
+      rename:
+        short: "<gray>重新命名領地。</gray>"
+        detail: "<gray>變更腳下領地的顯示名稱。</gray>"
+        usage: "<yellow>用法：/land rename <new_name></yellow>"
+      delete:
+        short: "<gray>刪除領地。</gray>"
+        detail: "<gray>確認後永久刪除領地並全額退費。</gray>"
+        usage: "<yellow>用法：/land delete confirm <revision></yellow>"
+      group:
+        short: "<gray>管理主體群組。</gray>"
+        detail: "<gray>建立、列出並編輯綁定使用的玩家群組。</gray>"
+        usage: "<yellow>用法：/land group (create|list|add|remove|delete) [參數]</yellow>"
+      profile:
+        short: "<gray>管理權限組合。</gray>"
+        detail: "<gray>建立、列出並編輯可重複使用的權限組合。</gray>"
+        usage: "<yellow>用法：/land profile (create|list|set|delete) [參數]</yellow>"
+      explain:
+        short: "<gray>查詢單一權限判定說明。</gray>"
+        detail: "<gray>顯示此處單一保護動作為何允許或拒絕。</gray>"
+        usage: "<yellow>用法：/land explain <action></yellow>"
+      inspect:
+        short: "<gray>查看領地資訊。</gray>"
+        detail: "<gray>顯示目前領地的擁有者、區塊、版本與上限。</gray>"
+        usage: "<yellow>用法：/land inspect [玩家]</yellow>"
+      log:
+        short: "<gray>查詢審計紀錄。</gray>"
+        detail: "<gray>以篩選條件與分頁查詢留存的審計紀錄。</gray>"
+        usage: "<yellow>用法：/land log [u:玩家UUID] [t:7d] [a:動作] [land:領地UUID] [world:世界UUID] [limit:筆數] [page:頁數]</yellow>"
+      history:
+        short: "<gray>查看附近方塊歷史。</gray>"
+        detail: "<gray>顯示你附近最近的方塊變更。</gray>"
+        usage: "<yellow>用法：/land history</yellow>"
+      manage:
+        short: "<gray>開啟管理介面。</gray>"
+        detail: "<gray>開啟兩層管理介面，顯示權限效果與來源層。</gray>"
+        usage: "<yellow>用法：/land manage</yellow>"
+      bypass:
+        short: "<gray>切換管理員豁免。</gray>"
+        detail: "<gray>開關你的管理員豁免模式（會留下審計紀錄）。</gray>"
+        usage: "<yellow>用法：/land bypass [on|off]</yellow>"
+      admin:
+        short: "<gray>管理員工具。</gray>"
+        detail: "<gray>供伺服器管理員使用的帳本與孤兒世界管理。</gray>"
+        usage: "<yellow>用法：/land admin (ledger|orphan) ...</yellow>"
     admin:
       ledger:
         usage: "<yellow>用法：/land admin ledger list [狀態] | show [操作編號] | resolve [操作編號] [RESOLVED|REFUNDED|IGNORED]</yellow>"
@@ -236,3 +340,41 @@ selection:
     reset: "<yellow>選取範圍已重置。請點擊方塊設定第一角。</yellow>"
     abandoned: "<yellow>你已切換離開魔杖，選取範圍與粒子已清除。</yellow>"
     cancelled: "<yellow>已取消選取範圍。</yellow>"
+gui:
+  manage:
+    root:
+      title: "<white>領地管理</white>"
+      entry_name: "<white>開啟權限明細畫面。</white>"
+      entry_hint: "<gray>開啟權限明細畫面。</gray>"
+    details:
+      title: "<white>領地權限（<deny_count> 拒絕，<allow_count> 允許）</white>"
+      back_name: "<white>返回</white>"
+    row:
+      head: "<white><action>: <outcome> @ <layer><conflict></white>"
+      conflict_suffix: " ！衝突"
+      remedy_line: "<gray>  - <remedy></gray>"
+      default_lore: "<gray>地預設值 <action>：<state></gray>"
+      default_unset: "未設定（繼承全域）"
+      readonly_line: "<gray>此選單僅供檢視。</gray>"
+    remedy:
+      unavailable: |-
+        <red>結果不可用：資料缺失或解析失敗（已 fail-closed）。</red>
+        <gray>請等待快照重新載入後再開啟此畫面。</gray>
+        <gray>變更仍受門檻管制；未套用任何修改。</gray>
+      conflict: |-
+        <gray>經由既有綁定流程（仍受門檻管制）移除 <layer> 上的 DENY 綁定。</gray>
+        <gray>保留 DENY，改為移除 <layer> 上衝突的 ALLOW。</gray>
+        <gray>把想要的 ALLOW 移到更高優先層：子領地綁定優先於領地綁定，綁定優先於預設值。</gray>
+      plain: |-
+        <gray>無衝突：由 <layer> 決定 <outcome>。</gray>
+        <gray>若要變更，請經由既有管理流程（仍受門檻管制）更新 <layer>。</gray>
+        <gray>預設值保持 INHERIT 以繼承；缺值一律 fail-closed 拒絕。</gray>
+    unavailable:
+      title: "<white>領地管理（不可用）</white>"
+    confirm:
+      title: "<white>確認權限變更：<action></white>"
+      confirm_name: "<green>確認</green>"
+      cancel_name: "<red>取消</red>"
+      back_name: "<white>返回</white>"
+      target_line: "<gray>變更目標：<state></gray>"
+      failed_line: "<red>變更未套用（已 fail-closed），未修改任何狀態。</red>"

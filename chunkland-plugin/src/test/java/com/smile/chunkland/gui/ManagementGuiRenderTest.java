@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.smile.chunkland.adapter.gui.ManagementGuiTextProvider;
 import com.smile.chunkland.api.permission.Permission;
 import com.smile.chunkland.api.permission.PermissionBinding;
 import com.smile.chunkland.api.permission.PermissionContext;
@@ -92,7 +93,7 @@ class ManagementGuiRenderTest {
                         denied, landBindingContext(denied, List.of(
                                 binding(UUID.randomUUID(), denied, PermissionState.DENY)))));
 
-        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop());
+        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
         String lines = joinedLines(details);
 
         for (ManagementPermissionRow row : model.rows()) {
@@ -119,7 +120,7 @@ class ManagementGuiRenderTest {
         ManagementPermissionRow row = model.rows().get(0);
         assertTrue(row.conflict());
 
-        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop());
+        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
         String lines = joinedLines(details);
 
         assertTrue(lines.contains("DENY"), "conflict render data must show final DENY");
@@ -151,7 +152,7 @@ class ManagementGuiRenderTest {
                         ProtectionActionType.ENTRY,
                         landBindingContext(ProtectionActionType.ENTRY, List.of())));
 
-        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop());
+        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
 
         assertTrue(details.title().contains("2 DENY"),
                 "title must summarise DENY count, got: " + details.title());
@@ -163,7 +164,8 @@ class ManagementGuiRenderTest {
     @Test
     void unavailablePageRendersFailClosedWithoutRowData() {
         GuiPage unavailable = ManagementGuiPages.detailsPage(
-                ManagementGuiModel.unavailable(), ManagementGuiActions.noop());
+                ManagementGuiModel.unavailable(), ManagementGuiActions.noop(),
+                ManagementGuiTextProvider.fallbackTexts());
 
         assertEquals(ManagementGuiPages.UNAVAILABLE_PAGE_ID, unavailable.id());
         assertFalse(unavailable.lines().isEmpty(), "fail-closed must still render visibly");
@@ -175,6 +177,6 @@ class ManagementGuiRenderTest {
         }
         assertTrue(noEveryone(unavailable));
         assertTrue(noEveryone(
-                ManagementGuiPages.detailsPage(null, ManagementGuiActions.noop())));
+                ManagementGuiPages.detailsPage(null, ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts())));
     }
 }

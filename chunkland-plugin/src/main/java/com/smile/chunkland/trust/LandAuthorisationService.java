@@ -152,6 +152,46 @@ public final class LandAuthorisationService {
     }
 
     /**
+     * Persist one land default only when the durable current still equals
+     * {@code expectedCurrent} (a missing row reads as {@code INHERIT}),
+     * then publish the rebuilt snapshot. A stale expectation fails
+     * without writing, publishing or emitting, so a confirm page built
+     * from an older read can never silently overwrite a newer change.
+     *
+     * <p>Shared atomic entry behind both the management GUI confirm path
+     * and the {@code /land default} command: each caller pins the value
+     * and the authorisation generation it observed, and the transaction
+     * aborts on any divergence. The unconditional {@link #setDefault}
+     * remains for callers that pin nothing.
+     */
+    public CompletionStage<Void> setDefaultExpected(UUID actor, LandId landId,
+            ProtectionActionType action, PermissionState expectedCurrent, long expectedRevision,
+            PermissionState state) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(landId, "landId");
+        Objects.requireNonNull(action, "action");
+        Objects.requireNonNull(expectedCurrent, "expectedCurrent");
+        Objects.requireNonNull(state, "state");
+        DirectTrustWhitelist.requireAllowed(action);
+        CompletionStage<Void> committed;
+        try {
+            committed = repository.setDefaultIfCurrent(landId, action, expectedCurrent,
+                    expectedRevision, state, actor, clock.instant());
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+        if (committed == null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("default repository returned null"));
+        }
+        return committed.thenCompose(ignored -> refresh()).thenApply(ignored -> {
+            firePermissionChanged(actor, landId, ChangeKind.DEFAULT_SET, null, null,
+                    action, state, null);
+            return null;
+        });
+    }
+
+    /**
      * Ban one player from one land, then publish the rebuilt snapshot.
      * Idempotent: resending while already banned still succeeds. The land
      * owner and Server Land fail closed before any write.
@@ -248,9 +288,13 @@ public final class LandAuthorisationService {
                     }
                     // The direct load owns only the direct layers: merge them
                     // over the cached generic bindings instead of wiping rows
-                    // another refresh path published.
+                    // another refresh path published. The freshly loaded
+                    // authorisation generations travel with the load, so pins
+                    // taken from the published snapshot can never permanently
+                    // lag the durable rows.
                     cache.publish(cache.snapshot().withDirect(
-                            data.directAllows(), data.landDefaults(), data.entryBans()));
+                            data.directAllows(), data.landDefaults(), data.entryBans(),
+                            data.landPolicyRevisions()));
                 })
                 .whenComplete((ignored, failure) -> {
                     if (failure != null) {

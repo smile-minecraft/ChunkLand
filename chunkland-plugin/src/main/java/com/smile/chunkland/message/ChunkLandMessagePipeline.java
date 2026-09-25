@@ -126,7 +126,11 @@ public class ChunkLandMessagePipeline {
         "structurerevision", "landpolicyrevision", "serverland",
         "playeruuid", "playerref", "limitmaxchunksperland", "limitmaxsublandsperland",
         "limitmaxchunksperlandsource", "limitmaxsublandsperlandsource",
-        "world", "count", "nonce", "expiry"
+        "world", "count", "nonce", "expiry",
+        // Management-GUI text injection: count summaries, the conflict
+        // marker inside row heads, the wrapped remedy sentence, and the
+        // land-default state shown on the confirm-toggle follow-up.
+        "deny_count", "allow_count", "conflict", "remedy"
     );
 
     private static final MiniMessage STRICT_MINIMESSAGE = MiniMessage.builder().strict(true).build();

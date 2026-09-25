@@ -154,11 +154,13 @@ public final class LandBindingRepository {
     public record GenericSnapshotData(
             Map<LandId, List<GenericBinding>> landBindings,
             Map<SubLandId, List<GenericBinding>> sublandBindings,
-            Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults) {
+            Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults,
+            Map<LandId, Long> landPolicyRevisions) {
         public GenericSnapshotData {
             landBindings = copyBindings(landBindings);
             sublandBindings = copySubBindings(sublandBindings);
             sublandDefaults = copyDefaults(sublandDefaults);
+            landPolicyRevisions = copyRevisions(landPolicyRevisions);
         }
 
         private static Map<LandId, List<GenericBinding>> copyBindings(
@@ -183,6 +185,18 @@ public final class LandBindingRepository {
             for (Map.Entry<SubLandId, List<GenericBinding>> entry : source.entrySet()) {
                 copy.put(Objects.requireNonNull(entry.getKey(), "subland key"),
                         List.copyOf(Objects.requireNonNull(entry.getValue(), "bindings")));
+            }
+            return Map.copyOf(copy);
+        }
+
+        private static Map<LandId, Long> copyRevisions(Map<LandId, Long> source) {
+            if (source == null || source.isEmpty()) {
+                return Map.of();
+            }
+            Map<LandId, Long> copy = new HashMap<>(source.size());
+            for (Map.Entry<LandId, Long> entry : source.entrySet()) {
+                copy.put(Objects.requireNonNull(entry.getKey(), "land key"),
+                        Objects.requireNonNull(entry.getValue(), "policy revision"));
             }
             return Map.copyOf(copy);
         }
@@ -467,8 +481,36 @@ public final class LandBindingRepository {
             for (Map.Entry<SubLandId, List<GenericBinding>> entry : subland.entrySet()) {
                 frozenSub.put(entry.getKey(), List.copyOf(entry.getValue()));
             }
-            return new GenericSnapshotData(frozenLand, frozenSub, subDefaults);
+            return new GenericSnapshotData(frozenLand, frozenSub, subDefaults,
+                    readPolicyRevisions(connection));
         });
+    }
+
+    /**
+     * Durable authorisation generation per land for one snapshot publish.
+     * Malformed ids are skipped row-wise like every other load here; a
+     * skipped land carries no pin and its writers fail closed until the
+     * next load.
+     */
+    private static Map<LandId, Long> readPolicyRevisions(Connection conn) throws SQLException {
+        Map<LandId, Long> revisions = new HashMap<>();
+        try (PreparedStatement query = conn.prepareStatement(
+                "SELECT id, land_policy_revision FROM lands")) {
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    LandId landId;
+                    try {
+                        landId = new LandId(UuidBlob.decode(rows.getBytes(1)));
+                    } catch (RuntimeException corrupt) {
+                        continue;
+                    }
+                    if (landId != null) {
+                        revisions.put(landId, rows.getLong(2));
+                    }
+                }
+            }
+        }
+        return revisions;
     }
 
     private static GenericBinding readGenericBinding(Connection conn, String subjectType,

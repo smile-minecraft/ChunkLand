@@ -384,6 +384,7 @@ public final class PermissionProfileRepository {
             }
             failureInjector.accept(Step.AFTER_ENTRY);
             OwnerAclEpochs.increment(conn, ownerKey);
+            bumpReferencingLands(conn, profileId, timestamp.toEpochMilli());
             insertAudit(conn, entryAudit(actor, before, action, storedBefore, state, timestamp));
             failureInjector.accept(Step.AFTER_AUDIT);
             return new EntryOutcome(profileId, action, storedBefore, state);
@@ -450,6 +451,7 @@ public final class PermissionProfileRepository {
             List<AffectedBinding> affected = collectBindings(conn, profileId);
             deleteProfileBindings(conn, profileId);
             failureInjector.accept(Step.AFTER_BINDING_DELETE);
+            bumpAffectedLands(conn, affected, timestamp.toEpochMilli());
             deleteEntries(conn, profileId);
             deleteProfile(conn, profileId);
             failureInjector.accept(Step.AFTER_PROFILE);
@@ -574,6 +576,53 @@ public final class PermissionProfileRepository {
     }
 
     // ---- durable writes (inside the caller's transaction) ----
+
+    /**
+     * Move the authorisation generation of every land bound through one
+     * profile. Entry edits alter granted actions without touching the
+     * binding rows, so without this bump a revision pinned at gate time
+     * would miss the change.
+     */
+    private static void bumpReferencingLands(Connection conn, UUID profileId, long now)
+            throws SQLException {
+        try (PreparedStatement query = conn.prepareStatement(
+                "SELECT DISTINCT land_id FROM land_bindings WHERE profile_id = ?")) {
+            query.setBytes(1, UuidBlob.encode(profileId));
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    bumpPolicyRevision(conn, UuidBlob.decode(rows.getBytes(1)), now);
+                }
+            }
+        }
+    }
+
+    /**
+     * Move the authorisation generation of every land-scope land in a
+     * collected affected-binding list. Subland scopes name no land-level
+     * decision input, so only {@code LAND} entries bump.
+     */
+    private static void bumpAffectedLands(Connection conn, List<AffectedBinding> affected,
+            long now) throws SQLException {
+        for (AffectedBinding binding : affected) {
+            if (binding != null && "LAND".equals(binding.scope())
+                    && binding.landId() != null) {
+                bumpPolicyRevision(conn, binding.landId(), now);
+            }
+        }
+    }
+
+    private static void bumpPolicyRevision(Connection conn, UUID landId, long now)
+            throws SQLException {
+        try (PreparedStatement bump = conn.prepareStatement(
+                "UPDATE lands SET land_policy_revision = land_policy_revision + 1,"
+                        + " updated_at = ? WHERE id = ?")) {
+            bump.setLong(1, now);
+            bump.setBytes(2, UuidBlob.encode(landId));
+            if (bump.executeUpdate() != 1) {
+                throw new SQLException("land disappeared during commit: " + landId);
+            }
+        }
+    }
 
     private static void deleteProfileBindings(Connection conn, UUID profileId) throws SQLException {
         try (PreparedStatement delete = conn.prepareStatement(

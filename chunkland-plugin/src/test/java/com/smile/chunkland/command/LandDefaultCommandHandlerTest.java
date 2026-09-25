@@ -31,7 +31,8 @@ class LandDefaultCommandHandlerTest {
     private static final UUID ACTOR = UUID.randomUUID();
     private static final LandId LAND = new LandId(UUID.randomUUID());
 
-    private record Call(UUID actor, LandId land, ProtectionActionType action, PermissionState state) {
+    private record Call(UUID actor, LandId land, ProtectionActionType action,
+            PermissionState expected, long revision, PermissionState state) {
     }
 
     private static final class FakeMutation implements LandDefaultCommandHandler.DefaultMutation {
@@ -40,8 +41,9 @@ class LandDefaultCommandHandlerTest {
 
         @Override
         public CompletionStage<Void> apply(UUID actor, LandId landId,
-                ProtectionActionType action, PermissionState state) {
-            calls.add(new Call(actor, landId, action, state));
+                ProtectionActionType action, PermissionState expectedCurrent,
+                long expectedRevision, PermissionState state) {
+            calls.add(new Call(actor, landId, action, expectedCurrent, expectedRevision, state));
             if (fail) {
                 return CompletableFuture.failedFuture(new IllegalStateException("injected"));
             }
@@ -95,9 +97,16 @@ class LandDefaultCommandHandlerTest {
     }
 
     private LandDefaultCommandHandler handler(FakeMutation mutation, boolean landKnown) {
+        return handler(mutation, landKnown,
+                (landId, action) -> Optional.of(new LandDefaultCommandHandler.Baseline(
+                        PermissionState.INHERIT, 7L)));
+    }
+
+    private LandDefaultCommandHandler handler(FakeMutation mutation, boolean landKnown,
+            LandDefaultCommandHandler.BaselineSource baselines) {
         return new LandDefaultCommandHandler(
                 sender -> landKnown ? Optional.of(LAND) : Optional.empty(),
-                mutation);
+                mutation, baselines);
     }
 
     @Test
@@ -114,8 +123,8 @@ class LandDefaultCommandHandlerTest {
                 new String[] {"default", "block_break", raw}, sink);
         assertEquals(List.of("command.land.default.success"), sink.keys);
         assertEquals(1, mutation.calls.size());
-        assertEquals(new Call(ACTOR, LAND, ProtectionActionType.BLOCK_BREAK, state),
-                mutation.calls.get(0));
+        assertEquals(new Call(ACTOR, LAND, ProtectionActionType.BLOCK_BREAK,
+                PermissionState.INHERIT, 7L, state), mutation.calls.get(0));
     }
 
     @Test
@@ -162,5 +171,35 @@ class LandDefaultCommandHandlerTest {
                 new String[] {"default", "ENTRY", "DENY"}, sink);
         assertEquals(List.of("command.land.default.failed"), sink.keys);
         assertEquals("default.failed", sink.vars.get("command.land.default.failed").get("reason"));
+    }
+
+    @Test
+    void writesCarryTheObservedBaselinePins() {
+        FakeMutation mutation = new FakeMutation();
+        CapturingSink sink = new CapturingSink();
+        handler(mutation, true, (landId, action) -> Optional.of(
+                new LandDefaultCommandHandler.Baseline(PermissionState.ALLOW, 11L)))
+                .handle(player(ACTOR), new String[] {"default", "block_break", "DENY"}, sink);
+        assertEquals(List.of("command.land.default.success"), sink.keys);
+        assertEquals(1, mutation.calls.size());
+        assertEquals(new Call(ACTOR, LAND, ProtectionActionType.BLOCK_BREAK,
+                PermissionState.ALLOW, 11L, PermissionState.DENY), mutation.calls.get(0));
+    }
+
+    @Test
+    void unreadableBaselineFailsClosedWithoutWriting() {
+        FakeMutation mutation = new FakeMutation();
+        CapturingSink sink = new CapturingSink();
+        handler(mutation, true, (landId, action) -> Optional.empty())
+                .handle(player(ACTOR), new String[] {"default", "block_break", "DENY"}, sink);
+        assertEquals(List.of("command.land.default.failed"), sink.keys);
+        assertEquals("default.failed", sink.vars.get("command.land.default.failed").get("reason"));
+        assertTrue(mutation.calls.isEmpty());
+
+        sink = new CapturingSink();
+        handler(mutation, true, null)
+                .handle(player(ACTOR), new String[] {"default", "block_break", "DENY"}, sink);
+        assertEquals(List.of("command.land.default.failed"), sink.keys);
+        assertTrue(mutation.calls.isEmpty());
     }
 }

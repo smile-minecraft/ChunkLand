@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.smile.chunkland.adapter.gui.GuiContentRenderer;
+import com.smile.chunkland.adapter.gui.ManagementGuiTextProvider;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.protection.PermissionExplain;
@@ -28,7 +29,7 @@ class GuiContentRendererTest {
 
     @Test
     void managementPagesExposeTheVisibleRenderItems() {
-        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop());
+        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
 
         assertEquals(List.of(new com.smile.chunkland.gui.GuiPage.RenderItem(
                 ManagementGuiPages.ENTRY_SLOT,
@@ -36,7 +37,7 @@ class GuiContentRendererTest {
                 List.of(),
                 "entry")), root.renderItems());
 
-        GuiPage unavailable = ManagementGuiPages.unavailablePage(ManagementGuiActions.noop());
+        GuiPage unavailable = ManagementGuiPages.unavailablePage(ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
         assertEquals(List.of(26), unavailable.renderItems().stream()
                 .map(com.smile.chunkland.gui.GuiPage.RenderItem::slot).toList());
         assertEquals(unavailable.lines(), unavailable.renderItems().get(0).lore());
@@ -53,7 +54,7 @@ class GuiContentRendererTest {
                         PermissionExplainLayer.LAND_DEFAULT, "denied", null, false, false, false)),
                 Map.of());
 
-        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop());
+        GuiPage details = ManagementGuiPages.detailsPage(model, ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
 
         assertEquals(List.of(0, 1, ManagementGuiPages.BACK_SLOT), details.renderItems().stream()
                 .map(com.smile.chunkland.gui.GuiPage.RenderItem::slot).toList());
@@ -66,7 +67,7 @@ class GuiContentRendererTest {
     @Test
     void asyncFlowUsesTheOpenedGenerationAndAppliesTheRenderer() {
         FakeGuiService service = new FakeGuiService();
-        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop());
+        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
         GuiNavigator navigator = new GuiNavigator(service);
         long generation = navigator.open(PLAYER_ID, root).orElseThrow();
         List<SlotWrite> writes = new ArrayList<>();
@@ -89,9 +90,34 @@ class GuiContentRendererTest {
     }
 
     @Test
+    void confirmButtonsPaintWoolAndBackPaintsArrow() {
+        GuiPage confirm = ManagementGuiPages.confirmPage(
+                new ManagementGuiPages.ConfirmRequest(
+                        ProtectionActionType.BLOCK_BREAK, null, "DENY", null, null, null,
+                        false),
+                ManagementGuiTextProvider.fallbackTexts());
+        FakeGuiService service = new FakeGuiService();
+        long generation = new GuiNavigator(service).open(PLAYER_ID, confirm).orElseThrow();
+        List<SlotWrite> writes = new ArrayList<>();
+        Player player = playerProxy(inventoryProxy(27, writes));
+        GuiContentRenderer renderer = new GuiContentRenderer(service, ignored -> player,
+                material -> new RecordingItemStack(material));
+
+        assertTrue(renderer.render(PLAYER_ID, generation, confirm));
+
+        assertEquals(3, writes.size());
+        assertEquals(ManagementGuiPages.CONFIRM_SLOT, writes.get(0).slot());
+        assertEquals(org.bukkit.Material.GREEN_WOOL, writes.get(0).item().getType());
+        assertEquals(ManagementGuiPages.CANCEL_SLOT, writes.get(1).slot());
+        assertEquals(org.bukkit.Material.RED_WOOL, writes.get(1).item().getType());
+        assertEquals(ManagementGuiPages.BACK_SLOT, writes.get(2).slot());
+        assertEquals(org.bukkit.Material.ARROW, writes.get(2).item().getType());
+    }
+
+    @Test
     void failedBeginOrApplyIsSilentAndDoesNotCallTheRenderer() {
         FakeGuiService service = new FakeGuiService();
-        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop());
+        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
         long generation = new GuiNavigator(service).open(PLAYER_ID, root).orElseThrow();
         Player player = playerProxy(inventoryProxy(27, new ArrayList<>()));
         GuiContentRenderer renderer = new GuiContentRenderer(service, ignored -> player,
@@ -111,7 +137,7 @@ class GuiContentRendererTest {
     @Test
     void closedViewAndOutOfRangeInventoryAreContained() {
         FakeGuiService service = new FakeGuiService();
-        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop());
+        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
         long generation = new GuiNavigator(service).open(PLAYER_ID, root).orElseThrow();
         List<SlotWrite> writes = new ArrayList<>();
         Player closed = playerProxy(null);
@@ -133,7 +159,7 @@ class GuiContentRendererTest {
     @Test
     void repeatedApplyWritesTheSameSlotsWithoutAccumulatingItems() {
         FakeGuiService service = new FakeGuiService();
-        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop());
+        GuiPage root = ManagementGuiPages.rootPage(ManagementGuiActions.noop(), ManagementGuiTextProvider.fallbackTexts());
         long generation = new GuiNavigator(service).open(PLAYER_ID, root).orElseThrow();
         List<SlotWrite> writes = new ArrayList<>();
         Player player = playerProxy(inventoryProxy(27, writes));

@@ -25,8 +25,8 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Land rename durability: the mutation re-reads owner and names inside one
  * persistence transaction, enforces the owner-scoped name key against the
- * database (not a memory precheck), bumps only the policy revision, and
- * records a structured rename audit atomically with the row change.
+ * database (not a memory precheck), leaves the policy revision untouched,
+ * and records a structured rename audit atomically with the row change.
  */
 class LandRenameRepositoryTest {
 
@@ -138,7 +138,7 @@ class LandRenameRepositoryTest {
     }
 
     @Test
-    void renamePersistsNamesAuditsAndBumpsPolicyOnly() {
+    void renamePersistsNamesAndAuditsWithoutTouchingPolicy() {
         try (PersistenceStore store = PersistenceStore.open(db())) {
             SqliteLandRepository lands = new SqliteLandRepository(store);
             LandRenameRepository repo = new LandRenameRepository(store);
@@ -153,12 +153,13 @@ class LandRenameRepositoryTest {
             assertEquals("Garden", outcome.newDisplayName());
             assertEquals("garden", outcome.newNameKey());
             assertEquals(5, outcome.oldPolicyRevision());
-            assertEquals(6, outcome.newPolicyRevision());
+            assertEquals(5, outcome.newPolicyRevision(),
+                    "rename is not an authorisation change and must not move the generation");
             Row row = readRow(store, land);
             assertEquals("Garden", row.display());
             assertEquals("garden", row.key());
             assertEquals(3, row.structure(), "rename must not touch the structure revision");
-            assertEquals(6, row.policy());
+            assertEquals(5, row.policy());
             List<AuditRow> rows = audits(store, land);
             assertEquals(1, rows.size());
             AuditRow audit = rows.get(0);
@@ -168,7 +169,7 @@ class LandRenameRepositoryTest {
             assertTrue(audit.beforeJson().contains("\"policyRevision\":5"), audit.beforeJson());
             assertTrue(audit.afterJson().contains("\"displayName\":\"Garden\""), audit.afterJson());
             assertTrue(audit.afterJson().contains("\"nameKey\":\"garden\""), audit.afterJson());
-            assertTrue(audit.afterJson().contains("\"policyRevision\":6"), audit.afterJson());
+            assertTrue(audit.afterJson().contains("\"policyRevision\":5"), audit.afterJson());
         }
     }
 
@@ -204,7 +205,7 @@ class LandRenameRepositoryTest {
 
             assertEquals("home", outcome.newNameKey());
             assertEquals("HOME", outcome.newDisplayName());
-            assertEquals(6, outcome.newPolicyRevision());
+            assertEquals(5, outcome.newPolicyRevision());
             Row row = readRow(store, land);
             assertEquals("HOME", row.display());
             assertEquals("home", row.key());

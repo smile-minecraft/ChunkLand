@@ -20,9 +20,10 @@ import java.util.function.Consumer;
  *
  * <p>One call re-reads the land row, re-checks the actor against the durable
  * owner, enforces the owner-scoped name key, rewrites the display name and
- * key, bumps only the policy revision, and writes the rename audit — all in
- * one transaction on the persistence thread. Any failure rolls back every
- * row, so a rejected or failed rename leaves no partial state behind.
+ * key, leaves the authorisation generation untouched, and writes the
+ * rename audit — all in one transaction on the persistence thread. Any
+ * failure rolls back every row, so a rejected or failed rename leaves no
+ * partial state behind.
  *
  * <p>Authorisation at mutation time: a Server Land row requires the steward
  * flag; a player Land row requires the actor to equal the durable owner.
@@ -55,7 +56,8 @@ public final class LandRenameRepository {
 
     /**
      * Durable values observed by one committed rename: the names before and
-     * after plus the policy revision before and after the bump.
+     * after plus the policy revision on both sides, which a rename never
+     * moves because names carry no authorisation meaning.
      */
     public record Outcome(
             LandId landId,
@@ -91,6 +93,10 @@ public final class LandRenameRepository {
 
     /**
      * Rename one land in a single transaction.
+     *
+     * <p>Names carry no authorisation meaning, so the authorisation
+     * generation is left untouched and the outcome reports the unchanged
+     * revision on both sides; previously pinned writes keep committing.
      *
      * @param landId target land; unknown rows reject without side effects
      * @param actor renaming player; must equal the durable player owner, and
@@ -209,9 +215,12 @@ public final class LandRenameRepository {
 
     private static void updateNames(Connection conn, LandId landId,
             String displayName, String nameKey, long now) throws SQLException {
+        // Names only: a rename changes no authorisation state, so the
+        // authorisation generation stays put. Bumping it here would strand
+        // every revision pinned before the rename and refuse later writes
+        // until an unrelated authorisation write happens to refresh them.
         try (PreparedStatement update = conn.prepareStatement(
                 "UPDATE lands SET display_name = ?, name_key = ?,"
-                        + " land_policy_revision = land_policy_revision + 1,"
                         + " updated_at = ? WHERE id = ?")) {
             update.setString(1, displayName);
             update.setString(2, nameKey);
@@ -253,7 +262,7 @@ public final class LandRenameRepository {
                 + "\",\"policyRevision\":" + before.policyRevision + "}";
         String afterJson = "{\"displayName\":\"" + escape(newDisplayName)
                 + "\",\"nameKey\":\"" + escape(newNameKey)
-                + "\",\"policyRevision\":" + (before.policyRevision + 1) + "}";
+                + "\",\"policyRevision\":" + before.policyRevision + "}";
         return new AuditEntry(0L, timestamp, actor, RENAME_AUDIT_ACTION, landId,
                 before.worldId, null, AUDIT_METADATA_VERSION,
                 beforeJson, afterJson, "{\"kind\":\"land-rename\"}", List.of());

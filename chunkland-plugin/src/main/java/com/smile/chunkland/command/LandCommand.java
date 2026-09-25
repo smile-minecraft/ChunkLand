@@ -92,7 +92,7 @@ public final class LandCommand {
         for (String sub : SUBCOMMANDS) {
             final String captured = sub;
             if (captured.equals("help")) {
-                m.put(captured, (sender, args, sink) -> sink.reply("command.land.help", Map.of()));
+                m.put(captured, (sender, args, sink) -> sendHelp(sink, args));
             } else if (captured.equals("confirm")) {
                 m.put(captured, (sender, args, sink) -> {
                     // confirm may carry a revision token but stub does not validate it.
@@ -119,6 +119,58 @@ public final class LandCommand {
             }
         }
         return Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * Usage-line display values for {@code /land help <subcommand>}.
+     *
+     * <p>Usage templates keep their placeholder names visible (for example
+     * {@code /land trust <player>}) instead of substituting live values, so
+     * the help entry reads as a pattern. Only placeholders the help-detail
+     * usage templates actually use are listed; both locales share the same
+     * placeholder sets.</p>
+     */
+    private static final Map<String, Object> HELP_USAGE_VARS = Map.ofEntries(
+            Map.entry("generation", "<generation>"),
+            Map.entry("revision", "<revision>"),
+            Map.entry("land_name", "<land_name>"),
+            Map.entry("player", "<player>"),
+            Map.entry("action", "<action>"),
+            Map.entry("new_name", "<new_name>"),
+            Map.entry("profile", "<profile>"),
+            Map.entry("group", "<group>"));
+
+    /**
+     * Help overview and per-subcommand detail through the regular
+     * {@link ReplySink} path.
+     *
+     * <p>No extra tail means the overview: the prompt line followed by the
+     * grouped, clickable grid from {@code command.land.help}. A known second
+     * arg answers with that subcommand's detail, permission node and usage;
+     * anything else answers with the unknown-subcommand hint. Only the help
+     * node itself gates this path — per-subcommand thresholds are untouched.
+     */
+    static void sendHelp(ReplySink sink, String[] args) {
+        Objects.requireNonNull(sink, "sink");
+        String rawTarget = args != null && args.length >= 2 ? args[1] : null;
+        if (rawTarget != null && !rawTarget.isBlank()) {
+            String sub = rawTarget.toLowerCase(Locale.ROOT);
+            if (SUBCOMMANDS.contains(sub)) {
+                sendHelpDetail(sink, sub);
+            } else {
+                sink.reply(LandHelpKeys.UNKNOWN_HINT, Map.of("subcommand", rawTarget));
+            }
+            return;
+        }
+        sink.reply(LandHelpKeys.PROMPT, Map.of());
+        sink.reply("command.land.help", Map.of());
+    }
+
+    private static void sendHelpDetail(ReplySink sink, String subcommand) {
+        sink.reply(LandHelpKeys.detailKey(subcommand), Map.of());
+        sink.reply(LandHelpKeys.PERMISSION_LINE,
+                Map.of("permission", LandPermissions.forSubcommand(subcommand)));
+        sink.reply(LandHelpKeys.usageKey(subcommand), HELP_USAGE_VARS);
     }
 
     // -----------------------------------------------------------------
@@ -156,7 +208,7 @@ public final class LandCommand {
                 sink.reply("command.land.denied", Map.of("permission", perm));
                 return true;
             }
-            sink.reply("command.land.help", Map.of());
+            sendHelp(sink, args);
             return true;
         }
         String raw = args[0];
@@ -166,7 +218,7 @@ public final class LandCommand {
                 sink.reply("command.land.denied", Map.of("permission", perm));
                 return true;
             }
-            sink.reply("command.land.help", Map.of());
+            sendHelp(sink, args);
             return true;
         }
         String sub = raw.toLowerCase(Locale.ROOT);
@@ -180,7 +232,7 @@ public final class LandCommand {
             if (h != null) {
                 h.handle(sender, args, sink);
             } else {
-                sink.reply("command.land.help", Map.of());
+                sendHelp(sink, args);
             }
             return true;
         }

@@ -259,7 +259,12 @@ class LandCommandTest {
             for (String title : helpGroupTitles(tag)) {
                 assertTrue(rendered.contains(title), tag + " help must include group title " + title);
             }
-            assertFalse(template.contains("<click:"), tag + " help must not gain click actions");
+            assertTrue(template.contains("<click:suggest_command:"),
+                    tag + " help entries must be clickable suggest_command components");
+            for (String subcommand : LandCommand.SUBCOMMANDS) {
+                assertTrue(template.contains("'/land " + subcommand + "'"),
+                        tag + " help must fill '/land " + subcommand + "' on click");
+            }
         }
     }
 

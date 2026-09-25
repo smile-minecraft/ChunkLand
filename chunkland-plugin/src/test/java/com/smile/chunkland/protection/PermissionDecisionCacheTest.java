@@ -572,9 +572,10 @@ class PermissionDecisionCacheTest {
         assertEquals(-1, LandAuthorisationSnapshot.unloaded().ownerAclEpoch(),
                 "unloaded marker carries a distinct epoch so it can never hit");
 
-        LandAuthorisationSnapshot bumped = empty.withDirect(null, null, null);
+        LandAuthorisationSnapshot bumped = empty.withDirect(null, null, null, Map.of());
         assertTrue(bumped.ownerAclEpoch() > empty.ownerAclEpoch());
-        LandAuthorisationSnapshot bumpedAgain = bumped.withGeneric(null, null, null, null);
+        LandAuthorisationSnapshot bumpedAgain =
+                bumped.withGeneric(null, null, null, null, Map.of());
         assertTrue(bumpedAgain.ownerAclEpoch() > bumped.ownerAclEpoch());
 
         LandAuthorisationSnapshot pinned = empty.withOwnerAclEpoch(41);

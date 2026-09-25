@@ -138,6 +138,8 @@ public final class GuiContentRenderer {
         return switch (hint) {
             case "deny" -> Material.RED_DYE;
             case "allow" -> Material.LIME_DYE;
+            case "confirm" -> Material.GREEN_WOOL;
+            case "cancel" -> Material.RED_WOOL;
             case "back" -> Material.ARROW;
             case "unavailable" -> Material.BARRIER;
             default -> Material.COMPASS;

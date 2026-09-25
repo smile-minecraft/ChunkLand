@@ -249,7 +249,8 @@ public final class LandBindingService {
                     }
                     Expanded expanded = expand(data);
                     cache.publish(cache.snapshot().withGeneric(expanded.land, expanded.subland,
-                            expanded.members, data.sublandDefaults()));
+                            expanded.members, data.sublandDefaults(),
+                            data.landPolicyRevisions()));
                 })
                 .whenComplete((ignored, failure) -> {
                     if (failure != null) {

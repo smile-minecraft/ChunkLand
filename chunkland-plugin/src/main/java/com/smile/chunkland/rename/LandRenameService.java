@@ -30,7 +30,8 @@ import java.util.function.Supplier;
  *
  * <p>No cost is computed, no Economy call runs, no chunk is loaded, and the
  * structure revision and selection sessions are never touched: a rename
- * only swaps the display name and key while bumping the policy revision.
+ * only swaps the display name and key and leaves the authorisation
+ * generation untouched, so previously pinned writes keep committing.
  */
 public final class LandRenameService {
 

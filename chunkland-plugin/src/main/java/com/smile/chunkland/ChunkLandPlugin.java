@@ -10,6 +10,7 @@ import com.smile.acelib.scheduler.SafeScheduler;
 import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
 import com.smile.chunkland.adapter.gui.GuiContentRenderer;
+import com.smile.chunkland.adapter.gui.ManagementGuiTextProvider;
 import com.smile.chunkland.api.ChunkLandApi;
 import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.api.money.Money;
@@ -68,6 +69,7 @@ import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.ManageGuiCommandHandler;
 import com.smile.chunkland.command.OfflinePlayerResolver;
+import com.smile.chunkland.command.PlayerScheduler;
 import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.RenameCommandHandler;
 import com.smile.chunkland.command.SubLandCommandHandler;
@@ -91,6 +93,8 @@ import com.smile.chunkland.gui.GuiPage;
 import com.smile.chunkland.gui.ManagementGuiActions;
 import com.smile.chunkland.gui.ManagementGuiModel;
 import com.smile.chunkland.gui.ManagementGuiPages;
+import com.smile.chunkland.gui.ManagementGuiTexts;
+import com.smile.chunkland.gui.ManagementGuiToggle;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.limit.ExternalLimitProvider;
 import com.smile.chunkland.api.limit.LimitResult;
@@ -133,12 +137,14 @@ import com.smile.chunkland.persistence.DepthExtendStore;
 import com.smile.chunkland.persistence.PermissionProfileRepository;
 import com.smile.chunkland.persistence.SubjectGroupRepository;
 import com.smile.chunkland.protection.EntryBanLookup;
+import com.smile.chunkland.protection.DirectTrustWhitelist;
 import com.smile.chunkland.protection.ManagementPermissionGate;
 import com.smile.chunkland.protection.PermissionExplain;
 import com.smile.chunkland.protection.PermissionExplainService;
 import com.smile.chunkland.group.SubjectGroupService;
 import com.smile.chunkland.profile.PermissionProfileService;
 import com.smile.chunkland.protection.LandAuthorisationCache;
+import com.smile.chunkland.protection.LandAuthorisationSnapshot;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.PermissionDefaultsCache;
@@ -196,6 +202,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -207,6 +214,7 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.Location;
@@ -281,6 +289,34 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Optional<Capabilities> capabilities = Optional.empty();
     private GuiNavigator guiNavigator;
     private GuiContentRenderer guiContentRenderer;
+    /**
+     * Expected-current land-default write seam behind the management GUI
+     * confirm button. This is the same seam type the {@code /land default}
+     * handler uses, wired per enable to the shared
+     * {@code LandAuthorisationService} compare-and-set entry backing both
+     * paths, so GUI and command share one atomic authorisation mechanism.
+     * {@code null} (or a cleared disable) reads as fail-closed: the
+     * confirm attempt stays on the confirm page without writing.
+     */
+    private LandDefaultCommandHandler.DefaultMutation managementDefaultMutation;
+    /**
+     * Region hop for management GUI async completions. Durable writes
+     * finish on the persistence thread, where navigator and render work
+     * is unsafe; continuations hop through here back to the player's
+     * region thread. {@code null} reads as fail-closed (no redraw).
+     */
+    private PlayerScheduler managementGuiScheduler;
+    /** Online-player resolution for the GUI region hop; {@code null} fails closed. */
+    private Function<UUID, Player> managementGuiPlayerLookup;
+    /**
+     * Viewers with a confirm write still in flight. A second confirm
+     * click while the first has not completed is ignored, so one
+     * confirmation can never submit twice. Lazily created under the
+     * plugin lock; entries release on write completion (success or
+     * failure), never on navigation, so overlapping writes cannot slip
+     * through a cancel-then-confirm sequence.
+     */
+    private Set<UUID> managementConfirmPending;
     private BedrockFormNavigator bedrockFormNavigator;
     private Optional<ConfigService> configService = Optional.empty();
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
@@ -441,12 +477,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * {@link ManagementPermissionGate} for {@code MANAGE_PERMISSION} before
      * anything opens; without {@code ALLOW} (unknown land, missing snapshot
      * or provider, denied gate, resolver failure) the call returns empty and
-     * reveals nothing. The detail rows are read-only views over the same
-     * immutable snapshot the enforcement path reads. Row clicks only reach
-     * the caller-owned seam: this milestone keeps them observational, so
-     * every mutation stays on the existing {@code /land} handler/service
-     * path behind the same gate — the GUI never mutates domain state and
-     * never offers an {@code EVERYONE} entry.
+     * reveals nothing. The detail rows are views over the same immutable
+     * snapshot the enforcement path reads, each carrying its land-default
+     * lore line. Row clicks re-check the same gate and open a confirm page
+     * showing the current land default and the toggle target; only the
+     * confirm button writes, through the same {@code /land default}
+     * mutation seam behind the same gate — the GUI never mutates domain
+     * state directly and never offers an {@code EVERYONE} entry.
      *
      * @return the authoritative upstream generation, or empty when the GUI
      *     must stay closed
@@ -491,53 +528,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
         ManagementGuiModel model =
                 buildManagementGuiModel(playerUuid, landId, snapshot, contexts);
         ManagementGuiModel shared = model.available() ? model : ManagementGuiModel.unavailable();
-        ManagementGuiActions actions = new ManagementGuiActions() {
-            @Override
-            public void openDetails(GuiClickContext click) {
-                try {
-                    GuiPage page = ManagementGuiPages.detailsPage(shared, this);
-                    Optional<Long> generation = navigator.push(click.playerUuid(), page);
-                    if (generation.isEmpty()) {
-                        getLogger().warning("ChunkLand management GUI detail navigation failed");
-                    } else {
-                        renderManagementPage(click.playerUuid(), generation.orElseThrow(), page);
-                    }
-                } catch (RuntimeException failure) {
-                    getLogger().warning("ChunkLand management GUI detail navigation threw: "
-                            + failure.getClass().getSimpleName());
-                }
-            }
-
-            @Override
-            public void back(GuiClickContext click) {
-                try {
-                    if (!navigator.back(click.playerUuid())) {
-                        getLogger().warning("ChunkLand management GUI back navigation failed");
-                    } else {
-                        Optional<Long> generation = navigator.currentGeneration(click.playerUuid());
-                        if (generation.isPresent()) {
-                            navigator.currentPage(click.playerUuid()).ifPresent(page ->
-                                    renderManagementPage(click.playerUuid(), generation.orElseThrow(), page));
-                        }
-                    }
-                } catch (RuntimeException failure) {
-                    getLogger().warning("ChunkLand management GUI back navigation threw: "
-                            + failure.getClass().getSimpleName());
-                }
-            }
-
-            @Override
-            public void requestChange(GuiClickContext click, ProtectionActionType action) {
-                // Read-only in this milestone: row clicks are observed only.
-                // Mutations stay on the existing /land handler/service path
-                // behind the same management gate; the GUI never mutates
-                // domain state directly.
-                Objects.requireNonNull(click, "click");
-                Objects.requireNonNull(action, "action");
-            }
-        };
+        ManagementGuiTexts texts = managementGuiTexts(playerUuid);
+        ManagementGuiActions actions = managementGuiActions(landId, texts, shared,
+                snapshot, contexts);
         try {
-            GuiPage page = ManagementGuiPages.rootPage(actions);
+            GuiPage page = ManagementGuiPages.rootPage(actions, texts);
             Optional<Long> generation = navigator.open(playerUuid, page);
             if (generation.isEmpty()) {
                 getLogger().warning("ChunkLand management GUI open failed");
@@ -552,10 +547,679 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
     }
 
+    /**
+     * Button seam behind the management GUI pages. Detail rows re-check
+     * the shared {@code MANAGE_PERMISSION} gate and open a confirm page
+     * (current land default plus toggle target); only the confirm button
+     * writes, through the {@code /land default} mutation seam behind a
+     * second gate check. Cancel and back never write.
+     */
+    private ManagementGuiActions managementGuiActions(LandId landId, ManagementGuiTexts texts,
+            ManagementGuiModel shared, LandRegistry snapshot,
+            PermissionContextProvider contexts) {
+        return new ManagementGuiActions() {
+            @Override
+            public void openDetails(GuiClickContext click) {
+                Objects.requireNonNull(click, "click");
+                try {
+                    GuiNavigator nav = ChunkLandPlugin.this.guiNavigator;
+                    if (nav == null) {
+                        return;
+                    }
+                    Optional<GuiPage> rebuilt =
+                            buildDetailsPage(click.playerUuid(), landId, texts, this);
+                    GuiPage page = rebuilt.orElseGet(() -> ManagementGuiPages.detailsPage(
+                            shared, this, texts,
+                            action -> readLandDefault(click.playerUuid(), landId, action,
+                                    snapshot, contexts).orElse(PermissionState.INHERIT),
+                            DirectTrustWhitelist::isAllowed));
+                    Optional<Long> generation = nav.push(click.playerUuid(), page);
+                    if (generation.isEmpty()) {
+                        getLogger().warning("ChunkLand management GUI detail navigation failed");
+                    } else {
+                        renderManagementPage(click.playerUuid(), generation.orElseThrow(), page);
+                    }
+                } catch (RuntimeException failure) {
+                    getLogger().warning("ChunkLand management GUI detail navigation threw: "
+                            + failure.getClass().getSimpleName());
+                }
+            }
+
+            @Override
+            public void back(GuiClickContext click) {
+                Objects.requireNonNull(click, "click");
+                goBack(click);
+            }
+
+            @Override
+            public void requestChange(GuiClickContext click, ProtectionActionType action) {
+                Objects.requireNonNull(click, "click");
+                Objects.requireNonNull(action, "action");
+                try {
+                    UUID viewer = click.playerUuid();
+                    LandRegistryStore store = ChunkLandPlugin.this.protectionStore;
+                    PermissionDefaultsCache defaults = ChunkLandPlugin.this.permissionDefaults;
+                    if (store == null || defaults == null) {
+                        return;
+                    }
+                    LandRegistry fresh;
+                    try {
+                        fresh = store.snapshot();
+                    } catch (RuntimeException unresolved) {
+                        return;
+                    }
+                    if (fresh == null) {
+                        return;
+                    }
+                    PermissionContextProvider freshContexts = defaults.provider();
+                    if (freshContexts == null) {
+                        return;
+                    }
+                    PermissionDecision gate;
+                    try {
+                        gate = ManagementPermissionGate.check(viewer, landId,
+                                ProtectionActionType.MANAGE_PERMISSION, fresh,
+                                readAdminBypass(viewer), false, freshContexts);
+                    } catch (RuntimeException denied) {
+                        return;
+                    }
+                    if (gate == null || gate.outcome() != PermissionState.ALLOW) {
+                        return;
+                    }
+                    if (!DirectTrustWhitelist.isAllowed(action)) {
+                        return;
+                    }
+                    PermissionState current = readLandDefault(viewer, landId, action,
+                            fresh, freshContexts).orElse(PermissionState.INHERIT);
+                    PermissionState target = ManagementGuiToggle.targetFor(current);
+                    if (!openConfirmPage(viewer, landId, action, current, current, target,
+                            texts)) {
+                        getLogger().warning("ChunkLand management GUI confirm navigation failed");
+                    }
+                } catch (RuntimeException failure) {
+                    getLogger().warning("ChunkLand management GUI confirm navigation threw: "
+                            + failure.getClass().getSimpleName());
+                }
+            }
+        };
+    }
+
+    /**
+     * Rebuilt detail page over a fresh snapshot: every row carries the
+     * current land-default lore line. Empty when the snapshot, the
+     * provider or the rebuild itself is unavailable (fail-closed).
+     */
+    private Optional<GuiPage> buildDetailsPage(UUID viewer, LandId landId,
+            ManagementGuiTexts texts, ManagementGuiActions actions) {
+        LandRegistryStore store = this.protectionStore;
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        if (viewer == null || landId == null || texts == null || actions == null
+                || store == null || defaults == null) {
+            return Optional.empty();
+        }
+        LandRegistry fresh;
+        try {
+            fresh = store.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (fresh == null) {
+            return Optional.empty();
+        }
+        PermissionContextProvider contexts = defaults.provider();
+        if (contexts == null) {
+            return Optional.empty();
+        }
+        ManagementGuiModel model;
+        try {
+            model = buildManagementGuiModel(viewer, landId, fresh, contexts);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        ManagementGuiModel shared = model.available() ? model : ManagementGuiModel.unavailable();
+        try {
+            return Optional.of(ManagementGuiPages.detailsPage(shared, actions, texts,
+                    action -> readLandDefault(viewer, landId, action, fresh, contexts)
+                            .orElse(PermissionState.INHERIT),
+                    DirectTrustWhitelist::isAllowed));
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Push the confirm page for one pending toggle. The confirm callback
+     * re-checks the gate and writes the confirmed target only when the
+     * durable current still equals {@code expectedCurrent}; cancel and
+     * back only navigate. Failure rendering goes through
+     * {@link #failConfirm} instead, which replaces only while the viewer
+     * still sits on the confirm page.
+     *
+     * @return true only when the page is live and rendered
+     */
+    private boolean openConfirmPage(UUID viewer, LandId landId, ProtectionActionType action,
+            PermissionState current, PermissionState expectedCurrent, PermissionState target,
+            ManagementGuiTexts texts) {
+        if (viewer == null || landId == null || action == null || current == null
+                || expectedCurrent == null || target == null || texts == null) {
+            return false;
+        }
+        GuiNavigator nav = this.guiNavigator;
+        if (nav == null) {
+            return false;
+        }
+        GuiPage confirm = confirmPageOrNull(viewer, landId, action, current, expectedCurrent,
+                target, texts, false);
+        if (confirm == null) {
+            return false;
+        }
+        try {
+            Optional<Long> generation = nav.push(viewer, confirm);
+            if (generation.isEmpty()) {
+                return false;
+            }
+            renderManagementPage(viewer, generation.orElseThrow(), confirm);
+            return true;
+        } catch (RuntimeException failure) {
+            return false;
+        }
+    }
+
+    /**
+     * Confirm-button write: claim the in-flight guard, then re-check the
+     * shared {@code MANAGE_PERMISSION} gate over a fresh snapshot as close
+     * to the write as this thread reaches, and submit the confirmed
+     * target through the expected-current mutation seam. The durable
+     * completion runs on the persistence thread, so the redraw hops back
+     * to the player's region thread; the guard releases on completion
+     * either way. A denied gate, a missing seam or a failed write stays
+     * on the confirm page with the failure line and never throws to the
+     * caller.
+     *
+     * <p>Residual window (shared with the {@code /land default} command
+     * path, not introduced here): the gate decision reads a snapshot on
+     * this thread while the durable commit lands later in a persistence
+     * transaction, so a revocation landing between the two is not
+     * observed. Closing it needs authorization inside the service
+     * transaction itself, which is separate work.
+     */
+    private void confirmToggle(GuiClickContext click, LandId landId,
+            ProtectionActionType action, PermissionState expectedCurrent,
+            PermissionState target, ManagementGuiTexts texts) {
+        Objects.requireNonNull(click, "click");
+        try {
+            UUID viewer = click.playerUuid();
+            LandRegistryStore store = this.protectionStore;
+            PermissionDefaultsCache defaults = this.permissionDefaults;
+            if (landId == null || action == null || expectedCurrent == null || target == null
+                    || texts == null || store == null || defaults == null) {
+                return;
+            }
+            if (!claimConfirmFlight(viewer)) {
+                return;
+            }
+            LandRegistry fresh;
+            try {
+                fresh = store.snapshot();
+            } catch (RuntimeException unresolved) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            if (fresh == null) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            PermissionContextProvider contexts;
+            try {
+                contexts = defaults.provider();
+            } catch (RuntimeException unresolved) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            if (contexts == null) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            PermissionDecision gate;
+            try {
+                gate = ManagementPermissionGate.check(viewer, landId,
+                        ProtectionActionType.MANAGE_PERMISSION, fresh,
+                        readAdminBypass(viewer), false, contexts);
+            } catch (RuntimeException denied) {
+                gate = null;
+            }
+            LandDefaultCommandHandler.DefaultMutation mutation =
+                    this.managementDefaultMutation;
+            Optional<Long> expectedRevision = readAuthRevision(landId);
+            if (gate == null || gate.outcome() != PermissionState.ALLOW || mutation == null
+                    || expectedRevision.isEmpty()) {
+                releaseConfirmFlight(viewer);
+                failConfirm(viewer, landId, action, texts);
+                return;
+            }
+            Player player = resolveGuiPlayer(viewer);
+            if (player == null) {
+                releaseConfirmFlight(viewer);
+                failConfirm(viewer, landId, action, texts);
+                return;
+            }
+            CompletionStage<Void> stage;
+            try {
+                stage = mutation.apply(viewer, landId, action, expectedCurrent,
+                        expectedRevision.orElseThrow(), target);
+            } catch (RuntimeException failure) {
+                stage = null;
+            }
+            if (stage == null) {
+                releaseConfirmFlight(viewer);
+                failConfirm(viewer, landId, action, texts);
+                return;
+            }
+            PlayerScheduler scheduler = this.managementGuiScheduler;
+            if (scheduler == null) {
+                releaseConfirmFlight(viewer);
+                getLogger().warning(
+                        "ChunkLand management GUI scheduler unavailable; confirm stays in place");
+                return;
+            }
+            stage.whenComplete((ignored, failure) -> {
+                releaseConfirmFlight(viewer);
+                try {
+                    scheduler.runForPlayer(player, () -> {
+                        try {
+                            if (failure != null) {
+                                failConfirm(viewer, landId, action, texts);
+                                return;
+                            }
+                            redrawDetails(viewer, landId, texts);
+                        } catch (RuntimeException terminal) {
+                            getLogger().warning("ChunkLand management GUI confirm completion threw: "
+                                    + terminal.getClass().getSimpleName());
+                        }
+                    });
+                } catch (RuntimeException hop) {
+                    getLogger().warning("ChunkLand management GUI region hop failed: "
+                            + hop.getClass().getSimpleName());
+                }
+            });
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand management GUI confirm threw: "
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Failed confirm: re-read the current best-effort and rebuild the
+     * confirm page with the failure line, so a stale confirm shows the
+     * fresh current and its recomputed target instead of the outdated
+     * transition. When the viewer already navigated away the top page is
+     * left untouched. Unreadable currents render as the unset wording
+     * instead of a guess.
+     */
+    private void failConfirm(UUID viewer, LandId landId, ProtectionActionType action,
+            ManagementGuiTexts texts) {
+        LandRegistryStore store = this.protectionStore;
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        PermissionState current = PermissionState.INHERIT;
+        if (viewer != null && landId != null && action != null && store != null
+                && defaults != null) {
+            try {
+                LandRegistry fresh = store.snapshot();
+                PermissionContextProvider contexts = defaults.provider();
+                if (fresh != null && contexts != null) {
+                    current = readLandDefault(viewer, landId, action, fresh, contexts)
+                            .orElse(PermissionState.INHERIT);
+                }
+            } catch (RuntimeException unresolved) {
+                current = PermissionState.INHERIT;
+            }
+        }
+        PermissionState target = ManagementGuiToggle.targetFor(current);
+        if (!isOnConfirmPage(viewer)) {
+            return;
+        }
+        GuiPage failed = confirmPageOrNull(viewer, landId, action, current, current, target,
+                texts, true);
+        GuiNavigator nav = this.guiNavigator;
+        if (failed == null || nav == null) {
+            getLogger().warning("ChunkLand management GUI confirm failure render failed");
+            return;
+        }
+        Optional<Long> generation;
+        try {
+            generation = nav.replace(viewer, failed);
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand management GUI confirm failure render threw: "
+                    + failure.getClass().getSimpleName());
+            return;
+        }
+        if (generation.isEmpty()) {
+            getLogger().warning("ChunkLand management GUI confirm failure render failed");
+            return;
+        }
+        try {
+            renderManagementPage(viewer, generation.orElseThrow(), failed);
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand management GUI confirm failure render threw: "
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Confirm page value without navigation: empty when the page cannot
+     * be composed.
+     */
+    private GuiPage confirmPageOrNull(UUID viewer, LandId landId, ProtectionActionType action,
+            PermissionState current, PermissionState expectedCurrent, PermissionState target,
+            ManagementGuiTexts texts, boolean failed) {
+        if (viewer == null || landId == null || action == null || current == null
+                || expectedCurrent == null || target == null || texts == null) {
+            return null;
+        }
+        String currentName = current == PermissionState.INHERIT ? null : current.name();
+        ManagementGuiPages.ConfirmRequest pending = new ManagementGuiPages.ConfirmRequest(
+                action, currentName, target.name(),
+                confirmClick -> confirmToggle(confirmClick, landId, action, expectedCurrent,
+                        target, texts),
+                cancelClick -> goBack(cancelClick),
+                backClick -> goBack(backClick),
+                failed);
+        try {
+            return ManagementGuiPages.confirmPage(pending, texts);
+        } catch (RuntimeException broken) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether the viewer still sits on the confirm page. Async
+     * completions that arrive after the viewer navigated away must not
+     * clobber the screen they chose; the next navigation rebuilds from
+     * fresh data anyway.
+     */
+    private boolean isOnConfirmPage(UUID viewer) {
+        GuiNavigator nav = this.guiNavigator;
+        if (viewer == null || nav == null) {
+            return false;
+        }
+        try {
+            Optional<GuiPage> top = nav.currentPage(viewer);
+            return top.isPresent()
+                    && ManagementGuiPages.CONFIRM_PAGE_ID.equals(top.orElseThrow().id());
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+    }
+
+    /**
+     * Success redraw: replace the confirm page with the detail page built
+     * over the freshest snapshot, so the toggled lore line is visible
+     * immediately. When the viewer already navigated away, or any step
+     * fails, the current screen is left untouched.
+     */
+    private void redrawDetails(UUID viewer, LandId landId, ManagementGuiTexts texts) {
+        GuiNavigator nav = this.guiNavigator;
+        if (nav == null || !isOnConfirmPage(viewer)) {
+            return;
+        }
+        Optional<GuiPage> rebuilt = buildDetailsPage(viewer, landId, texts,
+                managementGuiActionsForRedraw(landId, texts));
+        if (rebuilt.isEmpty()) {
+            getLogger().warning("ChunkLand management GUI detail redraw failed");
+            return;
+        }
+        try {
+            Optional<Long> generation = nav.replace(viewer, rebuilt.orElseThrow());
+            if (generation.isEmpty()) {
+                getLogger().warning("ChunkLand management GUI detail redraw failed");
+            } else {
+                renderManagementPage(viewer, generation.orElseThrow(), rebuilt.orElseThrow());
+            }
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand management GUI detail redraw threw: "
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Fresh button seam for a redrawn detail page, so rows stay clickable
+     * after a toggle without holding the previous generation's seam.
+     */
+    private ManagementGuiActions managementGuiActionsForRedraw(LandId landId,
+            ManagementGuiTexts texts) {
+        LandRegistryStore store = this.protectionStore;
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        ManagementGuiModel fallback = ManagementGuiModel.unavailable();
+        LandRegistry snapshot = null;
+        PermissionContextProvider contexts = null;
+        if (store != null) {
+            try {
+                snapshot = store.snapshot();
+            } catch (RuntimeException unresolved) {
+                snapshot = null;
+            }
+        }
+        if (defaults != null) {
+            try {
+                contexts = defaults.provider();
+            } catch (RuntimeException unresolved) {
+                contexts = null;
+            }
+        }
+        return managementGuiActions(landId, texts, fallback, snapshot, contexts);
+    }
+
+    /**
+     * Back navigation shared by the detail back button and the confirm
+     * cancel/back buttons: return to the previous page and re-render it.
+     * Never writes anything.
+     */
+    private void goBack(GuiClickContext click) {
+        GuiNavigator nav = this.guiNavigator;
+        if (nav == null) {
+            return;
+        }
+        try {
+            if (!nav.back(click.playerUuid())) {
+                getLogger().warning("ChunkLand management GUI back navigation failed");
+            } else {
+                Optional<Long> generation = nav.currentGeneration(click.playerUuid());
+                if (generation.isPresent()) {
+                    nav.currentPage(click.playerUuid()).ifPresent(page ->
+                            renderManagementPage(click.playerUuid(), generation.orElseThrow(),
+                                    page));
+                }
+            }
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand management GUI back navigation threw: "
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Claim the confirm in-flight guard for one viewer. While held, a
+     * repeated confirm click is ignored instead of submitting again.
+     *
+     * @return true only when no write was already in flight
+     */
+    private boolean claimConfirmFlight(UUID viewer) {
+        if (viewer == null) {
+            return false;
+        }
+        synchronized (this) {
+            Set<UUID> pending = this.managementConfirmPending;
+            if (pending == null) {
+                pending = new HashSet<>();
+                this.managementConfirmPending = pending;
+            }
+            return pending.add(viewer);
+        }
+    }
+
+    /** Release the confirm in-flight guard; always paired with a claim. */
+    private void releaseConfirmFlight(UUID viewer) {
+        if (viewer == null) {
+            return;
+        }
+        synchronized (this) {
+            Set<UUID> pending = this.managementConfirmPending;
+            if (pending != null) {
+                pending.remove(viewer);
+            }
+        }
+    }
+
+    /**
+     * Online player for the GUI region hop, resolved on the calling
+     * (region) thread. {@code null} when offline or unresolvable, in
+     * which case the confirm attempt fails closed without writing.
+     */
+    private Player resolveGuiPlayer(UUID viewer) {
+        Function<UUID, Player> lookup = this.managementGuiPlayerLookup;
+        if (viewer == null || lookup == null) {
+            return null;
+        }
+        try {
+            return lookup.apply(viewer);
+        } catch (RuntimeException unresolved) {
+            return null;
+        }
+    }
+
+    /**
+     * Write baseline for the {@code /land default} command path: the
+     * durable current plus the authorisation generation pinned at handle
+     * time. Both come from memory-only snapshots on the calling thread;
+     * the transaction aborts on any divergence, so the commit never
+     * trusts a stale read. Empty on any unreadable piece (fail-closed).
+     */
+    private Optional<LandDefaultCommandHandler.Baseline> readDefaultBaseline(LandId landId,
+            ProtectionActionType action) {
+        LandAuthorisationCache authCache = this.landAuthorisationCache;
+        if (landId == null || action == null || authCache == null) {
+            return Optional.empty();
+        }
+        LandAuthorisationSnapshot durable;
+        try {
+            durable = authCache.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (durable == null) {
+            return Optional.empty();
+        }
+        PermissionState current;
+        try {
+            current = durable.landDefault(landId, action);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (current == null) {
+            return Optional.empty();
+        }
+        Optional<Long> revision;
+        try {
+            revision = durable.policyRevision(landId);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (revision.isEmpty() || revision.get() == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(new LandDefaultCommandHandler.Baseline(current,
+                    revision.orElseThrow()));
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Authorisation generation pinned from the published authorisation
+     * snapshot: unlike the structural registry snapshot, this container
+     * is republished by every authorisation write's refresh, so the pin
+     * tracks the durable rows instead of freezing at claim time. Empty
+     * when the land is absent from the published load (fail-closed).
+     */
+    private Optional<Long> readAuthRevision(LandId landId) {
+        LandAuthorisationCache authCache = this.landAuthorisationCache;
+        if (landId == null || authCache == null) {
+            return Optional.empty();
+        }
+        LandAuthorisationSnapshot snapshot;
+        try {
+            snapshot = authCache.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (snapshot == null) {
+            return Optional.empty();
+        }
+        try {
+            return snapshot.policyRevision(landId);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Current durable land default for one action over the given snapshot,
+     * or empty when it cannot be read. An unreadable current renders as
+     * the unset wording and never blocks navigation by itself.
+     */
+    static Optional<PermissionState> readLandDefault(UUID actor, LandId landId,
+            ProtectionActionType action, LandRegistry snapshot,
+            PermissionContextProvider contexts) {
+        if (actor == null || landId == null || action == null || snapshot == null
+                || contexts == null) {
+            return Optional.empty();
+        }
+        try {
+            PermissionContext context = contexts.provide(actor, landId, action, snapshot);
+            if (context == null) {
+                return Optional.empty();
+            }
+            return Optional.of(context.landDefault());
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
     private void renderManagementPage(UUID playerUuid, long generation, GuiPage page) {
         GuiContentRenderer renderer = this.guiContentRenderer;
         if (renderer != null) {
             renderer.render(playerUuid, generation, page);
+        }
+    }
+
+    /**
+     * Visible copy for the management GUI, resolved for one viewer through
+     * the message pipeline and injected into the Bukkit-free pages as plain
+     * text. The locale prefers the stored player override and falls back to
+     * the pipeline default; without a pipeline the bundled English fallback
+     * applies, so the GUI still opens.
+     */
+    private ManagementGuiTexts managementGuiTexts(UUID playerUuid) {
+        ChunkLandMessagePipeline pipeline =
+                landMessagePipeline == null ? null : landMessagePipeline.orElse(null);
+        PlayerPreferredLocaleService locales = this.playerLocaleService;
+        Function<UUID, Locale> lookup = uuid -> {
+            if (uuid == null || locales == null) {
+                return null;
+            }
+            try {
+                return locales.preferred(uuid).orElse(null);
+            } catch (RuntimeException ignored) {
+                return null;
+            }
+        };
+        try {
+            ManagementGuiTextProvider provider = pipeline == null
+                    ? new ManagementGuiTextProvider(null, lookup)
+                    : ManagementGuiTextProvider.withPipeline(pipeline, lookup);
+            return provider.resolve(playerUuid);
+        } catch (RuntimeException ignored) {
+            return ManagementGuiTextProvider.fallbackTexts();
         }
     }
 
@@ -959,7 +1623,18 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 authorisations == null ? null : authorisations::untrust);
         LandDefaultCommandHandler defaultHandler = new LandDefaultCommandHandler(
                 trustLands::resolve,
-                authorisations == null ? null : authorisations::setDefault);
+                authorisations == null ? null : authorisations::setDefaultExpected,
+                this::readDefaultBaseline);
+        this.managementDefaultMutation =
+                authorisations == null ? null : authorisations::setDefaultExpected;
+        this.managementGuiScheduler = buildPlayerScheduler(this);
+        this.managementGuiPlayerLookup = uuid -> {
+            try {
+                return uuid == null ? null : getServer().getPlayer(uuid);
+            } catch (RuntimeException unresolved) {
+                return null;
+            }
+        };
         EntryBanCommandHandler.LandView banViews = landId -> {
             try {
                 LandRegistry snapshot = this.protectionStore.snapshot();
@@ -4714,6 +5389,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // repeats stay no-ops.
         landAuthorisationService = null;
         landAuthorisationCache = null;
+        managementDefaultMutation = null;
+        managementGuiScheduler = null;
+        managementGuiPlayerLookup = null;
+        synchronized (this) {
+            managementConfirmPending = null;
+        }
         landRenameService = null;
         // Depth extends stop before persistence closes: the service first
         // stops accepting new proposals, flushes every accepted write, and

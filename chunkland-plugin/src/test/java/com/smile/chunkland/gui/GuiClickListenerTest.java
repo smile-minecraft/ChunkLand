@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.smile.chunkland.GuiClickListener;
+import com.smile.chunkland.adapter.gui.ManagementGuiTextProvider;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -107,7 +108,7 @@ class GuiClickListenerTest {
             }
         };
         GuiNavigator navigator = new GuiNavigator(gui);
-        navigator.open(ALICE, ManagementGuiPages.rootPage(actions)).orElseThrow();
+        navigator.open(ALICE, ManagementGuiPages.rootPage(actions, ManagementGuiTextProvider.fallbackTexts())).orElseThrow();
         return navigator;
     }
 

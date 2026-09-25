@@ -29,11 +29,17 @@ import org.bukkit.entity.Player;
  */
 public final class LandDefaultCommandHandler implements LandCommand.Handler {
 
-    /** Durable mutation entry; kept as a seam so tests observe the call. */
+    /**
+     * Durable mutation entry: the atomic compare-and-set behind both the
+     * command and the GUI confirm path, kept as a seam so tests observe
+     * the call. Both callers pin the generation they observed, so the
+     * commit — not a pre-call snapshot — is the authority.
+     */
     @FunctionalInterface
     public interface DefaultMutation {
         CompletionStage<Void> apply(UUID actor, LandId landId,
-                ProtectionActionType action, PermissionState state);
+                ProtectionActionType action, PermissionState expectedCurrent,
+                long expectedRevision, PermissionState state);
     }
 
     /** Resolves the affected land for the sender; empty means fail closed. */
@@ -42,16 +48,39 @@ public final class LandDefaultCommandHandler implements LandCommand.Handler {
         Optional<LandId> resolve(CommandSender sender);
     }
 
+    /**
+     * Write baseline observed before the mutation: the current default
+     * value plus the authorisation generation pinned at gate time.
+     */
+    public record Baseline(PermissionState current, long revision) {
+        public Baseline {
+            Objects.requireNonNull(current, "current");
+        }
+    }
+
+    /**
+     * Reads the write baseline for one land and action; empty means fail
+     * closed without writing.
+     */
+    @FunctionalInterface
+    public interface BaselineSource {
+        Optional<Baseline> read(LandId landId, ProtectionActionType action);
+    }
+
     private final LandResolver lands;
     private final DefaultMutation mutation;
+    private final BaselineSource baselines;
 
     /**
      * @param lands affected-land resolver; null or empty resolves fail closed
      * @param mutation durable mutation; null replies unavailable without side effects
+     * @param baselines baseline source; null or empty reads fail closed without writing
      */
-    public LandDefaultCommandHandler(LandResolver lands, DefaultMutation mutation) {
+    public LandDefaultCommandHandler(LandResolver lands, DefaultMutation mutation,
+            BaselineSource baselines) {
         this.lands = lands;
         this.mutation = mutation;
+        this.baselines = baselines;
     }
 
     @Override
@@ -95,9 +124,16 @@ public final class LandDefaultCommandHandler implements LandCommand.Handler {
         }
         ProtectionActionType actionType = action.get();
         LandId landId = land.get();
+        Optional<Baseline> baseline = readBaseline(landId, actionType);
+        if (baseline.isEmpty() || baseline.get() == null) {
+            sink.reply("command.land.default.failed", Map.of("reason", "default.failed"));
+            return;
+        }
+        Baseline pinned = baseline.get();
         CompletionStage<Void> stage;
         try {
-            stage = mutation.apply(actor, landId, actionType, state);
+            stage = mutation.apply(actor, landId, actionType, pinned.current(),
+                    pinned.revision(), state);
         } catch (RuntimeException failure) {
             sink.reply("command.land.default.failed", Map.of("reason", "default.failed"));
             return;
@@ -126,6 +162,18 @@ public final class LandDefaultCommandHandler implements LandCommand.Handler {
         }
         try {
             Optional<LandId> found = lands.resolve(sender);
+            return found == null ? Optional.empty() : found;
+        } catch (RuntimeException failure) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<Baseline> readBaseline(LandId landId, ProtectionActionType action) {
+        if (baselines == null || landId == null || action == null) {
+            return Optional.empty();
+        }
+        try {
+            Optional<Baseline> found = baselines.read(landId, action);
             return found == null ? Optional.empty() : found;
         } catch (RuntimeException failure) {
             return Optional.empty();

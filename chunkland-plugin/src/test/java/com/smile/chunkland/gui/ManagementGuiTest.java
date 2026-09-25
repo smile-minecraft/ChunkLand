@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.smile.chunkland.adapter.gui.ManagementGuiTextProvider;
 import com.smile.chunkland.api.permission.Permission;
 import com.smile.chunkland.api.permission.PermissionBinding;
 import com.smile.chunkland.api.permission.PermissionContext;
@@ -75,7 +76,7 @@ class ManagementGuiTest {
             }
         };
 
-        GuiPage root = ManagementGuiPages.rootPage(actions);
+        GuiPage root = ManagementGuiPages.rootPage(actions, ManagementGuiTextProvider.fallbackTexts());
 
         assertEquals(ManagementGuiPages.ROOT_PAGE_ID, root.id());
         assertFalse(root.slots().isEmpty(), "first layer must carry a details entry");
@@ -118,7 +119,7 @@ class ManagementGuiTest {
                 "DENY rows sort ahead of ALLOW rows");
         assertEquals(PermissionExplainLayer.LAND_BINDING, rows.get(0).layer());
 
-        GuiPage details = ManagementGuiPages.detailsPage(model, actions);
+        GuiPage details = ManagementGuiPages.detailsPage(model, actions, ManagementGuiTextProvider.fallbackTexts());
         assertEquals(ManagementGuiPages.DETAILS_PAGE_ID, details.id());
         assertFalse(details.slots().isEmpty());
     }
@@ -154,15 +155,15 @@ class ManagementGuiTest {
     @Test
     void noEveryoneButtonAnywhere() {
         ManagementGuiActions actions = ManagementGuiActions.noop();
-        GuiPage root = ManagementGuiPages.rootPage(actions);
+        GuiPage root = ManagementGuiPages.rootPage(actions, ManagementGuiTextProvider.fallbackTexts());
         ManagementGuiModel model = ManagementGuiModel.fromExplains(
                 List.of(explainOf(ProtectionActionType.ENTRY,
                         PermissionState.ALLOW, PermissionExplainLayer.LAND_DEFAULT)),
                 Map.of(ProtectionActionType.ENTRY,
                         landBindingContext(ProtectionActionType.ENTRY, List.of())));
-        GuiPage details = ManagementGuiPages.detailsPage(model, actions);
+        GuiPage details = ManagementGuiPages.detailsPage(model, actions, ManagementGuiTextProvider.fallbackTexts());
         GuiPage unavailable =
-                ManagementGuiPages.detailsPage(ManagementGuiModel.unavailable(), actions);
+                ManagementGuiPages.detailsPage(ManagementGuiModel.unavailable(), actions, ManagementGuiTextProvider.fallbackTexts());
 
         List<GuiPage> pages = List.of(root, details, unavailable);
         for (GuiPage page : pages) {
@@ -181,13 +182,13 @@ class ManagementGuiTest {
         ManagementGuiActions actions = ManagementGuiActions.noop();
         FakeGuiService gui = new FakeGuiService();
         GuiNavigator navigator = new GuiNavigator(gui);
-        GuiPage root = ManagementGuiPages.rootPage(actions);
+        GuiPage root = ManagementGuiPages.rootPage(actions, ManagementGuiTextProvider.fallbackTexts());
         ManagementGuiModel model = ManagementGuiModel.fromExplains(
                 List.of(explainOf(ProtectionActionType.ENTRY,
                         PermissionState.ALLOW, PermissionExplainLayer.LAND_DEFAULT)),
                 Map.of(ProtectionActionType.ENTRY,
                         landBindingContext(ProtectionActionType.ENTRY, List.of())));
-        GuiPage details = ManagementGuiPages.detailsPage(model, actions);
+        GuiPage details = ManagementGuiPages.detailsPage(model, actions, ManagementGuiTextProvider.fallbackTexts());
 
         navigator.open(ALICE, root).orElseThrow();
         long second = navigator.push(ALICE, details).orElseThrow();
@@ -218,10 +219,10 @@ class ManagementGuiTest {
         });
         assertFalse(failed.available(), "resolver failure must fail closed");
 
-        GuiPage denied = ManagementGuiPages.detailsPage(null, actions);
+        GuiPage denied = ManagementGuiPages.detailsPage(null, actions, ManagementGuiTextProvider.fallbackTexts());
         assertEquals(ManagementGuiPages.UNAVAILABLE_PAGE_ID, denied.id());
         GuiPage unavailable =
-                ManagementGuiPages.detailsPage(ManagementGuiModel.unavailable(), actions);
+                ManagementGuiPages.detailsPage(ManagementGuiModel.unavailable(), actions, ManagementGuiTextProvider.fallbackTexts());
         assertEquals(ManagementGuiPages.UNAVAILABLE_PAGE_ID, unavailable.id());
 
         FakeGuiService gui = new FakeGuiService();
@@ -252,7 +253,7 @@ class ManagementGuiTest {
                 List.of(explainOf(action, PermissionState.ALLOW,
                         PermissionExplainLayer.LAND_DEFAULT)),
                 Map.of(action, landBindingContext(action, List.of())));
-        GuiPage details = ManagementGuiPages.detailsPage(model, actions);
+        GuiPage details = ManagementGuiPages.detailsPage(model, actions, ManagementGuiTextProvider.fallbackTexts());
 
         FakeGuiService gui = new FakeGuiService();
         GuiNavigator navigator = new GuiNavigator(gui);

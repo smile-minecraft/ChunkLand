@@ -14,17 +14,17 @@ command:
     help: |-
       <gray>Usage: /land <subcommand> [args]</gray>
       <yellow>Land actions</yellow>
-      <gray>  help      wand     claim    confirm</gray>
-      <gray>  expand    shrink   unclaim  rename</gray>
-      <gray>  delete    subland</gray>
+      <gray>  <hover:show_text:'<gray>Show the command overview.</gray>'><click:suggest_command:'/land help'>help      </click></hover><hover:show_text:'<gray>Receive the selection wand.</gray>'><click:suggest_command:'/land wand'>wand     </click></hover><hover:show_text:'<gray>Claim the selected chunks.</gray>'><click:suggest_command:'/land claim'>claim    </click></hover><hover:show_text:'<gray>Confirm a pending claim.</gray>'><click:suggest_command:'/land confirm'>confirm</click></hover></gray>
+      <gray>  <hover:show_text:'<gray>Expand this land.</gray>'><click:suggest_command:'/land expand'>expand    </click></hover><hover:show_text:'<gray>Shrink this land.</gray>'><click:suggest_command:'/land shrink'>shrink   </click></hover><hover:show_text:'<gray>Unclaim selected chunks.</gray>'><click:suggest_command:'/land unclaim'>unclaim  </click></hover><hover:show_text:'<gray>Rename this land.</gray>'><click:suggest_command:'/land rename'>rename</click></hover> </gray>
+      <gray>  <hover:show_text:'<gray>Delete this land.</gray>'><click:suggest_command:'/land delete'>delete    </click></hover><hover:show_text:'<gray>Manage sublands.</gray>'><click:suggest_command:'/land subland'>subland  </click></hover>                </gray>
       <yellow>Permissions</yellow>
-      <gray>  trust     untrust  default  binding</gray>
-      <gray>  ban       unban    group    manage</gray>
+      <gray>  <hover:show_text:'<gray>Trust a player on this land.</gray>'><click:suggest_command:'/land trust'>trust     </click></hover><hover:show_text:'<gray>Remove a trusted player.</gray>'><click:suggest_command:'/land untrust'>untrust  </click></hover><hover:show_text:'<gray>Change a land default permission.</gray>'><click:suggest_command:'/land default'>default  </click></hover><hover:show_text:'<gray>Bind players or groups to profiles.</gray>'><click:suggest_command:'/land binding'>binding</click></hover></gray>
+      <gray>  <hover:show_text:'<gray>Ban a player from this land.</gray>'><click:suggest_command:'/land ban'>ban       </click></hover><hover:show_text:'<gray>Unban a player.</gray>'><click:suggest_command:'/land unban'>unban    </click></hover><hover:show_text:'<gray>Manage subject groups.</gray>'><click:suggest_command:'/land group'>group    </click></hover><hover:show_text:'<gray>Open the management GUI.</gray>'><click:suggest_command:'/land manage'>manage</click></hover> </gray>
       <yellow>Queries</yellow>
-      <gray>  profile   explain  inspect  log</gray>
-      <gray>  history</gray>
+      <gray>  <hover:show_text:'<gray>Manage permission profiles.</gray>'><click:suggest_command:'/land profile'>profile   </click></hover><hover:show_text:'<gray>Explain one permission outcome.</gray>'><click:suggest_command:'/land explain'>explain  </click></hover><hover:show_text:'<gray>Inspect this land.</gray>'><click:suggest_command:'/land inspect'>inspect  </click></hover><hover:show_text:'<gray>Search the audit log.</gray>'><click:suggest_command:'/land log'>log</click></hover>    </gray>
+      <gray>  <hover:show_text:'<gray>Show nearby block history.</gray>'><click:suggest_command:'/land history'>history   </click></hover>                         </gray>
       <yellow>Administration</yellow>
-      <gray>  bypass    admin</gray>
+      <gray>  <hover:show_text:'<gray>Toggle admin bypass.</gray>'><click:suggest_command:'/land bypass'>bypass    </click></hover><hover:show_text:'<gray>Administration tools.</gray>'><click:suggest_command:'/land admin'>admin    </click></hover>                </gray>
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
     denied: "<red>Missing permission <permission>.</red>"
@@ -179,6 +179,110 @@ command:
       "on": "<green>Admin bypass enabled.</green>"
       "off": "<gray>Admin bypass disabled.</gray>"
       failed: "<red>Admin bypass toggle failed: <reason>.</red>"
+    help_detail:
+      prompt: "<gray>Tip: run /land help followed by a subcommand name for details.</gray>"
+      unknown_hint: "<red>Unknown subcommand <subcommand>. Run /land help to list every subcommand.</red>"
+      permission: "<gray>Permission: <permission></gray>"
+      help:
+        short: "<gray>Show the command overview.</gray>"
+        detail: "<gray>Groups every /land subcommand by purpose: land actions, permissions, queries and administration.</gray>"
+        usage: "<yellow>Usage: /land help</yellow>"
+      confirm:
+        short: "<gray>Confirm a pending claim.</gray>"
+        detail: "<gray>Confirms the selected claim with its generation, revision and land name.</gray>"
+        usage: "<yellow>Usage: /land confirm <generation> <revision> <land_name></yellow>"
+      wand:
+        short: "<gray>Receive the selection wand.</gray>"
+        detail: "<gray>Gives you the selection wand used to mark claim corners.</gray>"
+        usage: "<yellow>Usage: /land wand</yellow>"
+      claim:
+        short: "<gray>Claim the selected chunks.</gray>"
+        detail: "<gray>Creates a land from the current wand selection under the given name.</gray>"
+        usage: "<yellow>Usage: /land claim <land_name></yellow>"
+      trust:
+        short: "<gray>Trust a player on this land.</gray>"
+        detail: "<gray>Grants the named player the trusted-member access of this land.</gray>"
+        usage: "<yellow>Usage: /land trust <player></yellow>"
+      untrust:
+        short: "<gray>Remove a trusted player.</gray>"
+        detail: "<gray>Revokes the named player's trusted-member access on this land.</gray>"
+        usage: "<yellow>Usage: /land untrust <player></yellow>"
+      default:
+        short: "<gray>Change a land default permission.</gray>"
+        detail: "<gray>Sets the land-wide default outcome for one protection action.</gray>"
+        usage: "<yellow>Usage: /land default <action> [ALLOW|DENY|INHERIT]</yellow>"
+      binding:
+        short: "<gray>Bind players or groups to profiles.</gray>"
+        detail: "<gray>Creates, updates or removes generic permission bindings on this land.</gray>"
+        usage: "<yellow>Usage: /land binding (bind|unbind) player <player> <profile> | group <group> <profile> [--in-subland]</yellow>"
+      ban:
+        short: "<gray>Ban a player from this land.</gray>"
+        detail: "<gray>Denies the named player entry and access to this land.</gray>"
+        usage: "<yellow>Usage: /land ban <player></yellow>"
+      unban:
+        short: "<gray>Unban a player.</gray>"
+        detail: "<gray>Restores the named player's access to this land.</gray>"
+        usage: "<yellow>Usage: /land unban <player></yellow>"
+      subland:
+        short: "<gray>Manage sublands.</gray>"
+        detail: "<gray>Selects, creates, updates, deletes or extends a subland of this land.</gray>"
+        usage: "<yellow>Usage: /land subland (select|create|update|delete|extend) [generation revision] [name]</yellow>"
+      expand:
+        short: "<gray>Expand this land.</gray>"
+        detail: "<gray>Adds the selected chunks to the land you stand on.</gray>"
+        usage: "<yellow>Usage: /land expand</yellow>"
+      shrink:
+        short: "<gray>Shrink this land.</gray>"
+        detail: "<gray>Removes the selected chunks from this land with a refund.</gray>"
+        usage: "<yellow>Usage: /land shrink</yellow>"
+      unclaim:
+        short: "<gray>Unclaim selected chunks.</gray>"
+        detail: "<gray>Releases the selected chunks from this land (same flow as shrink).</gray>"
+        usage: "<yellow>Usage: /land unclaim</yellow>"
+      rename:
+        short: "<gray>Rename this land.</gray>"
+        detail: "<gray>Changes the display name of the land you stand on.</gray>"
+        usage: "<yellow>Usage: /land rename <new_name></yellow>"
+      delete:
+        short: "<gray>Delete this land.</gray>"
+        detail: "<gray>Permanently deletes the land with a full refund after confirmation.</gray>"
+        usage: "<yellow>Usage: /land delete confirm <revision></yellow>"
+      group:
+        short: "<gray>Manage subject groups.</gray>"
+        detail: "<gray>Creates, lists and edits the player groups used by bindings.</gray>"
+        usage: "<yellow>Usage: /land group (create|list|add|remove|delete) [args]</yellow>"
+      profile:
+        short: "<gray>Manage permission profiles.</gray>"
+        detail: "<gray>Creates, lists and edits reusable permission profiles.</gray>"
+        usage: "<yellow>Usage: /land profile (create|list|set|delete) [args]</yellow>"
+      explain:
+        short: "<gray>Explain one permission outcome.</gray>"
+        detail: "<gray>Shows why one protection action is allowed or denied here.</gray>"
+        usage: "<yellow>Usage: /land explain <action></yellow>"
+      inspect:
+        short: "<gray>Inspect this land.</gray>"
+        detail: "<gray>Shows owner, chunks, revisions and limits of the current land.</gray>"
+        usage: "<yellow>Usage: /land inspect [player]</yellow>"
+      log:
+        short: "<gray>Search the audit log.</gray>"
+        detail: "<gray>Searches durable audit entries with filters and paging.</gray>"
+        usage: "<yellow>Usage: /land log [u:player-uuid] [t:7d] [a:action] [land:land-uuid] [world:world-uuid] [limit:n] [page:n]</yellow>"
+      history:
+        short: "<gray>Show nearby block history.</gray>"
+        detail: "<gray>Shows recent block changes around your position.</gray>"
+        usage: "<yellow>Usage: /land history</yellow>"
+      manage:
+        short: "<gray>Open the management GUI.</gray>"
+        detail: "<gray>Opens the two-layer GUI showing permission effects and sources.</gray>"
+        usage: "<yellow>Usage: /land manage</yellow>"
+      bypass:
+        short: "<gray>Toggle admin bypass.</gray>"
+        detail: "<gray>Switches your admin-bypass mode on or off (audited).</gray>"
+        usage: "<yellow>Usage: /land bypass [on|off]</yellow>"
+      admin:
+        short: "<gray>Administration tools.</gray>"
+        detail: "<gray>Ledger and orphan-world administration for server operators.</gray>"
+        usage: "<yellow>Usage: /land admin (ledger|orphan) ...</yellow>"
     admin:
       ledger:
         usage: "<yellow>Usage: /land admin ledger list [state] | show [operation] | resolve [operation] [RESOLVED|REFUNDED|IGNORED]</yellow>"
@@ -236,3 +340,41 @@ selection:
     reset: "<yellow>Selection reset. Click a block to set the first corner.</yellow>"
     abandoned: "<yellow>Selection cleared because you switched away from the wand.</yellow>"
     cancelled: "<yellow>Selection cancelled.</yellow>"
+gui:
+  manage:
+    root:
+      title: "<white>Land Management</white>"
+      entry_name: "<white>Open the permission detail view.</white>"
+      entry_hint: "<gray>Open the permission detail view.</gray>"
+    details:
+      title: "<white>Land Permissions (<deny_count> DENY, <allow_count> ALLOW)</white>"
+      back_name: "<white>Back</white>"
+    row:
+      head: "<white><action>: <outcome> @ <layer><conflict></white>"
+      conflict_suffix: " !CONFLICT"
+      remedy_line: "<gray>  - <remedy></gray>"
+      default_lore: "<gray>Land default <action>: <state></gray>"
+      default_unset: "Unset (inherits global)"
+      readonly_line: "<gray>View only in this menu.</gray>"
+    remedy:
+      unavailable: |-
+        <red>Outcome unavailable: data missing or the resolver failed (fail-closed).</red>
+        <gray>Re-open the view after the snapshot reloads.</gray>
+        <gray>Mutations stay gated; no change was applied.</gray>
+      conflict: |-
+        <gray>Remove the DENY binding on <layer> through the existing binding flow (still gated).</gray>
+        <gray>Keep the DENY and remove the conflicting ALLOW on <layer> instead.</gray>
+        <gray>Move the intended ALLOW to a higher-precedence layer: SubLand binding ahead of Land binding, binding ahead of default.</gray>
+      plain: |-
+        <gray>No conflict: <layer> decides <outcome>.</gray>
+        <gray>To change it, update <layer> through the existing management flows (still gated).</gray>
+        <gray>Leave defaults INHERIT to inherit; missing values deny fail-closed.</gray>
+    unavailable:
+      title: "<white>Land Management (unavailable)</white>"
+    confirm:
+      title: "<white>Confirm permission change: <action></white>"
+      confirm_name: "<green>Confirm</green>"
+      cancel_name: "<red>Cancel</red>"
+      back_name: "<white>Back</white>"
+      target_line: "<gray>Target default: <state></gray>"
+      failed_line: "<red>Change not applied (fail-closed). No state was modified.</red>"
