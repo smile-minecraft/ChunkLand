@@ -5,7 +5,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Pure stored vs effective depth rules (spec §14.1).
+ * Pure stored vs effective depth rules.
  *
  * <p>{@code storedMinProtectedY} is the authoritative persisted value per
  * chunk. {@code effectiveMinProtectedY} is the runtime interpretation and is

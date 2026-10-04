@@ -4,7 +4,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Pure Auto Extend decision gate (spec §18).
+ * Pure Auto Extend decision gate.
  *
  * <p>An extend is proposed only when <em>all</em> of the following hold:
  *

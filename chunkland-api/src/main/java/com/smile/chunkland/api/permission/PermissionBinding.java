@@ -4,7 +4,7 @@ import java.util.Objects;
 
 /**
  * One ACL binding row: a {@link PermissionSubject} together with the
- * {@link Permission} it grants/denies for a single action (spec §26).
+ * {@link Permission} it grants/denies for a single action.
  *
  * <p>Thread-safe immutable value object.
  */

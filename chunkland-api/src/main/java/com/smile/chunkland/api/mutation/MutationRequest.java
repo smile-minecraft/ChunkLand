@@ -7,14 +7,14 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Immutable carrier describing a requested mutation (spec §85).
+ * Immutable carrier describing a requested mutation.
  *
  * <p>This is a skeleton contract: the concrete per-kind request shapes (claim
- * pricing, subland geometry, rename validation, ...) are finalized in later
- * milestones (M2 claim saga, M3 subland, M5 stable mutation API). The carrier
+ * pricing, subland geometry, rename validation, ...) are filled in as each area
+ * lands. The carrier
  * intentionally exposes a minimal, extensible set of fields so the immutable
  * envelope and the {@link MutationKind} vocabulary are fixed now, while the
- * field-level validation rules are layered on by the dedicated mutation tasks.
+ * field-level validation rules are layered on by the dedicated mutation work.
  *
  * <p>The {@code chunks} collection is defensively copied and exposed unmodifiable.
  * {@code landId}, {@code requestedBy} and {@code displayName} may be {@code null}

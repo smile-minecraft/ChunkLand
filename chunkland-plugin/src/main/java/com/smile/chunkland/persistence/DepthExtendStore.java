@@ -18,7 +18,7 @@ import java.util.concurrent.CompletionStage;
 
 /**
  * Production {@link DepthStore}: atomic-minimum depth apply with
- * {@code DEPTH_EXTEND} audit (spec §18–§20).
+ * {@code DEPTH_EXTEND} audit.
  *
  * <p>One {@link #extend} call is one persistence-thread task running one
  * SQL transaction: the stored row moves through a single conditional

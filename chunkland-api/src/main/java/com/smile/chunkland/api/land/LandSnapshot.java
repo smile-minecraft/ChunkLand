@@ -9,7 +9,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Immutable snapshot of a Land's structural state (spec §4).
+ * Immutable snapshot of a Land's structural state.
  *
  * <p>All collections are defensively copied on construction and exposed as
  * unmodifiable views, so callers can never mutate the snapshot or observe
@@ -17,7 +17,7 @@ import java.util.UUID;
  *
  * <p>{@code structureRevision} is the optimistic lock for chunk set / subland
  * geometry / owner changes; {@code landPolicyRevision} is bumped on ACL / rule /
- * default changes (spec §4, §33).
+ * default changes.
  */
 public record LandSnapshot(
         LandId id,
@@ -185,7 +185,7 @@ public record LandSnapshot(
 
     /**
      * Return a new snapshot with the owner replaced, bumping {@code structureRevision}
-     * (owner changes are structural per spec §4). The receiver is never modified.
+     * (owner changes are structural). The receiver is never modified.
      * Server-owned Land is not transferable: a snapshot whose current owner is
      * {@link OwnerRef.ServerOwnerRef} cannot be changed to a player owner.
      */
@@ -213,7 +213,7 @@ public record LandSnapshot(
 
     /**
      * Return a new snapshot with {@code updatedAt} set. Revisions are unchanged;
-     * the timestamp invariant (createdAt <= updatedAt) is re-checked. The receiver
+     * the timestamp invariant ({@code createdAt <= updatedAt}) is re-checked. The receiver
      * is never modified.
      */
     public LandSnapshot withUpdatedAt(Instant updatedAt) {

@@ -25,7 +25,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * Red-first contract for the Land Rule service (spec §55, §27 rule chain).
+ * Red-first contract for the Land Rule service.
  *
  * <p>Resolution order: Land rule → World default → Global default → built-in
  * default. SubLand rules are not addressable through {@code LandRuleLookup}

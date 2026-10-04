@@ -4,7 +4,7 @@ import java.util.Objects;
 
 /**
  * A single subject-permission setting: an action together with its tri-state
- * value (spec §24, §26). Represents one entry in an ACL binding or default.
+ * value. Represents one entry in an ACL binding or default.
  *
  * <p>Thread-safe immutable value object.
  */

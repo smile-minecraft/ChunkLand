@@ -3,7 +3,7 @@ package com.smile.chunkland.api.permission;
 import java.util.Objects;
 
 /**
- * The immutable outcome of a permission resolution (spec §25-§27, §51-1).
+ * The immutable outcome of a permission resolution.
  *
  * <p>{@link #outcome()} is the binary decision ({@link PermissionState#ALLOW} or
  * {@link PermissionState#DENY}); {@link #source()} records which

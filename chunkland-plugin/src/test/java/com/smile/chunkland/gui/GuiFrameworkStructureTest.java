@@ -17,8 +17,8 @@ import org.junit.jupiter.api.Test;
  * session, and disable-time cleanup never touches the provider-wide shutdown.
  *
  * <p>Bedrock 表單是明確的例外：AceLib FormService 沒有上游 session
- * 或 generation 概念（fire-and-forget send），§66.1 要求 Bedrock 導航
- * 自己維護 generation，所以 BedrockFormNavigator 的本地單調配發加
+ * 或 generation 概念（fire-and-forget send），所以 Bedrock 導航
+ * 自己維護 generation，而 BedrockFormNavigator 的本地單調配發加
  * 頂層比對加單次消費即為 token，不受「上游 generation」守衛限制。
  */
 class GuiFrameworkStructureTest {

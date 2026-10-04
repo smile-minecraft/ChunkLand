@@ -4,19 +4,19 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Immutable, full-resolution context for one protection decision (spec §25-§27, §51-1).
+ * Immutable, full-resolution context for one protection decision.
  *
- * <p>It expresses the complete §27 chain for a single {@link ProtectionActionType}
- * on a single Land. The resolver walks these layers top-down and stops at the first
- * explicit (non-{@code INHERIT}) value; {@code INHERIT} falls through to the next
- * layer. Within a binding layer, direct-player and group bindings are aggregated
- * together with flat DENY-first precedence (spec §26.1) — direct does <em>not</em>
- * outrank group.
+ * <p>It expresses the complete resolution chain for a single
+ * {@link ProtectionActionType} on a single Land. The resolver walks these layers
+ * top-down and stops at the first explicit (non-{@code INHERIT}) value;
+ * {@code INHERIT} falls through to the next layer. Within a binding layer,
+ * direct-player and group bindings are aggregated together with flat DENY-first
+ * precedence — direct does <em>not</em> outrank group.
  *
- * <h3>Subject chain (SUBJECT_PERMISSION)</h3>
+ * <h2>Subject chain (SUBJECT_PERMISSION)</h2>
  * <pre>
  * Admin Bypass
- *   -> Owner Guarantee (only if isOwner && action source is SUBJECT_PERMISSION)
+ *   -> Owner Guarantee (only if isOwner &amp;&amp; action source is SUBJECT_PERMISSION)
  *   -> SubLand Direct + Groups  (aggregate, DENY > ALLOW > INHERIT)
  *   -> SubLand Default
  *   -> Land Direct + Groups     (aggregate)
@@ -26,7 +26,7 @@ import java.util.Objects;
  *   -> implicit DENY (fail-closed)
  * </pre>
  *
- * <h3>Rule chain (LAND_RULE)</h3>
+ * <h2>Rule chain (LAND_RULE)</h2>
  * <pre>
  * Admin Bypass
  *   -> SubLand Rule
@@ -35,16 +35,16 @@ import java.util.Objects;
  *   -> Global Default
  *   -> implicit DENY (fail-closed)
  * </pre>
- * Owner Guarantee never applies to rules (spec §27.2); the owner is bound by
- * environment rules like anyone else.
+ * Owner Guarantee never applies to rules; the owner is bound by environment
+ * rules like anyone else.
  *
- * <h3>COMBINED</h3>
+ * <h2>COMBINED</h2>
  * The subject chain (without Owner Guarantee) and the rule chain are both required;
  * both must ALLOW for the combined decision to be ALLOW, any DENY on either side
- * yields DENY (spec §51-1.4).
+ * yields DENY.
  *
  * <p>Admin Bypass is a complete protection bypass: when enabled it short-circuits
- * every category to ALLOW at the very top (spec §27, §87). It is intentionally
+ * every category to ALLOW at the very top. It is intentionally
  * off by default and supplied by the caller.
  *
  * <p>Compatibility: the original five-argument constructor is retained and maps to
@@ -107,7 +107,7 @@ public record PermissionContext(
         return landBindings;
     }
 
-    /** Start building a full-context decision input, labelled per §27 layer. */
+    /** Start building a full-context decision input, labelled per resolution layer. */
     public static Builder builder(ProtectionActionType action) {
         return new Builder(action);
     }

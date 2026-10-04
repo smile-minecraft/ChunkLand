@@ -3,7 +3,7 @@ package com.smile.chunkland.api.money;
 import java.util.Objects;
 
 /**
- * A single pricing tier in the unified tier model (spec §49).
+ * A single pricing tier in the unified tier model.
  *
  * <p>A tier prices every chunk whose 1-based global index falls in {@code (previousUntil, until]}.
  * The sentinel {@link #UNBOUNDED} ({@code -1}) marks an open-ended top tier that covers every

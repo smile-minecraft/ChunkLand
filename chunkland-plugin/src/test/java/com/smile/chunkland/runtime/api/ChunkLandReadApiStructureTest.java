@@ -2,6 +2,7 @@ package com.smile.chunkland.runtime.api;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.smile.chunkland.docs.SourceComments;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -169,12 +170,15 @@ class ChunkLandReadApiStructureTest {
             if (!Files.isDirectory(base)) continue;
             try (Stream<Path> walk = Files.walk(base)) {
                 for (Path file : walk.filter(f -> f.toString().endsWith(".java")).toList()) {
-                    String comments = commentText(Files.readString(file));
-                    // concrete workflow/task ids like CL-M1-17 in executable comments would block archival
-                    assertFalse(comments.contains("CL-M"), "executable comment must not contain concrete workflow ID CL-M: " + file);
-                    // forbid task-style M<digit>-<digit> in LandSnapshot comments
+                    String comments = SourceComments.javaComments(Files.readString(file));
+                    // A concrete planning id left in a shipped comment would outlive the
+                    // plan it came from, so comments may not name one.
+                    assertFalse(comments.contains("CL-M"),
+                            "executable comment must not contain a concrete planning ID: " + file);
+                    // The same rule for the older bare milestone form.
                     if (file.toString().contains("LandSnapshot.java")) {
-                        assertFalse(comments.contains("M1-06"), "LandSnapshot comment must not contain M1-06: " + file);
+                        assertFalse(comments.contains("M1-06"),
+                                "LandSnapshot comment must not contain a milestone ID: " + file);
                     }
                 }
             }
@@ -183,106 +187,39 @@ class ChunkLandReadApiStructureTest {
 
     @Test
     void lineCommentWorkflowIdIsDetected() {
-        assertTrue(commentText("int x = 1; // CL-M2-21\n").contains("CL-M"));
+        assertTrue(SourceComments.javaComments("int x = 1; // CL-M2-21\n").contains("CL-M"));
     }
 
     @Test
     void blockCommentWorkflowIdIsDetected() {
-        assertTrue(commentText("/* CL-M2-21 */ int x = 1;").contains("CL-M"));
+        assertTrue(SourceComments.javaComments("/* CL-M2-21 */ int x = 1;").contains("CL-M"));
     }
 
     @Test
     void multilineBlockCommentWorkflowIdIsDetected() {
-        assertTrue(commentText("/**\n * See CL-M2-21 for context.\n */\nint x = 1;").contains("CL-M"));
+        assertTrue(SourceComments.javaComments("/**\n * See CL-M2-21 for context.\n */\nint x = 1;")
+                .contains("CL-M"));
     }
 
     @Test
     void stringLiteralWorkflowIdIsNotAComment() {
-        assertFalse(commentText("String s = \"CL-M2-21\";").contains("CL-M"));
+        assertFalse(SourceComments.javaComments("String s = \"CL-M2-21\";").contains("CL-M"));
     }
 
     @Test
     void commentMarkersInsideStringDoNotStartComments() {
-        assertFalse(commentText("String url = \"http://example\";").contains("CL-M"));
-        assertFalse(commentText("String s = \"/* CL-M2-21 */\";").contains("CL-M"));
+        assertFalse(SourceComments.javaComments("String url = \"http://example\";").contains("CL-M"));
+        assertFalse(SourceComments.javaComments("String s = \"/* CL-M2-21 */\";").contains("CL-M"));
     }
 
     @Test
     void charLiteralDoesNotLeakIntoComments() {
-        assertFalse(commentText("char c = 'x';\nString s = \"ok\";").contains("CL-M"));
-        assertTrue(commentText("char c = '/'; // CL-M2-21\n").contains("CL-M"));
+        assertFalse(SourceComments.javaComments("char c = 'x';\nString s = \"ok\";").contains("CL-M"));
+        assertTrue(SourceComments.javaComments("char c = '/'; // CL-M2-21\n").contains("CL-M"));
     }
 
     @Test
     void textBlockWorkflowIdIsNotAComment() {
-        assertFalse(commentText("String s = \"\"\"\nCL-M2-21\n\"\"\";").contains("CL-M"));
-    }
-
-    /**
-     * Extracts only {@code //} and {@code /* ... *&#47;} comment bodies.
-     * String literals, char literals and text blocks are skipped so markers
-     * or IDs inside program data are never mistaken for comments.
-     */
-    private static String commentText(String src) {
-        StringBuilder out = new StringBuilder();
-        int i = 0;
-        int n = src.length();
-        while (i < n) {
-            char c = src.charAt(i);
-            if (c == '/' && i + 1 < n) {
-                char next = src.charAt(i + 1);
-                if (next == '/') {
-                    int end = src.indexOf('\n', i + 2);
-                    if (end < 0) end = n;
-                    out.append(src, i + 2, end).append('\n');
-                    i = end;
-                    continue;
-                }
-                if (next == '*') {
-                    int end = src.indexOf("*/", i + 2);
-                    if (end < 0) end = n; else end += 2;
-                    out.append(src, i + 2, Math.min(end, n)).append('\n');
-                    i = end;
-                    continue;
-                }
-            }
-            if (c == '"') {
-                if (i + 2 < n && src.charAt(i + 1) == '"' && src.charAt(i + 2) == '"') {
-                    int end = src.indexOf("\"\"\"", i + 3);
-                    i = end < 0 ? n : end + 3;
-                } else {
-                    i++;
-                    while (i < n) {
-                        char s = src.charAt(i);
-                        if (s == '\\') {
-                            i += 2;
-                        } else if (s == '"') {
-                            i++;
-                            break;
-                        } else {
-                            i++;
-                        }
-                    }
-                }
-                continue;
-            }
-            if (c == '\'') {
-                i++;
-                while (i < n) {
-                    char s = src.charAt(i);
-                    if (s == '\\') {
-                        i += 2;
-                    } else if (s == '\'') {
-                        i++;
-                        break;
-                    } else {
-                        i++;
-                    }
-                }
-                continue;
-            }
-            i++;
-        }
-        return out.toString();
+        assertFalse(SourceComments.javaComments("String s = \"\"\"\nCL-M2-21\n\"\"\";").contains("CL-M"));
     }
 }

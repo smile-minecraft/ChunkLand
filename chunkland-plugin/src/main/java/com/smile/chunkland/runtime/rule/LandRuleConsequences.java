@@ -4,7 +4,7 @@ import com.smile.chunkland.api.rule.LandRuleType;
 import java.util.Objects;
 
 /**
- * UI-facing consequence text for a closed (DENY) rule (spec §27.2: the UI
+ * UI-facing consequence text for a closed (DENY) rule: the UI
  * must warn the owner what breaks when they close a rule).
  *
  * <p>Data only — no UI code lives here. Each string describes what stops

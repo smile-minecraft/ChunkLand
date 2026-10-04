@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Production runtime accumulator for concurrent depth proposals
- * (spec §20: {@code storedMinProtectedY = min(current, requested)}).
+ * ({@code storedMinProtectedY = min(current, requested)}).
  *
  * <p>State machine per chunk: the cell holds the deepest depth accepted so
  * far. Both {@link #seed} (durable value loaded at startup) and

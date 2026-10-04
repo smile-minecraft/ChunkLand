@@ -11,12 +11,12 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Pure allocation and refund math for cost basis (spec §50).
+ * Pure allocation and refund math for cost basis.
  *
  * <p>All calculations use exact integer arithmetic on minor units. No floating-point
  * arithmetic is used.
  *
- * <h3>Allocation contract</h3>
+ * <h2>Allocation contract</h2>
  * <ul>
  *   <li>Total must be non-negative; chunk collection must be non-empty and duplicate-free.</li>
  *   <li>Remainder {@code total % n} is distributed one minor unit at a time to the first
@@ -24,14 +24,14 @@ import java.util.Set;
  *   <li>Sum of allocations equals total exactly.</li>
  * </ul>
  *
- * <h3>Refund contract</h3>
+ * <h2>Refund contract</h2>
  * <ul>
  *   <li>Refund is defined strictly as {@code originalCostBasis * numerator / denominator}
  *       with no re-pricing via {@link PricingTable} and no current tier lookup.</li>
  *   <li>Ratio is an exact rational {@code numerator/denominator} bounded to a non-negative
  *       fraction at or below one: {@code 0 <= numerator <= denominator}, denominator
  *       {@code >0}. This enforces the product decision that refund cannot exceed the
- *       original cost basis; no repository/spec evidence supports a ratio above one, so
+ *       original cost basis; no part of the refund contract supports a ratio above one, so
  *       such ratios are rejected as invalid rather than silently refunding extra.</li>
  *   <li>Rounding is half-up to the nearest minor unit: fractional {@code >=0.5} rounds up.
  *       For positive values this is {@code (product + denominator/2) / denominator} with tie up,
@@ -85,7 +85,7 @@ public final class CostBasisCalculator {
             long minor = quotient + (i < remainder ? 1 : 0);
             map.put(copy.get(i), new Money(minor, total.currency()));
         }
-        // Verify conservation (defensive, should always hold)
+        // Conservation check (defensive, should always hold)
         long sum = 0L;
         for (Money m : map.values()) {
             sum = Math.addExact(sum, m.minorUnits());
@@ -115,11 +115,12 @@ public final class CostBasisCalculator {
      * Refund as {@code costBasis * numerator / denominator} with half-up rounding.
      *
      * @param costBasis  original per-chunk cost basis, must be non-null and non-negative
-     * @param numerator  ratio numerator, must be 0 <= numerator <= denominator
+     * @param numerator  ratio numerator, must be {@code 0 <= numerator <= denominator}
      * @param denominator ratio denominator, must be >0
      * @return refund amount in same currency
      * @throws NullPointerException     if costBasis is null
-     * @throws IllegalArgumentException if costBasis negative, numerator negative, denominator <=0,
+     * @throws IllegalArgumentException if costBasis negative, numerator negative,
+     *     denominator {@code <= 0},
      *                                  or numerator > denominator (ratio above one)
      * @throws ArithmeticException      on overflow
      */

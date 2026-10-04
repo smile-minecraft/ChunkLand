@@ -11,7 +11,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Decision tests for the five management actions (spec §24, §27.2).
+ * Decision tests for the five management actions.
  *
  * <p>Each management action resolves from {@code SUBJECT_PERMISSION}, so the
  * Owner Guarantee applies: the owner always passes, an explicitly authorised

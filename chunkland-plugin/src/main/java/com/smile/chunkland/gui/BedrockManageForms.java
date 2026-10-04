@@ -30,7 +30,7 @@ import java.util.Optional;
  */
 public final class BedrockManageForms {
 
-    /** §67 十三項 Bedrock 能力。 */
+    /** 十三項 Bedrock 管理能力。 */
     public enum Capability {
         CLAIM,
         EXPAND,

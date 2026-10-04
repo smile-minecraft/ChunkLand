@@ -53,7 +53,7 @@ class MutationContractTest {
     }
 
     @Test
-    void mutationKindCoversSpec86Events() {
+    void mutationKindCoversEveryDeclaredEvent() {
         for (var k : new MutationKind[] {
                 MutationKind.LAND_CREATE, MutationKind.LAND_DELETE, MutationKind.LAND_CHUNK_ADD,
                 MutationKind.LAND_CHUNK_REMOVE, MutationKind.LAND_RENAME, MutationKind.SUBLAND_CREATE,

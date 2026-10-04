@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # check-performance-gate.sh — 保護熱路徑 p99 效能門檻與 sentinel 的 CI 閘門。
 #
-# 三項門檻來自規格（implementation-plan §5.5／企劃書 §99，
-# task-breakdown 效能回歸門檻條目）：
+# 三項 p99 門檻：
 #   chunk lookup（已快取）          p99 < 5µs  = 5_000ns
 #   permission decision（快取命中）  p99 < 50µs = 50_000ns
 #   protection decision 整體        p99 < 100µs = 100_000ns

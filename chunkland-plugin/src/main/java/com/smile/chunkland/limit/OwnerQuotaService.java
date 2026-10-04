@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * so no lock is held while invoking the provider.</p>
  *
  * <p>Server-owned requests bypass quota entirely: {@link OwnerRef.ServerOwnerRef}
- * always succeeds with a no-op reservation (spec §12 Server Land not counted).
+ * always succeeds with a no-op reservation; Server Land is never counted.
  * Player quotas are isolated by owner key, so different owners do not interfere.</p>
  *
  * <p>Reservation lifecycle: success returns a {@link QuotaReservation} that must

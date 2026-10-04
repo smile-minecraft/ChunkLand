@@ -12,7 +12,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Read API entry point (spec §84).
+ * Read API entry point.
  *
  * <p>Contract:
  * <ul>

@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 class RuleContractTest {
 
     @Test
-    void landRuleTypeMatchesSpec55() {
+    void landRuleTypeCoversEveryEnvironmentRule() {
         for (var t : new LandRuleType[] {
                 LandRuleType.PVP, LandRuleType.EXPLOSION_TERRAIN, LandRuleType.EXPLOSION_ENTITY,
                 LandRuleType.FIRE_SPREAD, LandRuleType.FIRE_BURN, LandRuleType.MOB_GRIEFING,

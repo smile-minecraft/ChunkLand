@@ -3,9 +3,9 @@ package com.smile.chunkland.api.permission;
 import java.util.List;
 
 /**
- * Pure, immutable, explainable Permission Resolver (spec §25-§27, §51-1).
+ * Pure, immutable, explainable Permission Resolver.
  *
- * <p>It applies the deterministic §27 resolution chain for a single
+ * <p>It applies the deterministic resolution chain for a single
  * {@link ProtectionActionType}, routing by the action's {@link DecisionSource}:
  *
  * <pre>
@@ -21,17 +21,17 @@ import java.util.List;
  * <ul>
  *   <li><b>No EVERYONE binding.</b> Bindings are only ever {@code PLAYER} or
  *       {@code GROUP}; the resolver aggregates them uniformly, so a wildcard subject
- *       cannot exist (spec §25, V1-3).</li>
+ *       cannot exist.</li>
  *   <li><b>Action-scoped aggregation.</b> Each binding layer only counts bindings
  *       whose {@code action} equals the resolved action, so a binding for a different
- *       action can never leak into the decision (spec §26.1).</li>
+ *       action can never leak into the decision.</li>
  *   <li><b>Direct ALLOW does not override Group DENY.</b> Direct player and group
  *       bindings share one aggregation layer with flat DENY-first precedence.</li>
  *   <li><b>Owner Guarantee is SUBJECT_PERMISSION-only.</b> It never rescues a
  *       {@code LAND_RULE} (or the subject half of a {@code COMBINED}) decision, so
- *       environment rules are never bypassed (spec §27.2).</li>
+ *       environment rules are never bypassed.</li>
  *   <li><b>Admin Bypass is a full bypass.</b> When enabled it short-circuits every
- *       category to ALLOW at the very top (spec §27, §87).</li>
+ *       category to ALLOW at the very top.</li>
  *   <li><b>Fail-closed default.</b> When every layer yields {@code INHERIT}, the
  *       decision is {@code DENY} (a missing value must not grant access).</li>
  * </ul>
@@ -65,7 +65,7 @@ public final class PermissionResolver {
     }
 
     /**
-     * Subject chain (spec §27): Owner Guarantee (optional) -> SubLand binding aggregate
+     * Subject chain: Owner Guarantee (optional) -> SubLand binding aggregate
      * -> SubLand Default -> Land binding aggregate -> Land Default -> World Default ->
      * Global Default -> implicit DENY. Each layer stops the chain on an explicit value.
      */
@@ -99,7 +99,7 @@ public final class PermissionResolver {
     }
 
     /**
-     * Rule chain (spec §27): SubLand Rule -> Land Rule -> World Default -> Global Default
+     * Rule chain: SubLand Rule -> Land Rule -> World Default -> Global Default
      * -> implicit DENY. Owner Guarantee is intentionally absent so environment rules
      * bind the owner too.
      */
@@ -121,7 +121,7 @@ public final class PermissionResolver {
     }
 
     /**
-     * COMBINED (spec §51-1.4): the subject chain (without Owner Guarantee) and the rule
+     * COMBINED: the subject chain (without Owner Guarantee) and the rule
      * chain are both required; both must ALLOW for the combined decision to be ALLOW,
      * any DENY on either side yields DENY. A missing value resolves to the implicit
      * DENY, so COMBINED is DENY unless both sides are explicitly ALLOW. No action
@@ -139,7 +139,7 @@ public final class PermissionResolver {
 
     /**
      * Flat DENY-first aggregation across the bindings of one layer, counting only those
-     * whose action matches the resolved action (spec §26.1). Any DENY wins; otherwise
+     * whose action matches the resolved action. Any DENY wins; otherwise
      * any ALLOW wins; otherwise INHERIT.
      */
     static PermissionState aggregate(PermissionContext ctx, List<PermissionBinding> bindings) {

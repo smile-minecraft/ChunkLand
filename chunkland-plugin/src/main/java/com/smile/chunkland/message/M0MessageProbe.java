@@ -16,11 +16,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Temporary M0-08 message smoke probe. It wires and observes the AceLib v1.3.0
- * Component + Bedrock-fallback pipeline for the M0 gate only; it is NOT a permanent
- * domain message abstraction (no {@code /land} UI, no custom gateway, no custom Bedrock
- * fallback renderer). Per {@code docs/decisions/D001-message-pipeline.md}, it calls the
- * upstream public API directly.
+ * Temporary message smoke probe. It wires and observes the AceLib v1.3.0
+ * Component + Bedrock-fallback pipeline for the bring-up gate only; it is NOT a
+ * permanent domain message abstraction (no {@code /land} UI, no custom gateway, no
+ * custom Bedrock fallback renderer). It calls the upstream public API directly.
  *
  * <p>Four channels are wired, each with a Java Component overload and the matching upstream
  * {@code *WithFallback} entry point: chat, actionbar, title, broadcast. Java players always
@@ -181,7 +180,7 @@ public final class M0MessageProbe {
      * Resolve and parse a rich Component for the given locale override. Variable values are
      * passed raw to {@link MessageService#parseMiniMessage(String, Map)} so AceLib unparses
      * them (no MiniMessage tag injection from caller-supplied values). Key information is
-     * expected to live in the template body, not only in hover (see D001裁定 4).
+     * expected to live in the template body, not only in hover.
      */
     public Component renderRich(Player player, Locale override) {
         Locale locale = resolveLocale(player, override);
@@ -189,7 +188,7 @@ public final class M0MessageProbe {
         if (template.isEmpty()) {
             template = lang.get(SMOKE_KEY);
         }
-        Map<String, Object> vars = Map.of("value", "M0-smoke-123");
+        Map<String, Object> vars = Map.of("value", "smoke-123");
         return template.map(t -> service.parseMiniMessage(t, vars))
             .orElseGet(() -> Component.text("missing template: " + SMOKE_KEY));
     }
@@ -199,8 +198,8 @@ public final class M0MessageProbe {
      * message layer must NOT be touched (zero message cost); this returns false without
      * rendering or sending. DENY renders via the Bedrock-fallback chat path.
      *
-     * <p>NOTE: this models only the contract; the real M2 protection engine is not wired
-     * here. See docs/verification/m0-message-smoke.md.</p>
+     * <p>NOTE: this models only the contract; the real protection engine is not wired
+     * here.</p>
      */
     public boolean dispatch(boolean allow, Player player, Locale locale) {
         if (allow) {
@@ -250,7 +249,7 @@ public final class M0MessageProbe {
 
     private void sendTitleProbe(Player player, Locale override) {
         Component title = renderRich(player, override);
-        Component subtitle = Component.text("M0 title subtitle");
+        Component subtitle = Component.text("smoke title subtitle");
         if (useBedrockFallback(bedrock, player.getUniqueId())) {
             service.sendTitleWithFallback(player, title, subtitle, resolveLocale(player, override));
         } else {
@@ -289,7 +288,7 @@ public final class M0MessageProbe {
     /** Temporary {@code /chunkland m0message} command handler. */
     public static boolean handleCommand(CommandSender sender, String[] args, Optional<M0MessageProbe> probe) {
         if (!(sender instanceof Player player)) {
-            sender.sendMessage("M0 訊息管線冒煙需要玩家執行（需觀察 Adventure Component / Bedrock fallback）。");
+            sender.sendMessage("訊息管線冒煙需要玩家執行（需觀察 Adventure Component / Bedrock fallback）。");
             return true;
         }
         ProbeArgs parsed = parseProbeArgs(args);
@@ -301,9 +300,9 @@ public final class M0MessageProbe {
         }
         probe.get().sendProbe(player, locale, channel);
         if (channel == Channel.BROADCAST) {
-            sender.sendMessage("已發送 M0 訊息管線冒煙（broadcast 頻道，廣播給伺服器玩家）。");
+            sender.sendMessage("已發送訊息管線冒煙（broadcast 頻道，廣播給伺服器玩家）。");
         } else {
-            sender.sendMessage("已發送 M0 訊息管線冒煙（" + channel.name().toLowerCase(Locale.ROOT)
+            sender.sendMessage("已發送訊息管線冒煙（" + channel.name().toLowerCase(Locale.ROOT)
                 + " 頻道）；Java 玩家收到原始 Component，Bedrock 玩家收到 fallback 路徑。");
         }
         return true;

@@ -4,13 +4,13 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Identifies the subject of a permission binding (spec §26, §27).
+ * Identifies the subject of a permission binding.
  *
  * <p>Only {@link Kind#PLAYER} and {@link Kind#GROUP} exist. There is deliberately
  * <em>no</em> {@code EVERYONE} / wildcard kind: in the DENY-first model a wildcard
- * subject at the same aggregation layer would silently swallow every exception
- * (spec §25, V1-3 removes the "Everyone Binding" concept). "Settings for everyone"
- * are expressed through the default layers instead, never through a binding.
+ * subject at the same aggregation layer would silently swallow every exception.
+ * "Settings for everyone" are expressed through the default layers instead, never
+ * through a binding.
  *
  * <p>Thread-safe immutable value object.
  */
@@ -49,7 +49,7 @@ public final class PermissionSubject {
     }
 
     /**
-     * Reserved names that must never become a binding subject (spec §25, V1-3):
+     * Reserved names that must never become a binding subject:
      * {@code EVERYONE} (case-insensitive) and the {@code *} glob. "Settings for
      * everyone" are expressed through the default layers, never through a binding.
      */

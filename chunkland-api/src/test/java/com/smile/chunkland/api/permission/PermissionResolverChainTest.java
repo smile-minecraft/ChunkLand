@@ -11,7 +11,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 /**
- * Red-phase characterization tests for the full §27 resolution chain, action-scoped
+ * Red-phase characterization tests for the full resolution chain, action-scoped
  * binding aggregation, wildcard/blank subject rejection, and binary-only decisions.
  * These pin the behaviour introduced to close the independent-review blockers.
  */

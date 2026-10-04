@@ -5,7 +5,7 @@ import com.smile.chunkland.api.land.OwnerRef;
 import java.util.Objects;
 
 /**
- * Ownership transfer rules (spec §12).
+ * Ownership transfer rules.
  *
  * <p>V1 Server Land is not transferable. Player Land transfer is not specified for V1
  * and is therefore left to future sagas. This class centralises the rule so
@@ -19,7 +19,7 @@ public final class LandOwnership {
 
     /**
      * Validate that a transfer is allowed. Throws {@link IllegalStateException}
-     * if the current snapshot is a Server Land (spec §12).
+     * if the current snapshot is a Server Land.
      *
      * @param current current land snapshot (must not be null)
      * @param newOwner proposed new owner (must not be null)
@@ -29,7 +29,7 @@ public final class LandOwnership {
         Objects.requireNonNull(newOwner, "newOwner");
         if (current.ownerRef() instanceof OwnerRef.ServerOwnerRef
                 && !(newOwner instanceof OwnerRef.ServerOwnerRef)) {
-            throw new IllegalStateException("Server Land is not transferable (spec §12)");
+            throw new IllegalStateException("Server Land is not transferable");
         }
         // Player Land transfer is not enabled in V1; no additional check here to avoid
         // prematurely locking future GUILD etc. Future tasks will extend this method.

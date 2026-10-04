@@ -14,8 +14,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Structure test: the permission resolver package must stay pure — no Bukkit, no
  * SQL, no AceLib / external dependency, and no global mutable cache or static
- * mutable state (spec §25, M1-10). The api production classpath already forbids
- * external dependencies (M1-02 guard); this test pins the resolver's own shape so a
+ * mutable state. The api production classpath already forbids
+ * external dependencies; this test pins the resolver's own shape so a
  * regression is caught at the unit level.
  */
 class PermissionResolverStructureTest {

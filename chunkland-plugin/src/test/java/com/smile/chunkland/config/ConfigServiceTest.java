@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.Yaml;
 
 /**
- * TDD tests for CL-M2-01 Config system.
+ * TDD tests for the Config system.
  *
  * <p>Each test fixes one observable contract of {@link ConfigService}:
  * (a) legal YAML loads to a typed immutable snapshot, (b) illegal values are
@@ -244,7 +244,7 @@ class ConfigServiceTest {
         ChunkLandConfig before = service.current();
         ChunkLandConfig after = service.reload();
         // The config CONTENT must be equivalent (same worlds/flags), but
-        // the reload itself still bumps the epoch per spec §33.1.
+        // the reload itself still bumps the epoch.
         assertEquals(before.worlds(), after.worlds());
         assertEquals(1L, after.globalPolicyEpoch());
         assertTrue(after.globalPolicyEpoch() > before.globalPolicyEpoch());

@@ -242,10 +242,10 @@ import org.bukkit.plugin.java.JavaPlugin;
  * <p>Lifecycle is intentionally thin: all AceLib acquisition and fail-closed policy
  * live in {@link AceLibBridge} / {@link AceLibLifecycle}, which are testable without a
  * server. This class only wires the Bukkit callbacks to those seams. After a ready
- * AceLib API is acquired it builds two temporary M0 probes:</p>
+ * AceLib API is acquired it builds two temporary bring-up probes:</p>
  * <ul>
- *   <li>{@link M0MessageProbe} for the M0-08 message pipeline smoke.</li>
- *   <li>{@link M0CapabilityProbe} for the M0-07 capability (scheduler / GUI / Form /
+ *   <li>{@link M0MessageProbe} for the message pipeline smoke.</li>
+ *   <li>{@link M0CapabilityProbe} for the capability (scheduler / GUI / Form /
  *       {@code cancelAll}) smoke.</li>
  * </ul>
  *
@@ -254,9 +254,9 @@ import org.bukkit.plugin.java.JavaPlugin;
  *
  * <p>The config-system wiring owns a {@link ConfigService} that holds the parsed
  * {@code config.yml} snapshot. Reload is exposed as a programmatic API on this class
- * so a future command-tree task can wire a {@code /land reload} subcommand without
- * touching the rest of the lifecycle. The Bukkit {@code /reload} command is
- * intentionally NOT supported.</p>
+ * (no command triggers it today), so a command-tree change can wire a
+ * {@code /land reload} subcommand without touching the rest of the lifecycle. The
+ * Bukkit {@code /reload} command is intentionally NOT supported.</p>
  *
  * <p>The {@code chunkland} command does NOT carry a top-level Bukkit {@code permission}
  * entry (see {@code plugin.yml}); instead each subcommand is gated explicitly here:</p>
@@ -1623,7 +1623,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // missing/not-ready, bridge.getApi() is null and tryBuild returns empty (fail-closed,
         // no NPE). The probe command reports "not ready" instead of pretending to send.
         this.messagePipeline = M0MessageProbe.tryBuild(this, bridge.getApi());
-        // M0-07 capability probe: independent of the message probe; both return empty when
+        // Capability probe: independent of the message probe; both return empty when
         // the API is not ready. The probe owns a SafeScheduler created via the public
         // AceLibScheduler.create(...) factory and exposes four smoke paths.
         this.capabilityProbe = M0CapabilityProbe.tryBuild(this, bridge.getApi());
@@ -3778,8 +3778,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * plugins that prefer the API channel over the Bukkit event views.
      * Dispatch is synchronous on the publishing thread; listeners must obey
      * the no-blocking, no-I/O, Folia-thread rules documented on the API
-     * events. Never {@code null} after enable; {@code null} before the
-     * first enable or after disable.
+     * events. {@code null} only before the first enable. It is deliberately
+     * NOT cleared by disable: the reference stays bound to the bus of the
+     * enable generation that created it, so a consumer holding this value
+     * after disable never observes it change to {@code null} and can keep
+     * reading it. It is inert then, because nothing publishes to it while
+     * the plugin is disabled.
      */
     public ChunkLandEventBus publicEventBus() {
         return publicEventBus;
@@ -5356,7 +5360,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * Build the visualization scheduler through the public AceLib factory.
      *
      * <p>Narrow readiness on purpose: rendering only needs a ready API with a
-     * platform and capability, independent of the GUI/Bedrock services the M0
+     * platform and capability, independent of the GUI/Bedrock services the
      * capability probe requires. Only the supported public contract is used —
      * {@code isReady()}, {@code getPlatform()}, {@code getPlatformCapability()},
      * then {@code AceLibScheduler.create(...)}. Empty (never throws) when the
@@ -6272,9 +6276,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
      *
      * @param sender        the command sender
      * @param args          full command args (including the leading subcommand token)
-     * @param messageProbe  lazy lookup for the M0 message probe (must already be built by
+     * @param messageProbe  lazy lookup for the message probe (must already be built by
      *                      {@code onEnable}); tests pass {@code () -> probe} to inject a stub
-     * @param capabilityProbe lazy lookup for the M0 capability probe
+     * @param capabilityProbe lazy lookup for the capability probe
      * @return {@code true} when the entry-point is recognised (so Bukkit stops scanning
      *         aliases); {@code false} for unknown commands
      */

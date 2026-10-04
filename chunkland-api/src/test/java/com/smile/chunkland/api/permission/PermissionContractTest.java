@@ -27,7 +27,7 @@ class PermissionContractTest {
     @Test
     void everyProtectionActionDeclaresDecisionSource() {
         for (var a : ProtectionActionType.values()) {
-            assertNotNull(a.decisionSource(), a + " must declare a DecisionSource (spec §51-1)");
+            assertNotNull(a.decisionSource(), a + " must declare a DecisionSource");
         }
         assertEquals(DecisionSource.SUBJECT_PERMISSION, ProtectionActionType.BLOCK_BREAK.decisionSource());
         assertEquals(DecisionSource.LAND_RULE, ProtectionActionType.PLAYER_DAMAGE_PLAYER.decisionSource());

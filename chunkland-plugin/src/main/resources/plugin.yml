@@ -7,7 +7,7 @@ depend: [AceLib]
 softdepend: [Vault, LuckPerms, CoreProtect]
 commands:
   chunkland:
-    description: ChunkLand debug commands (M0 message + capability smoke probes, selection visualization)
+    description: ChunkLand debug commands (message pipeline smoke, capability smoke, selection visualization)
     usage: /chunkland m0message [locale] | /chunkland m0test [scheduler|gui|form|cancelall] | /chunkland viz <start|stop|status>
   land:
     description: ChunkLand land management commands

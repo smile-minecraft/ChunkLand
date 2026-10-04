@@ -4,7 +4,7 @@ import java.util.Collection;
 import java.util.Objects;
 
 /**
- * Pure domain API for owner-scoped land name uniqueness (spec §10).
+ * Pure domain API for owner-scoped land name uniqueness.
  *
  * <p>This is a stateless helper, not a persistence layer: callers pass the set
  * of already-used {@link LandNameKey}s (e.g. loaded from a store) and the

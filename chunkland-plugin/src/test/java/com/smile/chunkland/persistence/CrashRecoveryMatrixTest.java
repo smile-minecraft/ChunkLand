@@ -32,8 +32,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Consolidated crash/restart matrix for the §46-1 ledger states and the §97
- * persistence cases.
+ * Consolidated crash/restart matrix for the ledger states and the persistence
+ * recovery cases.
  *
  * <p>Earlier suites prove each saga and each refund path in isolation; this
  * class pins the whole table in one place: every non-terminal state has its

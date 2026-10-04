@@ -5,7 +5,7 @@ import java.util.Objects;
 
 /**
  * A single Land Rule setting: a rule type together with its tri-state value
- * (spec §55). Rules use the same {@link PermissionState} tri-state as ordinary
+ * {@link PermissionState} tri-state as ordinary
  * permissions but have no subject dimension and follow the
  * SubLand → Land → World → Global resolution order.
  *

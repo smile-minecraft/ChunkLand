@@ -8,7 +8,7 @@ import java.util.UUID;
  *
  * <p>V1 supports {@link PlayerOwnerRef} and {@link ServerOwnerRef}. The type is
  * a sealed interface so future owner kinds (e.g. {@code GUILD}) can be added
- * without breaking the public contract (spec §10).
+ * without breaking the public contract.
  *
  * <p>Thread-safe: all implementations are immutable value objects.
  */
@@ -25,7 +25,7 @@ public sealed interface OwnerRef permits OwnerRef.PlayerOwnerRef, OwnerRef.Serve
         return ServerOwnerRef.INSTANCE;
     }
 
-    /** Player-owned Land, keyed by the owner's Minecraft UUID (spec §10, §11). */
+    /** Player-owned Land, keyed by the owner's Minecraft UUID. */
     record PlayerOwnerRef(UUID uuid) implements OwnerRef {
         public PlayerOwnerRef {
             Objects.requireNonNull(uuid, "uuid");
@@ -37,7 +37,7 @@ public sealed interface OwnerRef permits OwnerRef.PlayerOwnerRef, OwnerRef.Serve
         }
     }
 
-    /** Server-owned Land (spec §12). */
+    /** Server-owned Land. */
     record ServerOwnerRef() implements OwnerRef {
         static final ServerOwnerRef INSTANCE = new ServerOwnerRef();
 

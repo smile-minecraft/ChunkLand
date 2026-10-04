@@ -12,22 +12,23 @@
 #   worlds.<name>     -> per-world claim-enabled + vertical-mode
 #   subject-defaults  -> world/global SUBJECT_PERMISSION defaults (optional)
 #   rule-defaults     -> world/global LAND_RULE defaults (optional)
-#     vertical-mode accepts PER_CHUNK_DEPTH (default) or FULL_HEIGHT.
-#     The mode only changes effective depth reads; stored depths are never
-#     migrated or rewritten on a mode switch.
+#
+# `vertical-mode` accepts PER_CHUNK_DEPTH (default) or FULL_HEIGHT.
+# The mode only changes effective depth reads; stored depths are never
+# migrated or rewritten on a mode switch.
 # Until a section is added, its top-level key is rejected on load so a typo or
 # a premature copy-paste is a loud failure rather than a silently ignored line.
 #
-# Reload uses ChunkLand's own reload API (Bukkit /reload is NOT supported).
-# A successful reload bumps `globalPolicyEpoch` and every known
-# `worldPolicyEpoch` by 1. Global policy content changes also invalidate all
-# active selection sessions; world-only changes affect only matching worlds.
+# Applying changes: edit this file and restart the server. ChunkLand parses
+# config.yml during startup and does not re-read it while running, so there is
+# no in-game reload command and the Bukkit /reload command is not supported
+# either. A restart applies the whole file at once.
 
 messages:
   default-locale: en_US
   cooldown-seconds: 2
 
-# Audit history (operator-tunable, reloadable).
+# Audit history (operator-tunable; changes apply on restart).
 #
 # `retention-days` bounds how long audit history is kept (default 180).
 # `0` means retain forever and no purge runs. Purge deletes only audit rows
@@ -37,7 +38,7 @@ messages:
 audit:
   retention-days: 180
 
-# Claim economy (operator-tunable, reloadable).
+# Claim economy (operator-tunable; changes apply on restart).
 #
 # `currency` names the money every price is stored and charged in; `scale`
 # is the minor-units-per-unit exponent (2 means 100 minor = 1 major).
@@ -90,7 +91,7 @@ selection:
   visualization-render-distance-blocks: 64
   visualization-refresh-interval-ticks: 10
 
-# Deny feedback (operator-tunable, reloadable). Everything here is shown to
+# Deny feedback (operator-tunable; changes apply on restart). Everything here is shown to
 # the denied player only and never changes what is allowed.
 #
 # entry-wall-*: the red border drawn when a player is refused entry.
@@ -132,7 +133,7 @@ worlds:
 
 # 權限的世界／全域預設（Direct Trust 基礎）。
 #
-# 對齊企劃 §28：ENTRY 預設為 ALLOW，讓未受 ban 的陌生人可進入已載入領地。
+# ENTRY 預設為 ALLOW，讓未受 ban 的陌生人可進入已載入領地。
 # ban 仍在 landBindings 層以 DENY 優先；landAuth 未載入或不可驗證時維持 fail-closed。
 subject-defaults:
   global:

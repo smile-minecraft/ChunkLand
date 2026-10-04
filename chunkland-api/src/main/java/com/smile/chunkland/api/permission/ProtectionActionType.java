@@ -3,16 +3,15 @@ package com.smile.chunkland.api.permission;
 import java.util.Objects;
 
 /**
- * Every protection action ChunkLand can decide on (spec §51-1, §53).
+ * Every protection action ChunkLand can decide on.
  *
  * <p>Each constant declares the {@link DecisionSource} it resolves from. The set
- * below is the V1-3 contract core explicitly enumerated in the spec (§51-1.1,
- * §51-1.2, §53). Additional actions defined in later milestones extend this enum;
+ * below is the contract core. Additional actions added later extend this enum;
  * the contract that every constant declares a non-null {@link DecisionSource} is
  * fixed now.
  */
 public enum ProtectionActionType {
-    // --- SUBJECT_PERMISSION (spec §51-1.1) ---
+    // --- SUBJECT_PERMISSION ---
     BLOCK_BREAK(DecisionSource.SUBJECT_PERMISSION),
     BLOCK_PLACE(DecisionSource.SUBJECT_PERMISSION),
     CONTAINER_OPEN(DecisionSource.SUBJECT_PERMISSION),
@@ -31,7 +30,7 @@ public enum ProtectionActionType {
     HANGING_ENTITY(DecisionSource.SUBJECT_PERMISSION),
     FARMLAND_TRAMPLE(DecisionSource.SUBJECT_PERMISSION),
 
-    // --- LAND_RULE (spec §51-1.2) ---
+    // --- LAND_RULE ---
     PLAYER_DAMAGE_PLAYER(DecisionSource.LAND_RULE),
     PISTON_MOVE(DecisionSource.LAND_RULE),
     FLUID_FLOW(DecisionSource.LAND_RULE),
@@ -44,7 +43,7 @@ public enum ProtectionActionType {
     HOSTILE_MOB_SPAWN(DecisionSource.LAND_RULE),
     PASSIVE_MOB_SPAWN(DecisionSource.LAND_RULE),
 
-    // --- Cross-boundary (spec §53, all LAND_RULE) ---
+    // --- Cross-boundary (all LAND_RULE) ---
     BLOCK_MOVE_IN(DecisionSource.LAND_RULE),
     BLOCK_MOVE_OUT(DecisionSource.LAND_RULE),
     FLUID_ENTER(DecisionSource.LAND_RULE),
@@ -53,7 +52,7 @@ public enum ProtectionActionType {
     ITEM_TRANSFER_OUT(DecisionSource.LAND_RULE),
     DISPENSER_CROSS_BOUNDARY(DecisionSource.LAND_RULE),
 
-    // --- Management (spec §24, all SUBJECT_PERMISSION) ---
+    // --- Management (all SUBJECT_PERMISSION) ---
     // Owner Guarantee applies, so the land owner always passes without
     // Admin Bypass; strangers fail closed unless explicitly authorised.
     MANAGE_MEMBER(DecisionSource.SUBJECT_PERMISSION),
@@ -68,7 +67,7 @@ public enum ProtectionActionType {
         this.decisionSource = Objects.requireNonNull(decisionSource, "decisionSource");
     }
 
-    /** The {@link DecisionSource} this action resolves from (spec §51-1). */
+    /** The {@link DecisionSource} this action resolves from. */
     public DecisionSource decisionSource() {
         return decisionSource;
     }

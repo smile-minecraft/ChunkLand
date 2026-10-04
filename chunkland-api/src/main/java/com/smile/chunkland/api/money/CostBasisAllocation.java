@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Immutable per-chunk cost basis allocation for a single claim lot (spec §50).
+ * Immutable per-chunk cost basis allocation for a single claim lot.
  *
  * <p>The total price of the lot is distributed as minor-unit values that sum exactly
  * to the original total. The mapping is immutable and defensively copied; the

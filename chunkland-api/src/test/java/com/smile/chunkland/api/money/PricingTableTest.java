@@ -12,8 +12,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Red + behavioral tests for {@link PricingTable} and {@link PricingTier}.
  *
- * <p>The pricing basis is the owner's global total chunk count across all Player Lands
- * (spec §49), NOT the current transaction's chunk count and NOT a single Land's size.
+ * <p>The pricing basis is the owner's global total chunk count across all Player Lands,
+ * NOT the current transaction's chunk count and NOT a single Land's size.
  * Tiers form a contiguous, non-overlapping partition of chunk indices {@code [1, ∞)}
  * where {@code until == -1} is the unbounded top tier.
  */
@@ -21,8 +21,8 @@ class PricingTableTest {
 
     private static final Currency CUR = Currency.of("TEST", 2);
 
-    /** The exact §49 progressive example. Prices are minor units. */
-    private static PricingTable section49() {
+    /** The progressive example from the pricing model. Prices are minor units. */
+    private static PricingTable progressiveExample() {
         return PricingTable.of(List.of(
                 PricingTier.of(20, new Money(100, CUR)),
                 PricingTier.of(50, new Money(200, CUR)),
@@ -30,11 +30,11 @@ class PricingTableTest {
                 PricingTier.of(PricingTier.UNBOUNDED, new Money(800, CUR))));
     }
 
-    // ---- §49 progressive example correctness ----
+    // ---- progressive example correctness ----
 
     @Test
-    void section49MarginalPricesMatchTierBoundaries() {
-        PricingTable t = section49();
+    void progressiveExampleMarginalPricesMatchTierBoundaries() {
+        PricingTable t = progressiveExample();
         // chunk #1 (owner has 0) -> first tier
         assertEquals(new Money(100, CUR), t.marginalPrice(0));
         // chunk #21 (owner has 20) -> second tier
@@ -46,8 +46,8 @@ class PricingTableTest {
     }
 
     @Test
-    void section49ProgressiveTotalFromZero() {
-        PricingTable t = section49();
+    void progressiveExampleTotalFromZero() {
+        PricingTable t = progressiveExample();
         // 20 chunks at 100 = 2000
         assertEquals(new Money(2000, CUR), t.priceForClaim(0, 20));
         // 21 chunks: 20*100 + 1*200 = 2200
@@ -64,7 +64,7 @@ class PricingTableTest {
 
     @Test
     void pricingUsesGlobalTotalNotTransactionCount() {
-        PricingTable t = section49();
+        PricingTable t = progressiveExample();
         // Owner already holds 25 chunks globally; claims 5 more (chunks 26..30).
         // All five fall in the second tier (until:50, price 200) -> 5 * 200 = 1000.
         assertEquals(new Money(1000, CUR), t.priceForClaim(25, 5));
@@ -78,7 +78,7 @@ class PricingTableTest {
 
     @Test
     void marginalPriceReflectsGlobalTotalAcrossTiers() {
-        PricingTable t = section49();
+        PricingTable t = progressiveExample();
         // Owner holds 49 globally; the next chunk (#50) is still in tier 2 (<=50) at 200.
         assertEquals(new Money(200, CUR), t.marginalPrice(49));
         // Owner holds 50 globally; the next chunk (#51) jumps to tier 3 at 400.
@@ -89,7 +89,7 @@ class PricingTableTest {
 
     @Test
     void claimInOneShotEqualsSequentialClaims() {
-        PricingTable t = section49();
+        PricingTable t = progressiveExample();
         Money oneShot = t.priceForClaim(0, 30);
         long running = 0;
         Money sequential = Money.zero(CUR);
@@ -104,7 +104,7 @@ class PricingTableTest {
 
     @Test
     void tableIsImmutableAndInputListIsCopied() {
-        List<PricingTier> input = new ArrayList<>(section49().tiers());
+        List<PricingTier> input = new ArrayList<>(progressiveExample().tiers());
         PricingTable t = PricingTable.of(input);
         input.clear();
         assertEquals(4, t.tiers().size());
@@ -174,14 +174,14 @@ class PricingTableTest {
 
     @Test
     void negativeOwnerTotalRejected() {
-        assertThrows(IllegalArgumentException.class, () -> section49().priceForClaim(-1, 5));
-        assertThrows(IllegalArgumentException.class, () -> section49().marginalPrice(-1));
+        assertThrows(IllegalArgumentException.class, () -> progressiveExample().priceForClaim(-1, 5));
+        assertThrows(IllegalArgumentException.class, () -> progressiveExample().marginalPrice(-1));
     }
 
     @Test
     void nonPositiveAdditionalChunksRejected() {
-        assertThrows(IllegalArgumentException.class, () -> section49().priceForClaim(0, 0));
-        assertThrows(IllegalArgumentException.class, () -> section49().priceForClaim(0, -3));
+        assertThrows(IllegalArgumentException.class, () -> progressiveExample().priceForClaim(0, 0));
+        assertThrows(IllegalArgumentException.class, () -> progressiveExample().priceForClaim(0, -3));
     }
 
     // ---- flat pricing is a single unbounded tier ----
@@ -226,8 +226,8 @@ class PricingTableTest {
 
     @Test
     void ownerBasisOverflowThrows() {
-        assertThrows(ArithmeticException.class, () -> section49().priceForClaim(Long.MAX_VALUE, 1));
-        assertThrows(ArithmeticException.class, () -> section49().priceForClaim(Long.MAX_VALUE - 1, 2));
-        assertThrows(ArithmeticException.class, () -> section49().marginalPrice(Long.MAX_VALUE));
+        assertThrows(ArithmeticException.class, () -> progressiveExample().priceForClaim(Long.MAX_VALUE, 1));
+        assertThrows(ArithmeticException.class, () -> progressiveExample().priceForClaim(Long.MAX_VALUE - 1, 2));
+        assertThrows(ArithmeticException.class, () -> progressiveExample().marginalPrice(Long.MAX_VALUE));
     }
 }

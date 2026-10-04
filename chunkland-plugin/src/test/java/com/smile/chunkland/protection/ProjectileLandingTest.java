@@ -32,7 +32,7 @@ import org.bukkit.projectiles.ProjectileSource;
 import org.junit.jupiter.api.Test;
 
 /**
- * Projectile landing (M3-08 handover): the adjacent-block dispense check
+ * Projectile landing: the adjacent-block dispense check
  * cannot see arrows that fly several chunks, so the landing point is judged
  * as a {@code DISPENSER_CROSS_BOUNDARY} crossing from the shooter position.
  * Only genuine boundary involvement intervenes: same-land and wilderness

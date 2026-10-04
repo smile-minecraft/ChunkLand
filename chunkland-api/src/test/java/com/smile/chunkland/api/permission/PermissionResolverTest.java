@@ -13,8 +13,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 /**
- * Red-phase characterization tests for the four-layer Permission Resolver
- * (spec §25-§27, §51-1). These pin the deterministic decision table before the
+ * Red-phase characterization tests for the four-layer Permission Resolver.
+ * These pin the deterministic decision table before the
  * implementation exists; they must fail to compile / fail to pass until
  * {@link PermissionResolver}, {@link PermissionContext}, {@link PermissionDecision},
  * {@link PermissionSubject}, {@link PermissionBinding} are introduced.

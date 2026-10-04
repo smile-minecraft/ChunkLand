@@ -15,7 +15,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Bounded depth persistence queue (spec §20).
+ * Bounded depth persistence queue.
  *
  * <p>Ownership and flush order:
  *

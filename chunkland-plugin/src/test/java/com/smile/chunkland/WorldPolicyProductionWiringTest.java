@@ -465,7 +465,7 @@ class WorldPolicyProductionWiringTest {
 
     // ------------------------------------------------------------------
     // Scope guard: Delete left the stub pool with expand and shrink; Expand
-    // is wired by CL-M2-21
+    // is wired too
     // ------------------------------------------------------------------
 
     @Test

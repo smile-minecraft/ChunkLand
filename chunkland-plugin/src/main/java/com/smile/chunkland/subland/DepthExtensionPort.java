@@ -12,8 +12,7 @@ import java.util.Objects;
  * follow-up chat prompt). The domain service fails closed with
  * {@link DepthExtendConfirmationRequired} when the candidate's minimum Y is
  * below the effective floor and this port does not confirm. The durable CAS
- * queue itself lives in the M3-02 follow-up and is deliberately not built
- * here.
+ * queue itself is deliberately not built here.
  */
 public interface DepthExtensionPort {
 

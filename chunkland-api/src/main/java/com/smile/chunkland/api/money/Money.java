@@ -3,13 +3,13 @@ package com.smile.chunkland.api.money;
 import java.util.Objects;
 
 /**
- * Exact fixed-scale money value object (spec §10, §48, §49).
+ * Exact fixed-scale money value object.
  *
  * <p>The amount is stored as a {@code long} of minor units; all arithmetic is exact integer
  * arithmetic via {@link Math#addExact}, {@link Math#subtractExact}, {@link Math#multiplyExact}
  * and {@link Math#negateExact}. There is deliberately no {@code double}/{@code float} currency
  * math anywhere in this package — overflow is never silently wrapped, it throws
- * {@link ArithmeticException} so a caller must decide how to react (spec: "overflow 有明確行為").
+ * {@link ArithmeticException} so a caller must decide how to react.
  *
  * <p>Money is comparable and equatable only within the same {@link Currency}; mixing currencies
  * is rejected. The object is immutable and thread-safe.

@@ -236,13 +236,13 @@ class M0CapabilityProbeTest {
 
     @Test
     void testGuiReportsAcceptedAndClosesSession() {
-        GuiSession session = new GuiSession(PLAYER_UUID, 42L, "stub", "M0 GUI smoke", 9, java.util.Set.of());
+        GuiSession session = new GuiSession(PLAYER_UUID, 42L, "stub", "GUI capability smoke", 9, java.util.Set.of());
         StubGuiService gui = new StubGuiService(GuiResult.allowed(session));
         Capabilities caps = capabilities(new StubSafeScheduler(), gui,
             bedrockAlways(false, new StubFormService(FormSendResult.SENT, "stub")));
         M0CapabilityProbe probe = M0CapabilityProbe.fromCapabilities(caps).orElseThrow();
 
-        M0CapabilityProbe.GuiReport r = probe.testGui(PLAYER_UUID, "M0 GUI smoke");
+        M0CapabilityProbe.GuiReport r = probe.testGui(PLAYER_UUID, "GUI capability smoke");
 
         assertTrue(r.ready());
         assertEquals("ALLOWED", r.openState());
@@ -270,7 +270,7 @@ class M0CapabilityProbeTest {
             bedrockAlways(false, new StubFormService(FormSendResult.REJECTED, "stub")));
         M0CapabilityProbe probe = M0CapabilityProbe.fromCapabilities(caps).orElseThrow();
 
-        M0CapabilityProbe.GuiReport r = probe.testGui(PLAYER_UUID, "M0 GUI smoke");
+        M0CapabilityProbe.GuiReport r = probe.testGui(PLAYER_UUID, "GUI capability smoke");
 
         assertTrue(r.ready());
         assertEquals("REJECTED", r.openState());
@@ -286,7 +286,7 @@ class M0CapabilityProbeTest {
             bedrockAlways(false, new StubFormService(FormSendResult.REJECTED, "stub")));
         M0CapabilityProbe probe = M0CapabilityProbe.fromCapabilities(caps).orElseThrow();
 
-        M0CapabilityProbe.GuiReport r = probe.testGui((UUID) null, "M0 GUI smoke");
+        M0CapabilityProbe.GuiReport r = probe.testGui((UUID) null, "GUI capability smoke");
         assertFalse(r.ready());
         assertEquals("缺少 Player 參數（UUID）", r.message());
     }
@@ -302,7 +302,7 @@ class M0CapabilityProbeTest {
         M0CapabilityProbe probe = M0CapabilityProbe.fromCapabilities(caps).orElseThrow();
 
         java.util.List<FormResponse> received = new java.util.ArrayList<>();
-        M0CapabilityProbe.FormReport r = probe.testForm(PLAYER_UUID, "M0 Form smoke",
+        M0CapabilityProbe.FormReport r = probe.testForm(PLAYER_UUID, "Form capability smoke",
             StubBedrockService.capturingSink(received));
 
         assertTrue(r.ready());
@@ -324,7 +324,7 @@ class M0CapabilityProbeTest {
             guiAlways(GuiResult.failed("x", "y")), bedrock);
         M0CapabilityProbe probe = M0CapabilityProbe.fromCapabilities(caps).orElseThrow();
 
-        M0CapabilityProbe.FormReport r = probe.testForm(PLAYER_UUID, "M0 Form smoke", null);
+        M0CapabilityProbe.FormReport r = probe.testForm(PLAYER_UUID, "Form capability smoke", null);
 
         assertTrue(r.ready());
         assertEquals("REJECTED", r.sendResult());
@@ -340,7 +340,7 @@ class M0CapabilityProbeTest {
             bedrockAlways(false, new StubFormService(FormSendResult.SENT, "stub")));
         M0CapabilityProbe probe = M0CapabilityProbe.fromCapabilities(caps).orElseThrow();
 
-        M0CapabilityProbe.FormReport r = probe.testForm((UUID) null, "M0 Form smoke", null);
+        M0CapabilityProbe.FormReport r = probe.testForm((UUID) null, "Form capability smoke", null);
         assertFalse(r.ready());
         assertEquals("缺少 Player 參數（UUID）", r.message());
     }
@@ -368,7 +368,7 @@ class M0CapabilityProbeTest {
             guiAlways(GuiResult.failed("x", "y")), throwing);
         M0CapabilityProbe probe = M0CapabilityProbe.fromCapabilities(caps).orElseThrow();
 
-        M0CapabilityProbe.FormReport r = probe.testForm(PLAYER_UUID, "M0 Form smoke", null);
+        M0CapabilityProbe.FormReport r = probe.testForm(PLAYER_UUID, "Form capability smoke", null);
         assertTrue(r.ready(), "an exception in Bedrock lookup must NOT throw — only switch off bedrockPlayer");
         assertFalse(r.bedrockPlayer());
         assertEquals("REJECTED", r.sendResult());
@@ -424,9 +424,9 @@ class M0CapabilityProbeTest {
         String src = java.nio.file.Files.readString(java.nio.file.Paths.get(
             "src/main/java/com/smile/chunkland/capability/M0CapabilityProbe.java"));
         assertTrue(src.contains("AceLibScheduler.create("),
-            "M0-07 contract: must use the public factory");
+            "capability probe contract: must use the public factory");
         assertTrue(src.contains("cancelAll()"),
-            "M0-07 contract: must call cancelAll() at disable");
+            "capability probe contract: must call cancelAll() at disable");
         assertFalse(src.contains("AceLibPlugin"),
             "must not import the implementation class");
         assertFalse(src.contains("FoliaScheduler"),

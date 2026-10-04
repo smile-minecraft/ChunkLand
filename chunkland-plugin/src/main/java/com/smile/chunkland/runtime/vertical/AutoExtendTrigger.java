@@ -1,8 +1,7 @@
 package com.smile.chunkland.runtime.vertical;
 
 /**
- * Closed taxonomy of operation kinds for the Auto Extend trigger rule
- * (spec §18).
+ * Closed taxonomy of operation kinds for the Auto Extend trigger rule.
  *
  * <p>Only {@link #BLOCK_BREAK} and {@link #BLOCK_PLACE} may trigger an
  * extend, and only when the decision gate additionally confirms an

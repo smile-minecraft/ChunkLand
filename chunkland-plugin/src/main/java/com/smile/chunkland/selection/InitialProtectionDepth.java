@@ -5,7 +5,7 @@ import java.util.Objects;
 /**
  * Pure selection-plane depth derivation.
  *
- * <p>Implements the Initial Protection Depth rule from spec §17:
+ * <p>The initial protection depth of a fresh selection:
  * {@code storedMinProtectedY = min(PointA.blockY, PointB.blockY) - buffer},
  * clamped to {@code [worldMinY, worldMaxY]}. For a single manually added chunk,
  * the clicked block Y is used via {@link #resolveSingle(int, int, int, int)}.

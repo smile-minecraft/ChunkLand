@@ -81,7 +81,7 @@ class BedrockManageFormsTest {
     void routesCoverExactlyThirteenCapabilities() {
         List<BedrockManageForms.CapabilityRoute> routes = BedrockManageForms.routes();
 
-        assertEquals(13, routes.size(), "§67 lists thirteen capabilities, got: " + routes);
+        assertEquals(13, routes.size(), "the manage form must expose thirteen capabilities, got: " + routes);
         assertEquals(13, routes.stream().map(BedrockManageForms.CapabilityRoute::capability)
                 .distinct().count(), "every capability appears exactly once");
         for (BedrockManageForms.CapabilityRoute route : routes) {

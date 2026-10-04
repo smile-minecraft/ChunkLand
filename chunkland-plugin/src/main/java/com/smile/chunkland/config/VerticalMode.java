@@ -1,7 +1,7 @@
 package com.smile.chunkland.config;
 
 /**
- * Per-world vertical protection mode (spec §14).
+ * Per-world vertical protection mode.
  *
  * <p>{@code PER_CHUNK_DEPTH} resolves the effective depth per chunk from its
  * persisted {@code storedMinProtectedY}; {@code FULL_HEIGHT} resolves the

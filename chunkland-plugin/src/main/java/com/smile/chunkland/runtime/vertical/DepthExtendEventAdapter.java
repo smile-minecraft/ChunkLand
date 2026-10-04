@@ -8,8 +8,7 @@ import java.util.UUID;
 import java.util.function.BiFunction;
 
 /**
- * Production trigger adapter from block operations to depth-extend proposals
- * (spec §18).
+ * Production trigger adapter from block operations to depth-extend proposals.
  *
  * <p>The adapter never touches a Bukkit {@code World}, {@code Chunk},
  * {@code Block} or entity: the caller supplies the already-known world UUID,

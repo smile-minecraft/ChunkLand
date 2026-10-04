@@ -4,11 +4,11 @@ import com.smile.chunkland.api.land.LandId;
 import java.util.Objects;
 
 /**
- * Immutable result of a mutation request (spec §85).
+ * Immutable result of a mutation request.
  *
  * <p>The API never returns rendered message text: {@link #diagnosticKey()} is a
- * stable message key for the caller to localize, not a localized string (spec
- * §84-1). {@code landId} and {@code diagnosticKey} may be {@code null} depending
+ * stable message key for the caller to localize, not a localized string.
+ * {@code landId} and {@code diagnosticKey} may be {@code null} depending
  * on the outcome.
  *
  * <p>Thread-safe immutable value object.

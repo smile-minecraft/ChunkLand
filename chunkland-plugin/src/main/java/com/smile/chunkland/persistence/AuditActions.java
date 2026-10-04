@@ -4,7 +4,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Single registry of the audit actions from the spec's Audit Log section.
+ * Single registry of the audit actions ChunkLand writes.
  *
  * <p>Each action maps to the writer task that owns its insert path. Task ids
  * are plain strings so the persistence module does not depend on task

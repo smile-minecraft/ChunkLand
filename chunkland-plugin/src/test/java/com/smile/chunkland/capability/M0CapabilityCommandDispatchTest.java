@@ -168,7 +168,7 @@ class M0CapabilityCommandDispatchTest {
 
     @Test
     void dispatchFormDeliversResponseToSameSenderAndUsesCallbackOverload() {
-        // Regression for CL-M0-07: /chunkland m0test form must (a) wire the Consumer<FormResponse>
+        // Regression guard: /chunkland m0test form must (a) wire the Consumer<FormResponse>
         // overload of sendForm (not the no-callback overload), and (b) when AceLib delivers a
         // FormResponse, send a concise stable message back to the same CommandSender. The
         // StubFormService invokes the supplied callback synchronously with a known VALID

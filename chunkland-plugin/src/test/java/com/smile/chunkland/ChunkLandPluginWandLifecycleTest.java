@@ -217,7 +217,7 @@ class ChunkLandPluginWandLifecycleTest {
         Field fCap = ChunkLandPlugin.class.getDeclaredField("capabilities");
         fCap.setAccessible(true);
         var capOpt = (java.util.Optional<?>) fCap.get(plugin);
-        assertTrue(capOpt.isEmpty(), "M0 capabilities must be released on registration-failure shutdown");
+        assertTrue(capOpt.isEmpty(), "capabilities must be released on registration-failure shutdown");
         Field fLandCmd = ChunkLandPlugin.class.getDeclaredField("landCommand");
         fLandCmd.setAccessible(true);
         assertNull(fLandCmd.get(plugin), "landCommand must be cleared after failure");

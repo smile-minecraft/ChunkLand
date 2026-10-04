@@ -8,7 +8,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pure gate for the Auto Extend trigger rule (spec §18).
+ * Pure gate for the Auto Extend trigger rule.
  *
  * <p>Only a legal {@code BLOCK_BREAK} / {@code BLOCK_PLACE} by an authorized
  * actor (owner or a player holding the matching permission) inside a land
@@ -37,7 +37,7 @@ class AutoExtendDecisionTest {
             AutoExtendTrigger.PISTON,
             AutoExtendTrigger.UNAUTHORIZED_ATTEMPT,
         };
-        assertEquals(9, silent.length, "spec lists exactly nine non-triggering behaviours");
+        assertEquals(9, silent.length, "the trigger rule lists exactly nine non-triggering behaviours");
         for (AutoExtendTrigger trigger : silent) {
             assertFalse(trigger.triggersExtend(), trigger + " must be classified silent");
             assertEquals(Optional.empty(),

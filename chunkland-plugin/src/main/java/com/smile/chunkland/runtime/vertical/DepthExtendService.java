@@ -8,8 +8,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Production owner of the depth-extend trigger adapter and persistence queue
- * (spec §20).
+ * Production owner of the depth-extend trigger adapter and persistence queue.
  *
  * <p>Wiring: block operations enter through {@link #onBlockOperation}, which
  * classifies via the {@link DepthExtendEventAdapter} (snapshot seams only,

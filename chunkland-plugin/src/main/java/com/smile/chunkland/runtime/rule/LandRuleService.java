@@ -15,7 +15,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Memory-only {@link LandRuleLookup} for the eleven environment rules (spec §55).
+ * Memory-only {@link LandRuleLookup} for the eleven environment rules.
  *
  * <p>Resolution order inside one call: Land rule → World default → Global
  * default → built-in default. There is no subject dimension, so no per-layer
@@ -27,7 +27,7 @@ import java.util.UUID;
  * cannot pick which SubLand rule applies and does not consult SubLand rules.
  * The caller places the returned state on the land-rule layer; once a
  * position-aware lookup exists, SubLand rules belong on the subland-rule
- * layer above it (spec §27). Unknown lands yield {@code Optional.empty()}
+ * layer above it. Unknown lands yield {@code Optional.empty()}
  * per the interface contract, which the provider turns into fail-closed
  * {@code DENY}.
  *

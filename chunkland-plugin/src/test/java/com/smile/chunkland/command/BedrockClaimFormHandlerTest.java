@@ -55,7 +55,7 @@ import org.junit.jupiter.api.Test;
  * same-source preview (land name, chunk count, generation/revision tokens;
  * price, limit, lowest height and refund stay explicitly unavailable until a
  * formal preview source exists) instead of entering the saga directly. Only a
- * {@code VALID} response with button index {@code 0} enters the shared M2-13
+ * {@code VALID} response with button index {@code 0} enters the shared
  * token revalidation, replay guard and saga path; every cancel, close,
  * invalid, send or callback failure stays fail-closed with no saga, ledger or
  * economy side effect. Java senders keep the direct claim path.
@@ -407,7 +407,7 @@ class BedrockClaimFormHandlerTest {
     }
 
     // ------------------------------------------------------------------
-    // VALID button 0 enters the shared M2-13 path
+    // VALID button 0 enters the shared path
     // ------------------------------------------------------------------
 
     @Test

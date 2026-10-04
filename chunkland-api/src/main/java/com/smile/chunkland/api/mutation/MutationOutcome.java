@@ -1,7 +1,7 @@
 package com.smile.chunkland.api.mutation;
 
 /**
- * Outcome of a mutation request (spec §85).
+ * Outcome of a mutation request.
  *
  * @since 0.1.0
  */

@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Structural guard: ChunkLand must depend only on AceLib's supported public API
  * ({@code com.smile.acelib.AceLibApi} and its nested {@code AceLibProvider}, plus the
- * M0-08 message pipeline surface {@code com.smile.acelib.message.MessageService},
+ * message pipeline surface {@code com.smile.acelib.message.MessageService},
  * {@code com.smile.acelib.config.LangManager}, {@code com.smile.acelib.bedrock.BedrockService},
  * and the necessary public value type {@code com.smile.acelib.bedrock.BedrockPlayerInfo}).
  * It must never reference an implementation class such as {@code AceLibPlugin} or a
@@ -124,7 +124,7 @@ class NoAceLibImplDependencyTest {
                 || ref.equals("com.smile.acelib.item.AceItemFactory.ItemSpec")
                 || ref.equals("com.smile.acelib.item.AceItemFactory.ItemSpecBuilder")
                 || ref.equals("com.smile.acelib.item.ItemIdentity")
-                // M0-07 capability smoke: only the public AceLib surface is allowed here.
+                // Capability smoke: only the public AceLib surface is allowed here.
                 || ref.equals("com.smile.acelib.platform.Platform")
                 || ref.startsWith("com.smile.acelib.platform.Platform$")
                 || ref.equals("com.smile.acelib.platform.PlatformCapability")
@@ -261,7 +261,7 @@ class NoAceLibImplDependencyTest {
             + "import com.smile.acelib.config.LangManager;\n"
             + "import com.smile.acelib.bedrock.BedrockService;\n"
             + "class Y { MessageService s; LangManager l; BedrockService b; }\n";
-        assertNull(findForbiddenReference(src), "the three M0-08 public API classes must be allowed");
+        assertNull(findForbiddenReference(src), "the three message pipeline public API classes must be allowed");
     }
 
     @Test

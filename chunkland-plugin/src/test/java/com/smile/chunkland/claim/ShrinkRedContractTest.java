@@ -9,7 +9,7 @@ import com.smile.chunkland.protection.ManagementPermissionGate;
 import org.junit.jupiter.api.Test;
 
 /**
- * Red contract for M3-13: {@code /land shrink} and {@code /land unclaim}
+ * Red contract for {@code /land shrink} and {@code /land unclaim}
  * share one handler behind the structure gate.
  */
 class ShrinkRedContractTest {

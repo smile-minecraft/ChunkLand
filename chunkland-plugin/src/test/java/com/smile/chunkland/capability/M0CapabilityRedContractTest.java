@@ -29,7 +29,7 @@ import org.bukkit.entity.Player;
 import org.junit.jupiter.api.Test;
 
 /**
- * Contracts for the M0-07 fix:
+ * Contracts for the capability probe:
  *
  * <ul>
  *   <li>Scheduler smoke calls {@code runForPlayer} + {@code runAtLocation(player.getLocation(), ...)};
@@ -140,9 +140,9 @@ class M0CapabilityRedContractTest {
         assertEquals(TaskType.LOCATION, snap.get(1).type(),
             "second dispatch must be region-scoped to the player's location");
         assertFalse(r.taskCounts().contains("global"),
-            "scheduler report must not advertise global dispatch as M0-07 evidence");
+            "scheduler report must not advertise global dispatch as capability evidence");
         assertFalse(r.taskCounts().contains("async"),
-            "scheduler report must not advertise async dispatch as M0-07 evidence");
+            "scheduler report must not advertise async dispatch as capability evidence");
         assertTrue(r.taskCounts().contains("player") || r.taskCounts().contains("PLAYER"),
             "scheduler report must advertise the player dispatch");
         assertTrue(r.taskCounts().contains("location") || r.taskCounts().contains("LOCATION"),

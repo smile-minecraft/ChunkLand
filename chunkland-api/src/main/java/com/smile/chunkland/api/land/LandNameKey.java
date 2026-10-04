@@ -3,7 +3,7 @@ package com.smile.chunkland.api.land;
 import java.util.Objects;
 
 /**
- * Immutable owner-scoped land name key (spec §10).
+ * Immutable owner-scoped land name key.
  *
  * <p>Uniqueness of a land name is scoped to its {@link OwnerRef}, not global:
  * two different owners may each own a land whose {@code nameKey} is

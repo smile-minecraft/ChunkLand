@@ -1,12 +1,12 @@
 package com.smile.chunkland.api.money;
 
 /**
- * Immutable chunk coordinate for cost basis allocation (spec §50).
+ * Immutable chunk coordinate for cost basis allocation.
  *
  * <p>Ordering is lexicographic by {@code chunkX} then {@code chunkZ}, matching the
  * deterministic allocation contract. This type is intentionally minimal and lives in
  * the money package so the allocation logic remains pure and free of Bukkit/ChunkKey
- * dependencies while preserving the spec's (chunkX, chunkZ) ordering.
+ * dependencies while preserving the (chunkX, chunkZ) ordering.
  */
 public record ChunkCoordinate(int chunkX, int chunkZ) implements Comparable<ChunkCoordinate> {
 

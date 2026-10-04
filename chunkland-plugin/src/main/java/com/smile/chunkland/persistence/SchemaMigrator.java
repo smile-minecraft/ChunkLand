@@ -75,8 +75,9 @@ final class SchemaMigrator {
             """,
             // v2: lands, sublands, ACL, ledger and audit tables required by repositories.
             // append-only forward migration; preserves v1. SubLand 3D overlap is
-            // intentionally not enforced by a DB UNIQUE constraint (see §60) and
-            // is validated at runtime by SubLandTopologyValidator.
+            // intentionally not enforced by a DB UNIQUE constraint, because the
+            // overlap rule covers the 3D box, not the (x, z) footprint alone, and is
+            // validated at runtime by SubLandTopologyValidator.
             """
             CREATE TABLE lands (
                 id BLOB(16) PRIMARY KEY,
@@ -406,7 +407,7 @@ final class SchemaMigrator {
                 long claimedAt = rows.getLong(6);
 
                 // Strict validation: malformed legacy data must fail and roll back
-                // rather than be silently skipped (spec on no-loss upgrades).
+                // rather than be silently skipped; upgrades never lose data.
                 try {
                     OwnerKey.parse(legacyOwnerKey);
                 } catch (IllegalArgumentException invalidOwnerKey) {

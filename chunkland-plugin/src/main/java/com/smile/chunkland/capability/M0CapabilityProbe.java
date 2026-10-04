@@ -27,8 +27,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Temporary M0-07 capability smoke probe. Per
- * {@code docs/task-breakdown.md#cl-m0-07--acelib-能力冒煙}, M0-07 verifies the four AceLib
+ * Temporary capability smoke probe. It verifies the four AceLib
  * capability paths available in {@code com.smile.acelib}: {@link SafeScheduler},
  * {@link GuiService}, {@link FormService} (via {@link BedrockService#forms()}), and the
  * {@link SafeScheduler#cancelAll()} cleanup at disable.
@@ -46,8 +45,8 @@ import org.bukkit.plugin.java.JavaPlugin;
  *   <li>On disable ChunkLand releases {@link Capabilities#release()}, which calls
  *       {@link SafeScheduler#cancelAll()}. GUI/Forms are provider-wide and are not shut
  *       down here.</li>
- *   <li>This probe is intentionally <strong>temporary</strong>. It exists for the M0 gate
- *       only and will be retired once the M4 GUI/Form framework refactor and the
+ *   <li>This probe is intentionally <strong>temporary</strong>. It exists for the bring-up
+ *       gate only and will be retired once the GUI/Form framework refactor and the
  *       structured JUnit concurrency suite replace these ad-hoc verifications.</li>
  * </ul>
  *
@@ -60,7 +59,7 @@ public final class M0CapabilityProbe {
 
     /** Title for the {@code /chunkland m0test} command's clarification on the four modes. */
     public static final String COMMAND_DESCRIPTION =
-        "/chunkland m0test [scheduler|gui|form|cancelall] — M0-07 temporary capability smoke.";
+        "/chunkland m0test [scheduler|gui|form|cancelall] — temporary AceLib capability smoke.";
 
     private final Capabilities capabilities;
 
@@ -289,7 +288,7 @@ public final class M0CapabilityProbe {
         FormSpec spec;
         try {
             spec = FormSpec.modal(title)
-                .content("M0-07 form capability smoke (Bedrock=" + bedrockPlayer + ")")
+                .content("Form capability smoke (Bedrock=" + bedrockPlayer + ")")
                 .button1("yes")
                 .button2("no")
                 .build();
@@ -393,7 +392,7 @@ public final class M0CapabilityProbe {
         }
         if (requested == null) {
             sender.sendMessage(
-                "M0-07 m0test 用法：" + COMMAND_DESCRIPTION);
+                "m0test 用法：" + COMMAND_DESCRIPTION);
             return true;
         }
         M0CapabilityProbe probe = probeOpt.get();
@@ -410,7 +409,7 @@ public final class M0CapabilityProbe {
                     sender.sendMessage("m0test gui 須由玩家執行（需觀察開啟 GUI）。");
                     return true;
                 }
-                sender.sendMessage(formatGui(probe.testGui(p.getUniqueId(), "M0 GUI smoke")));
+                sender.sendMessage(formatGui(probe.testGui(p.getUniqueId(), "GUI capability smoke")));
             }
             case FORM -> {
                 if (!(sender instanceof Player p)) {
@@ -428,7 +427,7 @@ public final class M0CapabilityProbe {
                         // form-prefixed send-result line is the authoritative dispatch output.
                     }
                 };
-                sender.sendMessage(formatForm(probe.testForm(p.getUniqueId(), "M0 Form smoke", sink)));
+                sender.sendMessage(formatForm(probe.testForm(p.getUniqueId(), "Form capability smoke", sink)));
             }
             case CANCELALL -> {
                 sender.sendMessage(formatCancelAll(probe.testCancelAll()));

@@ -41,7 +41,7 @@ import org.bukkit.entity.Player;
 import org.junit.jupiter.api.Test;
 
 /**
- * Debugger regression for CL-M2-13: click payload must be executable and
+ * Debugger regression: click payload must be executable and
  * replacement sessions must not accept old numeric revisions.
  */
 class ConfirmClickGenerationRegressionTest {

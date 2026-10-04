@@ -30,7 +30,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Stored vs effective depth flow: SQLite round-trip, registry carry,
  * PER vs FULL resolution, toggle preservation, legacy fallback, production
- * lookup and the M3-02 proposal seam.
+ * lookup and the depth proposal seam.
  */
 class VerticalDepthFlowTest {
 

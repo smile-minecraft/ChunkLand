@@ -544,7 +544,7 @@ class ExplainCommandHandlerTest {
         assertEquals(PermissionState.DENY, explained.outcome());
     }
 
-    // --- CL-M4-05 Red: authorized result must carry four flags ---
+    // --- Red: authorized result must carry four flags ---
 
     @Test
     void authorizedResultCarriesFourFlags() {

@@ -4,7 +4,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Immutable land name value object (spec §4, §10).
+ * Immutable land name value object.
  *
  * <p>Holds the user-supplied {@code displayName} exactly as entered (never
  * trimmed, truncated, or rewritten) together with a stable, normalized

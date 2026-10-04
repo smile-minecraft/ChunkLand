@@ -8,7 +8,7 @@ import java.util.UUID;
  *
  * <p>Chunk coordinates may be negative (Minecraft allows negative chunk
  * coordinates). The {@link #pack()} / {@link #unpack(UUID, long)} helpers mirror
- * the runtime packed-long representation documented in the spec (§5):
+ * the runtime packed-long representation:
  * {@code ((long) chunkX << 32) | (chunkZ & 0xFFFFFFFFL)}. The world id is
  * resolved separately by the runtime index, so it is intentionally not part of
  * the packed value.

@@ -4,10 +4,11 @@ import com.smile.chunkland.api.land.OwnerRef;
 import java.util.Optional;
 
 /**
- * External limit provider contract (spec §8).
+ * External limit provider contract.
  *
- * <p>Implementations are optional and loaded externally (M5 LuckPerms).
- * When no provider is present, or when the provider returns {@link Optional#empty()},
+ * <p>Implementations are optional and loaded externally; the LuckPerms metadata
+ * lookup is the one shipped in this plugin. When no provider is present, or when
+ * the provider returns {@link Optional#empty()},
  * the caller must fall back to the typed {@code config.yml} limit. The returned
  * {@link LimitResult#source()} must be {@link LimitSource#PROVIDER} when a provider
  * supplies a value, so callers can distinguish provider-supplied limits from

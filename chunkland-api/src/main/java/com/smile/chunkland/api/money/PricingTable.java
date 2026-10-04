@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Immutable, validated pricing table built from the unified tier model (spec §49).
+ * Immutable, validated pricing table built from the unified tier model.
  *
  * <p>The pricing basis is the owner's global total chunk count across all Player Lands, NOT the
  * current transaction's chunk count and NOT a single Land's size. Server Land never counts toward
@@ -86,7 +86,8 @@ public final class PricingTable {
      * Marginal price of the next single chunk given the owner's current global total chunk count.
      *
      * <p>The next chunk is global index {@code ownerTotalChunks + 1}; its price is the tier that
-     * covers that index. This is the canonical §49 basis and must not be fed the transaction count.
+     * covers that index. This is the canonical pricing basis and must not be fed the
+     * transaction count.
      */
     public Money marginalPrice(long ownerTotalChunks) {
         if (ownerTotalChunks < 0) {

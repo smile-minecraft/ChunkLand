@@ -1,7 +1,7 @@
 package com.smile.chunkland.api.limit;
 
 /**
- * Typed limit kinds controlled by {@code config.yml::limits} (spec §8).
+ * Typed limit kinds controlled by {@code config.yml::limits}.
  *
  * <p>Each type has a stable config key and a default value that must not be
  * changed without updating the typed limits configuration.</p>

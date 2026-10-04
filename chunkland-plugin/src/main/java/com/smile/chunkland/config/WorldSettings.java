@@ -6,7 +6,7 @@ import java.util.Objects;
  * Per-world, read-only settings parsed from {@code config.yml::worlds.<name>}.
  *
  * <p>Carries the {@code claim-enabled} flag and the per-world
- * {@code vertical-mode} (spec §14). {@code verticalMode} only affects
+ * {@code vertical-mode}. {@code verticalMode} only affects
  * effective depth reads; switching it never migrates stored depths.
  * Existing fields are never removed.</p>
  */

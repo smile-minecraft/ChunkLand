@@ -4,7 +4,7 @@ import com.smile.chunkland.api.limit.LimitType;
 import java.util.Objects;
 
 /**
- * Immutable typed view of {@code config.yml::limits} (spec §8).
+ * Immutable typed view of {@code config.yml::limits}.
  *
  * <p>All values are explicit integers, non-negative, with fixed defaults:
  * {@code max-lands-per-player=5}, {@code max-total-chunks-per-player=256},

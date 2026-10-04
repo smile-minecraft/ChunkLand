@@ -1,7 +1,7 @@
 package com.smile.chunkland.api.rule;
 
 /**
- * Environment rule types a Land may enforce (spec §55). Unlike
+ * Environment rule types a Land may enforce. Unlike
  * {@link com.smile.chunkland.api.permission.ProtectionActionType}, these have no
  * subject dimension — they answer "can this world mechanic happen here?" rather
  * than "may this player act?".
