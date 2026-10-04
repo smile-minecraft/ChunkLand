@@ -1,0 +1,42 @@
+# JitPack 建置設定：只建置並發布 chunkland-api（純 domain API 模組）。
+#
+# 本檔不含任何 credential / secret。
+#
+# JDK 25 的取得方式：`before_install` + SDKMAN，而非 `jdk:` 欄位。
+# 實測證據：JitPack 對未收錄的 `jdk:` 值會靜默忽略並退回預設 JDK 8。
+# jitpack/jitpack.io#7547 中 `jdk: [openjdk25]` 的 build log 顯示 JAVA_HOME 仍是
+# /usr/lib/jvm/java-8-openjdk-amd64，建置以 "release version 25 not supported" 失敗；
+# 同一個 repo 改用 `before_install: sdk install java 25-open` 後 log 顯示
+# "Java version: 25" 並成功產出 artifact。因此本檔採 SDKMAN 路徑。
+# `25-tem` 為 SDKMAN linuxx64 清單中實際存在的 Temurin 25 identifier
+# （https://api.sdkman.io/2/candidates/java/linuxx64/versions/list 回報 25.0.4-tem）。
+before_install:
+  - sdk install java 25-tem
+
+# JAVA_HOME 由 install 自己建立，不依賴 before_install 把環境變數傳給 install：
+# JitPack 是否保證跨階段繼承 JAVA_HOME，本 repo 沒有實測證據。因此 install 的
+# 第一件事是重新載入 SDKMAN 並再次 `sdk use java 25-tem`，讓 JAVA25 在真正跑
+# Gradle 的同一個 shell 內生效。`sdk install` 留在 before_install 是因為候選版本
+# 是安裝到磁碟，跨階段一定留得住。
+#
+# 只發布 chunkland-api：
+#   - 不建置 chunkland-plugin。它是 compileOnly 依賴 AceLib 1.3.0 的 server plugin，
+#     而 AceLib 只存在於 GitHub Release asset，JitPack 的乾淨容器沒有它；在此建置
+#     必然解析失敗，同時也會把 Bukkit/Paper、SQLite 帶進 JitPack 的建置環境。
+#   - 不在 settings.gradle.kts 宣告的 flatDir 依賴上下文中解析 AceLib。
+#     `:chunkland-api:*` 的任務圖不觸及 chunkland-plugin 的 compileOnly 設定，
+#     所以即使 ACE_OUTPUT_DIR 不存在也能建置成功（見 scripts/verify-api-publication.sh）。
+#
+# `-x test` 與 JitPack 預設一致：JitPack 只負責產出 artifact，測試閘門由 CI
+# （.github/workflows/api.yml）與 scripts/verify-api-publication.sh 負責。
+# 依賴宣告守衛（checkApiNoExternalProductionDependencies）掛在 jar 上，會由
+# publishToMavenLocal 需要的 jar 一起帶入。
+#
+# 已發布產物守衛（checkApiPublishedArtifact）沒有掛在 jar/check/publish 上任何一個，
+# 只被 apiPublicationCheck 聚合，而那個聚合不在本命令裡。少了它，JitPack 就會在
+# 沒有產物守衛的情況下把 api 發出去，所以這裡必須顯式點名。它檢查的
+# jar/sources/javadoc/POM 與 publishToMavenLocal 消費的是同一批任務輸出，同一次
+# invocation 等於驗證即將發布的那份產物。Gradle 不保證守衛排在 publish 之前，
+# 但守衛失敗會讓這次 install 失敗，JitPack 因此不會發布。
+install:
+  - . "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh" && sdk use java 25-tem && ./gradlew :chunkland-api:publishToMavenLocal :chunkland-api:checkApiPublishedArtifact -x test

@@ -1,0 +1,67 @@
+name: API
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least-privilege token: this workflow only reads the repo and uploads build output.
+# It never pushes, tags or publishes.
+permissions:
+  contents: read
+
+concurrency:
+  group: api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The published API surface has a deliberately tighter contract than the plugin:
+  # consumers resolve it from JitPack with no server, no AceLib and no plugin jar
+  # present. This job therefore runs without fetching AceLib, which is the same
+  # constraint a JitPack container has — it fails here before a tag is ever pushed if
+  # the api module ever grows a dependency it cannot satisfy on its own.
+  api-publication:
+    name: API build, guard and publication (no AceLib)
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.4.0 — https://github.com/actions/checkout/releases/tag/v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # actions/setup-java v6.0.0 — https://github.com/actions/setup-java/releases/tag/v6.0.0
+      - name: Set up JDK 25
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # gradle/actions wrapper-validation v6.3.0 — https://github.com/gradle/actions/releases/tag/v6.3.0
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb
+
+      # No AceLib fetch step, by design. ACE_OUTPUT_DIR points at a directory that does
+      # not exist so a stale runner cache cannot mask a dependency the api should not
+      # have: chunkland-api must build, test and publish standalone.
+      - name: Build, test and guard chunkland-api without AceLib
+        env:
+          ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-api-no-acelib
+        run: ./gradlew :chunkland-api:build --no-daemon
+
+      # Publishes to a throwaway repository and compiles an independent consumer
+      # against the published coordinates. This is the same script contributors run
+      # locally, so the gate cannot drift between CI and the worktree.
+      - name: Verify publication and independent consumer
+        run: bash scripts/verify-api-publication.sh
+
+      # actions/upload-artifact v7.0.1 — https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      # Uploaded so a release candidate can be inspected without a local build, and so
+      # a consumer can resolve the exact jars this commit would publish.
+      - name: Upload published API artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: chunkland-api-publication
+          path: |
+            chunkland-api/build/libs/chunkland-api-*.jar
+            chunkland-api/build/publications/chunklandApi/pom-default.xml
+          if-no-files-found: error
+          retention-days: 14

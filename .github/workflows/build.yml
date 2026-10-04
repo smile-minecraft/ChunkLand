@@ -78,7 +78,7 @@ jobs:
           }
           echo "REPRODUCIBLE: A/B manifest 與 hash 完全一致（含 main + sources JAR）"
 
-  # M5 效能門檻：三項 p99（5000/50000/100000 ns，見
+  # 效能門檻：三項 p99（5000/50000/100000 ns，見
   # scripts/check-performance-gate.sh）＋ SQL/Economy/World query
   # sentinel。wall-clock 比較只住在 script 裡（單元測試本身不斷言時間），
   # 所以這個 job 紅掉代表真實回歸或熱路徑違規，不是機器噪聲。
