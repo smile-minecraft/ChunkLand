@@ -29,7 +29,7 @@ Optional plugins: a Vault-ecosystem economy plugin for claim pricing, LuckPerms 
 
 **Entry is allowed by default.** `subject-defaults.global.ENTRY: ALLOW` means an unbanned stranger can walk into a loaded claim. Entry bans still deny, because a ban is decided at the land binding layer with deny priority. Set `ENTRY: DENY` to close claims to everyone who is not trusted.
 
-**The eleven land rules cannot be changed.** PVP, terrain explosion, entity explosion, fire spread, fire burn, mob griefing, fluid flow, pistons, hopper transfer, hostile mob spawning and passive mob spawning run on built-in defaults — everything denied except passive mob spawning. The `rule-defaults` block in `config.yml` is a commented example that is not wired to anything.
+**The eleven land rules cannot be changed.** PVP, terrain explosion, entity explosion, fire spread, fire burn, mob griefing, fluid flow, pistons, hopper transfer, hostile mob spawning and passive mob spawning run on built-in defaults. Inside a land, fluid flow, pistons, hopper transfer and both kinds of mob spawning follow vanilla; PVP, explosions, fire spread and burn, and mob griefing are denied. A piston, fluid or hopper that reaches across a land boundary — in either direction — is always refused. The `rule-defaults` block in `config.yml` is a commented example that is not wired to anything.
 
 **All 29 permission nodes default to `op`.** A regular player cannot claim land, trust a member or open the management screen until an operator grants the node explicitly.
 
@@ -134,6 +134,7 @@ Every accepted top-level key is validated on load. An unrecognised top-level key
 
 | Key | Default |
 | --- | --- |
+| `economy.enabled` | `false` — purchases off: claims and expands are free and need no economy plugin |
 | `economy.currency.code` | `EMC` |
 | `economy.currency.scale` | `2` (100 minor = 1 major) |
 
@@ -148,13 +149,15 @@ Default tiers, priced per chunk by the owner's total chunk count across all Play
 
 The table must stay a contiguous partition ending in `unbounded`; a gap, overlap, negative, non-finite or overflowing entry fails the load and keeps the previous snapshot, so player claims fail closed instead of being repriced. Refunds always come from the durable per-chunk cost basis, never from the tiers, so editing tiers never changes a past refund. Do not change `currency.scale` while the ledger holds rows.
 
+With `economy.enabled: false` (the default, and also the behaviour of a file with no `economy` section) nothing is charged and `limits` alone bounds a player; free chunks refund nothing. With `economy.enabled: true` a Vault-ecosystem economy plugin is required and a player claim without one is refused. Chunks bought while enabled still refund their recorded price after the switch is turned off.
+
 ### limits
 
 | Key | Default |
 | --- | --- |
 | `limits.max-lands-per-player` | `5` |
-| `limits.max-total-chunks-per-player` | `256` |
-| `limits.max-chunks-per-land` | `128` |
+| `limits.max-total-chunks-per-player` | `10` |
+| `limits.max-chunks-per-land` | `10` |
 | `limits.max-sublands-per-land` | `16` |
 | `limits.max-selection-side-length` | `32` |
 | `limits.max-selection-chunks` | `1024` |

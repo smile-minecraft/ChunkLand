@@ -111,8 +111,17 @@ The eleven land rules cannot be changed from any interface. `rule-defaults` in
 
 ## Claim pricing
 
-Pricing only takes effect with a Vault-ecosystem economy plugin installed. Without
-one the plugin starts normally and claim pricing reports unavailable.
+Purchases ship switched off: `economy.enabled` is `false`, so claiming and
+expanding are free, no economy plugin is needed, and `limits` is what bounds a
+player (10 chunks in total by default). Set `economy.enabled: true` to charge
+for chunks. Charging needs a Vault-ecosystem economy plugin; with the switch on
+and no such plugin, the plugin starts normally and player claims are refused as
+unavailable.
+
+Chunks claimed while purchases are off cost nothing and refund nothing. Chunks
+bought while they were on keep their recorded price and still refund it on
+shrink or delete, so leave the economy plugin installed if you turn purchases
+off on a live server.
 
 `economy.pricing.tiers` prices each chunk by the owner's **total** chunk count
 across all player lands, in the currency named by `economy.currency.code`

@@ -31,6 +31,7 @@ and history of a deleted land stays readable until its own cutoff passes.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `economy.enabled` | `false` | The purchase switch. While `false`, claiming and expanding cost nothing and need no economy plugin |
 | `economy.currency.code` | `EMC` | The money every price is stored and charged in |
 | `economy.currency.scale` | `2` | Minor units per major unit: `2` means 100 minor = 1 major |
 | `economy.pricing.tiers` | see below | Price per chunk, tiered by the owner's total chunk count |
@@ -57,16 +58,30 @@ Editing the table:
 - Do not change `currency.scale` while the ledger holds live rows; stored minor
   units would reconvert to different major amounts.
 
-Pricing requires a Vault-ecosystem economy plugin. Without one the plugin still
-starts, and economy operations report unavailable.
+`economy.enabled` decides whether any of this is charged:
+
+- `false` (the shipped default): claims and expands are free and need no economy
+  plugin. `limits` is the only thing bounding a player. Chunks claimed this way
+  cost nothing and refund nothing.
+- `true`: each chunk is charged from the tiers. This requires a Vault-ecosystem
+  economy plugin; without one the plugin still starts, and a player claim or
+  expand is refused as unavailable.
+
+The currency and tiers are validated whatever the switch says. Chunks bought
+while the switch was `true` keep their recorded price and still refund it on
+shrink or delete after it is turned off, so keep the economy plugin installed if
+you switch a live server off. Without one, a land that still owes a refund is
+refused before anything is removed, rather than removed and left for manual
+reconciliation. A file with no `economy` section at all behaves like
+`enabled: false`.
 
 ## limits
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `limits.max-lands-per-player` | `5` | Lands one player may own |
-| `limits.max-total-chunks-per-player` | `256` | Total chunks across a player's lands |
-| `limits.max-chunks-per-land` | `128` | Chunks in one land |
+| `limits.max-total-chunks-per-player` | `10` | Total chunks across a player's lands |
+| `limits.max-chunks-per-land` | `10` | Chunks in one land |
 | `limits.max-sublands-per-land` | `16` | Sublands in one land |
 | `limits.max-selection-side-length` | `32` | Longest side of a selection rectangle |
 | `limits.max-selection-chunks` | `1024` | Chunks one selection may cover |
@@ -166,8 +181,10 @@ claims to everyone who is not trusted.
 
 `rule-defaults` has the same shape and is documented in the shipped file as a
 commented example. **It is not wired to anything yet** — the eleven land rules
-run on built-in defaults with everything denied except passive mob spawning,
-and no player or administrator interface can change them. Editing this block
+run on built-in defaults (fluid flow, pistons, hopper transfer and mob spawning
+allowed inside a land; PVP, explosions, fire and mob griefing denied; anything
+crossing a land boundary refused), and no player or administrator interface can
+change them. Editing this block
 has no effect today.
 
 ## Language files

@@ -118,7 +118,7 @@ GUI 邏輯本體不直接查詢語系檔，所有介面文案皆由呼叫端注�
 Vault、LuckPerms 與 CoreProtect 均為軟相依整合。這三項服務的探索皆在**每次啟用世代（Enable Generation）初始化時執行一次**，並將參考快取供後續呼叫；任何一項缺席或載入異常一律平順降級為空，絕不向上拋出例外導致開服崩潰。
 
 各相依缺席時的分工明確：
-- **Vault 經濟**：計價安全關閉（fail closed），圈地與擴張安全攔阻。
+- **Vault 經濟**：購買開啟（`economy.enabled: true`）時計價安全關閉（fail closed），圈地與擴張安全攔阻；購買關閉（預設）時圈地與擴張免費，不經過 Vault。
 - **LuckPerms**：額度計算退回設定檔靜態預設值。
 - **CoreProtect**：`/land history` 提示服務暫不可用，**核心保護判定完全不受任何影響**。
 

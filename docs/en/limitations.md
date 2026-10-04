@@ -24,12 +24,19 @@ one.
 All eleven land rules — PVP, terrain explosion, entity explosion, fire spread,
 fire burn, mob griefing, fluid flow, pistons, hopper transfer, hostile mob
 spawning, passive mob spawning — have no player or administrator interface.
-They run on built-in defaults: everything denied except passive mob spawning.
-The `rule-defaults` section in `config.yml` is a commented example and is not
-wired to anything.
+They run on built-in defaults. Inside a land, fluid flow, pistons, hopper
+transfer and both kinds of mob spawning are allowed and follow vanilla; PVP,
+terrain and entity explosions, fire spread and burn, and mob griefing are
+denied. The `rule-defaults` section in `config.yml` is a commented example and
+is not wired to anything.
 
-**Workaround:** design around the disabled mechanics. There is no player-side
-route today.
+A piston, fluid or hopper that reaches across a land boundary is always refused,
+whichever way it points: from outside into a land, from a land out, or between
+two different lands, including two neighbouring lands with the same owner. This
+is not one of the eleven rules and nothing opens it.
+
+**Workaround:** keep a machine inside one land, and design around the denied
+mechanics. There is no player-side route today.
 
 ## 3. The `/land manage` screen: what it cannot do
 

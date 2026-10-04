@@ -30,7 +30,10 @@ set `subject-defaults.global.ENTRY: DENY` or ban them.
 
 The eleven land rules — PVP, explosions, fire, mob griefing, fluid flow,
 pistons, hopper transfer, mob spawning — have no interface to change them. They
-run on built-in defaults with everything denied except passive mob spawning.
+run on built-in defaults. Inside a land, fluid flow, pistons, hopper transfer
+and both kinds of mob spawning follow vanilla; PVP, explosions, fire spread and
+burn, and mob griefing are denied. A piston, fluid or hopper that reaches across
+a land boundary — in either direction — is always refused.
 
 Every permission node defaults to `op`. Regular players cannot claim land or
 trust members until an operator grants the node explicitly.

@@ -35,8 +35,16 @@ decisions, and a read-only API for other plugins.
   doors, buttons, levers, redstone, buckets, vehicles, entity interaction,
   entity damage, item frames, armour stands, hanging entities, farmland
   trampling, PVP and entry.
-- Cross-boundary mechanics are decided too: pistons, fluid flow, hopper
-  transfer, and dispenser transfers that cross a land edge.
+- Inside a land, fluid flow, pistons, hopper transfer and mob spawning follow
+  vanilla by default; PVP, explosions, fire spread and burn, and mob griefing
+  are denied.
+- A land boundary is a wall for ownerless mechanics. A piston (including its
+  head and a block it moves), a fluid or a hopper that reaches across a land
+  edge is refused in either direction, whatever the land's rules say, so a
+  machine outside a land cannot push into it, flood it or empty its chests.
+  Dispenser transfers that cross a land edge are decided too.
+- A stranger's only default right is entry. Every other action is denied until
+  the owner trusts them or changes the land's defaults.
 - Projectiles are judged at the moment of impact, not by where the shooter
   stood.
 - Denials are visible: a particle wall along the refused boundary for entry,
@@ -57,10 +65,14 @@ decisions, and a read-only API for other plugins.
 
 #### Economy
 
-- Claim pricing goes through a Vault-ecosystem economy plugin. Price per chunk
-  is tiered by the owner's total chunk count, and refunds are taken from the
-  durable per-chunk cost basis, so editing tiers never changes what a past
-  payment is refunded.
+- Purchases ship switched off (`economy.enabled: false`): claiming and
+  expanding are free, need no economy plugin, and are bounded by `limits` —
+  by default 10 chunks per player and 10 chunks per land, across at most 5
+  lands.
+- With `economy.enabled: true`, claim pricing goes through a Vault-ecosystem
+  economy plugin. Price per chunk is tiered by the owner's total chunk count,
+  and refunds are taken from the durable per-chunk cost basis, so editing tiers
+  never changes what a past payment is refunded.
 - A claim that fails part-way is compensated, and the compensation is written
   to a ledger an operator can reconcile with `/land admin ledger`.
 

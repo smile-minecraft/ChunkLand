@@ -28,8 +28,22 @@ happen here?* The set ChunkLand currently decides:
 
 ![Diagram of how a land boundary is drawn between chunks, with the two plots either side labelled as separate lands](docs/assets/land-boundaries.png)
 
-*Both images are illustrations, not screenshots of a running server. The
-boundary diagram shows a claim outline between neighbouring chunks.*
+### At a glance
+
+![Three steps to claim land: take the wand and click two corners, the selection snaps to whole chunks, then name the claim and confirm](docs/assets/claiming.png)
+
+![A land does not have to be a rectangle: claim a rectangle, select more chunks and expand, and the land becomes any connected shape; chunks must touch by an edge and the land cannot have a hole](docs/assets/land-shapes.png)
+
+![Table of who can do what in a land: a stranger may only enter, a trusted player may enter, use and build, the owner may also manage, a banned player may do nothing](docs/assets/permissions.png)
+
+![Inside a land, water and lava, pistons, hoppers and mob spawning work like vanilla; PVP, explosions, fire spread and mob griefing are blocked](docs/assets/land-rules.png)
+
+![A land with two sub-lands inside it, a shop and a farm, each with its own permissions and its own enter and leave notices](docs/assets/sublands.png)
+
+*Every image here is an illustration, not a screenshot of a running server. The
+boundary diagram shows two neighbouring claims and what their edges stop; the
+other five show claiming, growing a land into any shape, who may do what, what
+runs inside a land, and sub-lands, all under the shipped defaults.*
 
 ## Requirements
 
@@ -106,11 +120,12 @@ subject-defaults:
     ENTRY: DENY
 ```
 
-**The eleven land rules cannot be changed from anywhere.** PVP, explosions,
-fire spread, mob griefing, fluid flow, pistons, hopper transfer and mob spawning
-all run on built-in defaults: everything denied except passive mob spawning.
-The commented `rule-defaults` block in `config.yml` is an example, not a wired
-setting.
+**The eleven land rules cannot be changed from anywhere.** They run on built-in
+defaults. Inside a land, fluid flow, pistons, hopper transfer and both kinds of
+mob spawning follow vanilla; PVP, explosions, fire spread and burn, and mob
+griefing are denied. A piston, fluid or hopper that reaches across a land
+boundary — in either direction — is always refused. The commented
+`rule-defaults` block in `config.yml` is an example, not a wired setting.
 
 The rest of the rough edges — starting a fire is unprotected, `/tp` is not
 intercepted, banned players are pushed out on their next move rather than

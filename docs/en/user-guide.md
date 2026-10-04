@@ -8,6 +8,8 @@ access — though as shipped, most commands do (see
 
 ## Claiming land
 
+![Three steps to claim land: take the wand and click two corners, the selection snaps to whole chunks, then name the claim and confirm](../assets/claiming.png)
+
 Get the wand, click two corners, then name the claim:
 
 ```
@@ -34,6 +36,8 @@ you and where those quotas came from, the land id, and the revision numbers.
 
 ## Changing the shape
 
+![A land does not have to be a rectangle: claim a rectangle, select more chunks and expand, and the land becomes any connected shape; chunks must touch by an edge and the land cannot have a hole](../assets/land-shapes.png)
+
 | Command | What it does | Money |
 | --- | --- | --- |
 | `/land expand` | Adds the chunks in your current selection to the land you are standing in | charged |
@@ -51,6 +55,8 @@ a delete, and you should use `/land delete`. `unclaim` is refused the same way
 rather than leaving you an empty land.
 
 ## Letting other people in
+
+![Table of who can do what in a land: a stranger may only enter, a trusted player may enter, use and build, the owner may also manage, a banned player may do nothing](../assets/permissions.png)
 
 ```
 /land trust <player>       # trusted member of this land
@@ -70,6 +76,8 @@ In practice: names that have played on this server resolve, names that never
 have do not. If a name does not work, use the player's UUID.
 
 ## Sublands
+
+![A land with two sub-lands inside it, a shop and a farm, each with its own permissions and its own enter and leave notices](../assets/sublands.png)
 
 A subland is a region inside a land with its own permissions:
 
@@ -119,6 +127,8 @@ pushed out on your next movement — to the nearest verified exit about three
 blocks from the boundary, or to the world spawn if there is no exit.
 
 ## Things that do not work the way you might expect
+
+![Inside a land, water and lava, pistons, hoppers and mob spawning work like vanilla; PVP, explosions, fire spread and mob griefing are blocked](../assets/land-rules.png)
 
 - **Strangers can walk in.** Entry is allowed by default. `/land ban` overrides
   it per player; for everyone, the operator has to set
