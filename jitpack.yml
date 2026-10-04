@@ -13,19 +13,22 @@
 before_install:
   - sdk install java 25-tem
 
-# Build image 明確釘在 `default`，不交給 JitPack 自行挑選。
-# 實測證據：commit 5560c1b 的 build log 開頭是 "Build image: latest"，Java 25 啟動
-# wrapper 時以 "An unexpected error occurred while trying to open file
-# .../gradle-wrapper.jar" 中止。這句訊息出自 JVM 內 LauncherHelper 開 JAR 時接到的
-# IOException，不是 JAR 損壞（損壞的訊息是 "Invalid or corrupt jarfile"）。同一天、
-# 同樣用 `25-tem` 加 Gradle 9 `-jar` wrapper 的 discord-jda/JDA 在
-# "Build image: default" 上建置成功，差異只剩 image。
-# `build.image` 欄位出自 JitPack 維護者在 jitpack/jitpack.io#7005 的回覆（該處示範
-# `image: latest`），官方文件沒有收錄；JitPack 為何替本 repo 選了 latest 也查不到
-# 依據，所以這裡不依賴它的選擇。
-# 推論（未實測）：latest image 的 glibc 較新，JDK 22+ 讀檔案屬性會改走 statx，而
-# JitPack 主機的舊 kernel / seccomp 對 statx 回 EPERM。install 的第一行會把 OS、
-# kernel、glibc 版本印進 build log，下次失敗時可以直接對照。
+# `build.image: default` 不可移除：少了它，Java 25 打不開 gradle-wrapper.jar。
+# 實測證據（2026-10-04，JitPack build log）：
+#   - 沒有這個欄位的 commit 5560c1b 連續 4 次建置都以 "An unexpected error occurred
+#     while trying to open file .../gradle-wrapper.jar" 中止。這句訊息出自 JVM 內
+#     LauncherHelper 開 JAR 時接到的 IOException，不是 JAR 損壞（損壞的訊息是
+#     "Invalid or corrupt jarfile"）。
+#   - 加上這個欄位的 commit e6f483a 連續 3 次建置都成功，其中兩次與 5560c1b 的失敗
+#     重建只差一分鐘內，所以不是 JitPack 主機或時間造成的差異。
+# 已知但沒有解釋的地方：
+#   - 兩邊的 log 開頭都是 "Build image: latest"，欄位並沒有把標示改成 default；
+#     可觀察到的差別是成功的建置把 repo 掛在 /build，JitPack 自己的 git 資訊區塊
+#     因此印出 "detected dubious ownership"（不影響建置與發布）。
+#   - 開檔失敗的底層原因沒有查到。成功環境是 Ubuntu 22.04、kernel 6.8、glibc 2.35。
+# `build.image` 欄位出自 JitPack 維護者在 jitpack/jitpack.io#7005 的回覆，官方文件
+# 沒有收錄。e6f483a 同時加了 install 第一行的環境資訊輸出，兩者沒有分開測過；那
+# 一行保留，讓之後的 build log 能直接看出執行環境。
 build:
   image: default
 
