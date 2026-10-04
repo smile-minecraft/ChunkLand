@@ -13,9 +13,25 @@
 before_install:
   - sdk install java 25-tem
 
+# Build image 明確釘在 `default`，不交給 JitPack 自行挑選。
+# 實測證據：commit 5560c1b 的 build log 開頭是 "Build image: latest"，Java 25 啟動
+# wrapper 時以 "An unexpected error occurred while trying to open file
+# .../gradle-wrapper.jar" 中止。這句訊息出自 JVM 內 LauncherHelper 開 JAR 時接到的
+# IOException，不是 JAR 損壞（損壞的訊息是 "Invalid or corrupt jarfile"）。同一天、
+# 同樣用 `25-tem` 加 Gradle 9 `-jar` wrapper 的 discord-jda/JDA 在
+# "Build image: default" 上建置成功，差異只剩 image。
+# `build.image` 欄位出自 JitPack 維護者在 jitpack/jitpack.io#7005 的回覆（該處示範
+# `image: latest`），官方文件沒有收錄；JitPack 為何替本 repo 選了 latest 也查不到
+# 依據，所以這裡不依賴它的選擇。
+# 推論（未實測）：latest image 的 glibc 較新，JDK 22+ 讀檔案屬性會改走 statx，而
+# JitPack 主機的舊 kernel / seccomp 對 statx 回 EPERM。install 的第一行會把 OS、
+# kernel、glibc 版本印進 build log，下次失敗時可以直接對照。
+build:
+  image: default
+
 # JAVA_HOME 由 install 自己建立，不依賴 before_install 把環境變數傳給 install：
-# JitPack 是否保證跨階段繼承 JAVA_HOME，本 repo 沒有實測證據。因此 install 的
-# 第一件事是重新載入 SDKMAN 並再次 `sdk use java 25-tem`，讓 JAVA25 在真正跑
+# JitPack 是否保證跨階段繼承 JAVA_HOME，本 repo 沒有實測證據。因此 install 在
+# 印完環境資訊後，先重新載入 SDKMAN 並再次 `sdk use java 25-tem`，讓 JAVA25 在真正跑
 # Gradle 的同一個 shell 內生效。`sdk install` 留在 before_install 是因為候選版本
 # 是安裝到磁碟，跨階段一定留得住。
 #
@@ -39,4 +55,5 @@ before_install:
 # invocation 等於驗證即將發布的那份產物。Gradle 不保證守衛排在 publish 之前，
 # 但守衛失敗會讓這次 install 失敗，JitPack 因此不會發布。
 install:
+  - head -n 2 /etc/os-release; uname -r; ldd --version | head -n 1; true
   - . "${SDKMAN_DIR:-$HOME/.sdkman}/bin/sdkman-init.sh" && sdk use java 25-tem && ./gradlew :chunkland-api:publishToMavenLocal :chunkland-api:checkApiPublishedArtifact -x test
