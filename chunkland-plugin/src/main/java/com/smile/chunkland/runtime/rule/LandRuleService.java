@@ -156,10 +156,13 @@ public final class LandRuleService implements LandRuleLookup {
         defaults.put(LandRuleType.FIRE_SPREAD, PermissionState.DENY);
         defaults.put(LandRuleType.FIRE_BURN, PermissionState.DENY);
         defaults.put(LandRuleType.MOB_GRIEFING, PermissionState.DENY);
-        defaults.put(LandRuleType.FLUID_FLOW, PermissionState.DENY);
-        defaults.put(LandRuleType.PISTON, PermissionState.DENY);
-        defaults.put(LandRuleType.HOPPER_TRANSFER, PermissionState.DENY);
-        defaults.put(LandRuleType.HOSTILE_MOB_SPAWN, PermissionState.DENY);
+        // Mechanics that stay inside one land follow vanilla; the handlers
+        // judge anything crossing a land boundary under the directional
+        // actions instead, which never read these rules.
+        defaults.put(LandRuleType.FLUID_FLOW, PermissionState.ALLOW);
+        defaults.put(LandRuleType.PISTON, PermissionState.ALLOW);
+        defaults.put(LandRuleType.HOPPER_TRANSFER, PermissionState.ALLOW);
+        defaults.put(LandRuleType.HOSTILE_MOB_SPAWN, PermissionState.ALLOW);
         defaults.put(LandRuleType.PASSIVE_MOB_SPAWN, PermissionState.ALLOW);
         return Collections.unmodifiableMap(defaults);
     }

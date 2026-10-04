@@ -9,8 +9,8 @@ package com.smile.chunkland.api.limit;
 public enum LimitType {
 
     MAX_LANDS_PER_PLAYER("max-lands-per-player", 5),
-    MAX_TOTAL_CHUNKS_PER_PLAYER("max-total-chunks-per-player", 256),
-    MAX_CHUNKS_PER_LAND("max-chunks-per-land", 128),
+    MAX_TOTAL_CHUNKS_PER_PLAYER("max-total-chunks-per-player", 10),
+    MAX_CHUNKS_PER_LAND("max-chunks-per-land", 10),
     MAX_SUBLANDS_PER_LAND("max-sublands-per-land", 16),
     MAX_SELECTION_SIDE_LENGTH("max-selection-side-length", 32),
     MAX_SELECTION_CHUNKS("max-selection-chunks", 1024);

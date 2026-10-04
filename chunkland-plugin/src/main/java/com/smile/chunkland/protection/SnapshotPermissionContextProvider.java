@@ -17,9 +17,11 @@ import com.smile.chunkland.runtime.index.SubLandIndex;
 import com.smile.chunkland.runtime.rule.LandRuleService;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -75,6 +77,7 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         PermissionDecisionEpochSource {
 
     private static final Map<ProtectionActionType, LandRuleType> RULE_BY_ACTION = ruleTable();
+    private static final Set<ProtectionActionType> BOUNDARY_ACTIONS = boundaryActions();
 
     private final LandRuleLookup ruleLookup;
     private final SubjectPermissionLookup subjectLookup;
@@ -158,6 +161,9 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
     }
 
     private PermissionState ruleState(LandId landId, ProtectionActionType action, LandRegistry snapshot) {
+        if (BOUNDARY_ACTIONS.contains(action)) {
+            return PermissionState.DENY;
+        }
         LandRuleType rule = RULE_BY_ACTION.get(action);
         if (rule == null) {
             return PermissionState.INHERIT;
@@ -408,6 +414,11 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
 
     private PermissionState ruleStateAtomic(LandRuleService rules, LandId landId,
                                             ProtectionActionType action, LandRegistry snapshot) {
+        if (BOUNDARY_ACTIONS.contains(action)) {
+            // A land boundary is a wall for ownerless mechanics: the in-land
+            // rule decides what happens inside, never what crosses in or out.
+            return PermissionState.DENY;
+        }
         LandRuleType rule = RULE_BY_ACTION.get(action);
         if (rule == null || rules == null) {
             return PermissionState.INHERIT;
@@ -432,16 +443,26 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         table.put(ProtectionActionType.MOB_GRIEFING, LandRuleType.MOB_GRIEFING);
         table.put(ProtectionActionType.HOSTILE_MOB_SPAWN, LandRuleType.HOSTILE_MOB_SPAWN);
         table.put(ProtectionActionType.PASSIVE_MOB_SPAWN, LandRuleType.PASSIVE_MOB_SPAWN);
-        // Cross-boundary actions reuse their source rule; no new rule type.
         // A dispenser is an ownerless mechanic whose cross-boundary effect is
         // grief-like, so it reads MOB_GRIEFING (the closest existing rule).
-        table.put(ProtectionActionType.BLOCK_MOVE_IN, LandRuleType.PISTON);
-        table.put(ProtectionActionType.BLOCK_MOVE_OUT, LandRuleType.PISTON);
-        table.put(ProtectionActionType.FLUID_ENTER, LandRuleType.FLUID_FLOW);
-        table.put(ProtectionActionType.FLUID_EXIT, LandRuleType.FLUID_FLOW);
-        table.put(ProtectionActionType.ITEM_TRANSFER_IN, LandRuleType.HOPPER_TRANSFER);
-        table.put(ProtectionActionType.ITEM_TRANSFER_OUT, LandRuleType.HOPPER_TRANSFER);
+        // The six directional piston/fluid/hopper actions are deliberately
+        // absent: see BOUNDARY_ACTIONS.
         table.put(ProtectionActionType.DISPENSER_CROSS_BOUNDARY, LandRuleType.MOB_GRIEFING);
         return Collections.unmodifiableMap(table);
+    }
+
+    /**
+     * Directional actions for a piston, fluid or hopper reaching across a
+     * land boundary. They resolve to {@code DENY} without reading a rule, so
+     * opening a mechanic inside a land never opens the border with it.
+     */
+    private static Set<ProtectionActionType> boundaryActions() {
+        return Collections.unmodifiableSet(EnumSet.of(
+                ProtectionActionType.BLOCK_MOVE_IN,
+                ProtectionActionType.BLOCK_MOVE_OUT,
+                ProtectionActionType.FLUID_ENTER,
+                ProtectionActionType.FLUID_EXIT,
+                ProtectionActionType.ITEM_TRANSFER_IN,
+                ProtectionActionType.ITEM_TRANSFER_OUT));
     }
 }

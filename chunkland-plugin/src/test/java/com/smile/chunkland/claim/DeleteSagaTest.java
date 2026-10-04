@@ -210,6 +210,17 @@ class DeleteSagaTest {
                     economy, rebuilder, quota, selections, CLOCK, Runnable::run, 3);
         }
 
+        /**
+         * Rebuild the saga against the production purchases-off wrapper, the
+         * way {@code ChunkLandPlugin.claimEconomy} wires it when
+         * {@code economy.enabled: false}.
+         */
+        void withPurchasesDisabled() {
+            saga = new DeleteSaga(validator, chunks, reservations, ledger,
+                    new PurchaseDisabledClaimEconomy(economy), rebuilder, quota, selections,
+                    CLOCK, Runnable::run, 3);
+        }
+
         /** Insert a land row plus its chunk rows through the public repositories. */
         void insertLand(LandId landId, OwnerRef owner, UUID world, Set<ChunkKey> chunkSet,
                 long structureRevision, long costBasis) throws Exception {
@@ -493,6 +504,63 @@ class DeleteSagaTest {
             assertRejectedZeroSideEffects(h, h.requestFor(owner, actor, world, land, 0),
                     "delete.economy_unavailable");
             assertTrue(h.landExists(land));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 3b) Purchases switched off: the free policy never buys a paid refund
+    // ------------------------------------------------------------------
+
+    @Test
+    void purchasesOffRefusesAPaidRefundWithoutAProviderBeforeAnyCommit() throws Exception {
+        try (Harness h = new Harness(10, 100)) {
+            UUID actor = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            OwnerRef owner = OwnerRef.player(actor);
+            // Bought while purchases were on: the durable basis survives the
+            // switch, so the delete still owes the full 100 minor units.
+            h.insertLand(land, owner, world, Set.of(chunk(world, 0, 0)), 0, 100L);
+            h.rebuild();
+            h.withPurchasesDisabled();
+            h.economy.available = false;
+
+            assertRejectedZeroSideEffects(h, h.requestFor(owner, actor, world, land, 0),
+                    "delete.economy_unavailable");
+
+            // The land is still there: a refund that cannot be paid must never
+            // delete it first and quarantine the money afterwards.
+            assertTrue(h.landExists(land));
+            assertEquals(List.of(), h.auditActions(land));
+            assertEquals(land, h.registryStore.snapshot().findLandId(world, 0, 0));
+        }
+    }
+
+    @Test
+    void purchasesOffDeletesAZeroBasisLandWithoutAProvider() throws Exception {
+        try (Harness h = new Harness(10, 100)) {
+            UUID actor = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            OwnerRef owner = OwnerRef.player(actor);
+            // Claimed while purchases were off: every chunk carries a zero
+            // cost basis, so the derived refund is zero and no provider is needed.
+            h.insertLand(land, owner, world, Set.of(chunk(world, 0, 0)), 0, 0L);
+            h.rebuild();
+            h.withPurchasesDisabled();
+            h.economy.available = false;
+
+            DeleteOutcome outcome = h.run(h.requestFor(owner, actor, world, land, 0));
+
+            assertEquals(DeleteOutcome.Status.SUCCESS, outcome.status());
+            assertEquals(0L, outcome.refundMinorUnits());
+            assertTrue(h.economy.refunds.isEmpty(),
+                    "a zero refund must never reach the provider, available or not");
+            assertTrue(!h.landExists(land));
+            assertEquals(List.of("LAND_DELETE"), h.auditActions(land));
+            assertEquals(LedgerState.COMPENSATED.name(), h.ledgerRows().get(0).state());
+            assertEquals(DeleteSaga.ZERO_VALUE_TRANSACTION_REF,
+                    h.ledgerRows().get(0).economyTransactionRef());
         }
     }
 

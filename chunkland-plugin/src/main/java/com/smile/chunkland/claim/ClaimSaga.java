@@ -211,10 +211,11 @@ public final class ClaimSaga {
         } catch (RuntimeException failure) {
             return completed(ClaimOutcome.failed("pricing.failed"));
         }
-        // Production fail-closed: a player claim must never slip through a
-        // placeholder zero table or a missing Vault provider into a free
-        // land. Server land stays free by design and skips both checks.
-        if (!serverOwned) {
+        // Production fail-closed: while purchases are on, a player claim
+        // must never slip through a placeholder zero table or a missing
+        // Vault provider into a free land. Server land stays free by design
+        // and skips both checks, and so does a server with purchases off.
+        if (!serverOwned && chargesClaims()) {
             boolean available;
             try {
                 available = economy.isAvailable();
@@ -281,6 +282,19 @@ public final class ClaimSaga {
             releaseAll(reservationKeys, operationId, landReservation, chunkReservation);
             return ClaimOutcome.failed("ledger.failed");
         });
+    }
+
+    /**
+     * Purchases switched off never reach the provider or zero-price gates.
+     * An economy that cannot answer is treated as charging, so the gates
+     * stay in force (fail-closed).
+     */
+    private boolean chargesClaims() {
+        try {
+            return economy.chargesClaims();
+        } catch (RuntimeException failure) {
+            return true;
+        }
     }
 
     // ---- Step 3: Economy withdraw outside any SQL transaction. ----

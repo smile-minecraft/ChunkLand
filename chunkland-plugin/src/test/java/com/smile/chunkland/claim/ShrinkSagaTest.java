@@ -136,7 +136,7 @@ class ShrinkSagaTest {
         final RuntimeRegistryRebuilder rebuilder;
         final SelectionSessionManager selections;
         final SnapshotShrinkValidator validator;
-        final ShrinkSaga saga;
+        ShrinkSaga saga;
 
         Harness(int maxLands, int maxChunks) {
             this(maxLands, maxChunks, null);
@@ -207,6 +207,17 @@ class ShrinkSagaTest {
 
         void insertSubLand(SubLandSnapshot sub) throws Exception {
             sublands.save(sub).toCompletableFuture().get(10, TimeUnit.SECONDS);
+        }
+
+        /**
+         * Rebuild the saga against the production purchases-off wrapper, the
+         * way {@code ChunkLandPlugin.claimEconomy} wires it when
+         * {@code economy.enabled: false}.
+         */
+        void withPurchasesDisabled() {
+            saga = new ShrinkSaga(validator, chunks, EMC, reservations, ledger,
+                    new PurchaseDisabledClaimEconomy(economy), rebuilder, quota, CLOCK,
+                    Runnable::run, 3);
         }
 
         void rebuild() throws Exception {
@@ -622,6 +633,67 @@ class ShrinkSagaTest {
             SelectionSession session = h.selectDelta(actor, world, land, Set.of(chunk(world, 1, 0)));
             assertRejectedZeroSideEffects(h, h.requestFor(session, owner), "shrink.economy_unavailable");
             assertEquals(2, h.facts(land).size());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 4b) Purchases switched off: the free policy never buys a paid refund
+    // ------------------------------------------------------------------
+
+    @Test
+    void purchasesOffRefusesAPaidRefundWithoutAProviderBeforeAnyCommit() throws Exception {
+        try (Harness h = new Harness(10, 100)) {
+            UUID actor = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            OwnerRef owner = OwnerRef.player(actor);
+            // Bought while purchases were on: the durable basis survives the
+            // switch, so the shrink still owes 50 minor units.
+            h.insertLand(land, owner, world, Set.of(chunk(world, 0, 0), chunk(world, 1, 0)), 0, 100L);
+            h.rebuild();
+            h.withPurchasesDisabled();
+            h.economy.available = false;
+
+            SelectionSession session = h.selectDelta(actor, world, land, Set.of(chunk(world, 1, 0)));
+            assertRejectedZeroSideEffects(h, h.requestFor(session, owner), "shrink.economy_unavailable");
+
+            // Nothing was removed and nothing was published: a refund that
+            // cannot be paid must never delete the land first.
+            assertEquals(2, h.facts(land).size());
+            assertEquals(0L, h.structureRevision(land));
+            assertEquals(List.of(), h.auditActions(land));
+            assertEquals(land, h.registryStore.snapshot().findLandId(world, 1, 0));
+        }
+    }
+
+    @Test
+    void purchasesOffShrinksAZeroBasisLandWithoutAProvider() throws Exception {
+        try (Harness h = new Harness(10, 100)) {
+            UUID actor = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            OwnerRef owner = OwnerRef.player(actor);
+            // Claimed while purchases were off: every chunk carries a zero
+            // cost basis, so the derived refund is zero and no provider is needed.
+            h.insertLand(land, owner, world, Set.of(chunk(world, 0, 0), chunk(world, 1, 0)), 0, 0L);
+            h.rebuild();
+            h.withPurchasesDisabled();
+            h.economy.available = false;
+
+            SelectionSession session = h.selectDelta(actor, world, land, Set.of(chunk(world, 1, 0)));
+            ShrinkOutcome outcome = h.run(h.requestFor(session, owner));
+
+            assertEquals(ShrinkOutcome.Status.SUCCESS, outcome.status());
+            assertEquals(0L, outcome.refundMinorUnits());
+            assertTrue(h.economy.refunds.isEmpty(),
+                    "a zero refund must never reach the provider, available or not");
+            assertEquals(1, h.facts(land).size());
+            assertEquals(1L, h.structureRevision(land));
+            assertEquals(List.of("CHUNK_REMOVE"), h.auditActions(land));
+            assertEquals(LedgerState.COMPENSATED.name(), h.ledgerRows().get(0).state());
+            assertEquals(ShrinkSaga.ZERO_VALUE_TRANSACTION_REF,
+                    h.ledgerRows().get(0).economyTransactionRef());
+            assertTrue(h.registryStore.snapshot().findLandId(world, 1, 0) == null);
         }
     }
 

@@ -192,6 +192,23 @@ class LandRuleServiceTest {
     }
 
     @Test
+    void builtInDefaultsAreVanillaForMechanicsAndClosedForDestruction() {
+        Map<LandRuleType, PermissionState> defaults = LandRuleService.builtInDefaults();
+        for (LandRuleType vanilla : List.of(LandRuleType.FLUID_FLOW, LandRuleType.PISTON,
+                LandRuleType.HOPPER_TRANSFER, LandRuleType.HOSTILE_MOB_SPAWN,
+                LandRuleType.PASSIVE_MOB_SPAWN)) {
+            assertEquals(PermissionState.ALLOW, defaults.get(vanilla),
+                    vanilla + " must follow vanilla inside a land");
+        }
+        for (LandRuleType closed : List.of(LandRuleType.PVP, LandRuleType.EXPLOSION_TERRAIN,
+                LandRuleType.EXPLOSION_ENTITY, LandRuleType.FIRE_SPREAD, LandRuleType.FIRE_BURN,
+                LandRuleType.MOB_GRIEFING)) {
+            assertEquals(PermissionState.DENY, defaults.get(closed),
+                    closed + " must stay closed by default");
+        }
+    }
+
+    @Test
     void builtInDefaultsCoverEveryRuleType() {
         Map<LandRuleType, PermissionState> defaults = LandRuleService.builtInDefaults();
         assertEquals(LandRuleType.values().length, defaults.size());

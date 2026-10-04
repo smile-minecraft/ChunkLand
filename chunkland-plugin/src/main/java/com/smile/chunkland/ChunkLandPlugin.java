@@ -4298,22 +4298,49 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * expand. Refunds never reprice — shrink always refunds from the durable
      * per-chunk cost basis times the shrink ratio.
      *
-     * <p>Fail-closed sentinel: a config without an {@code economy} section
-     * (pre-economy file) prices every chunk at zero in the fallback currency.
-     * That sentinel can never create a silent free land — a player claim
-     * through it is rejected on {@code economy.unavailable} when Vault is
-     * down, or on {@code pricing.unavailable} when a provider is up but no
-     * tiers are configured — while server land stays free by design without
-     * touching Economy.
+     * <p>Purchases off ({@code economy.enabled: false}, the default, or no
+     * {@code economy} section) prices every chunk at zero in the configured
+     * currency; {@link #claimEconomy} tells the saga that zero is intended.
+     *
+     * <p>Fail-closed sentinel: with no config at all every chunk is also
+     * priced at zero, but {@link #claimEconomy} keeps the charging economy
+     * there, so a player claim is rejected on {@code economy.unavailable} or
+     * {@code pricing.unavailable} instead of becoming a silent free land.
+     * Server land stays free by design without touching Economy.
      */
     static PricingTable claimPricing(ChunkLandConfig config) {
         com.smile.chunkland.config.EconomySettings economy =
                 config == null ? null : config.economy();
-        if (economy != null) {
+        if (economy != null && economy.enabled()) {
             return economy.pricing();
         }
-        Currency currency = ClaimStartupBootstrap.CLAIM_CURRENCY;
+        Currency currency = economyCurrency(config);
         return PricingTable.of(List.of(PricingTier.of(PricingTier.UNBOUNDED, Money.zero(currency))));
+    }
+
+    /**
+     * Whether a player claim or expand is charged. Only a loaded config
+     * that leaves purchases off answers {@code false}; a missing config
+     * keeps charging so nothing becomes free by accident.
+     */
+    static boolean purchasesEnabled(ChunkLandConfig config) {
+        if (config == null) {
+            return true;
+        }
+        com.smile.chunkland.config.EconomySettings economy = config.economy();
+        return economy != null && economy.enabled();
+    }
+
+    /**
+     * The economy the claim, expand, shrink and delete sagas run against:
+     * the provider-backed one while purchases are on, and a wrapper that
+     * skips charging (but still refunds past payments) while they are off.
+     */
+    static ClaimEconomy claimEconomy(ChunkLandConfig config, ClaimEconomy economy) {
+        Objects.requireNonNull(economy, "economy");
+        return purchasesEnabled(config)
+                ? economy
+                : new com.smile.chunkland.claim.PurchaseDisabledClaimEconomy(economy);
     }
 
     /**
@@ -4904,7 +4931,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
             });
             this.claimSaga = buildClaimSaga(this.protectionStore, selections,
                     this.claimQuotas, claimPricing(config.current()), this.claimReservations,
-                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), this.claimExecutor,
+                    bootstrap.ledger(), claimEconomy(config.current(), bootstrap.economy()),
+                    bootstrap.rebuilder(), this.claimExecutor,
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
@@ -4955,7 +4983,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     () -> new IllegalStateException("ChunkLand config service is unavailable"));
             this.expandSaga = buildExpandSaga(this.protectionStore, selections,
                     quotas, claimPricing(config.current()), reservations,
-                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
+                    bootstrap.ledger(), claimEconomy(config.current(), bootstrap.economy()),
+                    bootstrap.rebuilder(), async,
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
@@ -5065,11 +5094,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
             // Shrink refunds rebuild amounts from durable minor units, so the
             // currency must be the same typed one the bootstrap charges and
             // refunds with — never a hardcoded constant that could drift.
-            Currency shrinkCurrency = economyCurrency(
-                    this.configService.map(ConfigService::current).orElse(null));
+            ChunkLandConfig shrinkConfig =
+                    this.configService.map(ConfigService::current).orElse(null);
+            Currency shrinkCurrency = economyCurrency(shrinkConfig);
             this.shrinkSaga = buildShrinkSaga(this.protectionStore, selections,
                     quotas, reservations,
-                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
+                    bootstrap.ledger(), claimEconomy(shrinkConfig, bootstrap.economy()),
+                    bootstrap.rebuilder(), async,
                     this.selectionStructureRevisions,
                     new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()),
                     shrinkCurrency, this.publicEvents);
@@ -5170,7 +5201,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
         try {
             this.deleteSaga = buildDeleteSaga(this.protectionStore, selections,
                     quotas, reservations,
-                    bootstrap.ledger(), bootstrap.economy(), bootstrap.rebuilder(), async,
+                    bootstrap.ledger(),
+                    claimEconomy(this.configService.map(ConfigService::current).orElse(null),
+                            bootstrap.economy()),
+                    bootstrap.rebuilder(), async,
                     this.selectionStructureRevisions,
                     new com.smile.chunkland.persistence.SqliteChunkRepository(bootstrap.store()),
                     this.publicEvents);

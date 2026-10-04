@@ -201,7 +201,7 @@ public final class ExpandSaga {
         } catch (RuntimeException failure) {
             return completed(ClaimOutcome.failed("pricing.failed"));
         }
-        if (!serverOwned) {
+        if (!serverOwned && chargesClaims()) {
             boolean available;
             try {
                 available = economy.isAvailable();
@@ -260,6 +260,19 @@ public final class ExpandSaga {
             releaseAll(reservationKeys, operationId, chunkReservation);
             return ClaimOutcome.failed("ledger.failed");
         });
+    }
+
+    /**
+     * Purchases switched off never reach the provider or zero-price gates.
+     * An economy that cannot answer is treated as charging, so the gates
+     * stay in force (fail-closed).
+     */
+    private boolean chargesClaims() {
+        try {
+            return economy.chargesClaims();
+        } catch (RuntimeException failure) {
+            return true;
+        }
     }
 
     // ---- Step 3: Economy withdraw outside any SQL transaction. ----

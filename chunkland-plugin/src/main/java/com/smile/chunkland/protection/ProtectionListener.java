@@ -935,7 +935,7 @@ public final class ProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPistonExtend(BlockPistonExtendEvent event) {
         try {
-            if (pistonMoveDenied(event.getBlocks(), event.getDirection(), false)) {
+            if (pistonMoveDenied(event.getBlock(), event.getBlocks(), event.getDirection(), false)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {
@@ -949,7 +949,7 @@ public final class ProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPistonRetract(BlockPistonRetractEvent event) {
         try {
-            if (pistonMoveDenied(event.getBlocks(), event.getDirection(), true)) {
+            if (pistonMoveDenied(event.getBlock(), event.getBlocks(), event.getDirection(), true)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {
@@ -961,7 +961,12 @@ public final class ProtectionListener implements Listener {
     }
 
     /**
-     * Checks every moved block at its current position and at its destination.
+     * Checks every moved block at its current position and at its destination,
+     * and the piston itself against everything it reaches. A move that stays
+     * inside one land decides as {@code PISTON_MOVE}; a move that touches a
+     * land boundary decides as {@code BLOCK_MOVE_IN}/{@code BLOCK_MOVE_OUT},
+     * so a piston standing outside a land cannot rearrange blocks inside it
+     * and an extending head cannot reach across the border either.
      * Extend pushes along the reported facing ({@code current + direction});
      * retract pulls back toward the piston ({@code current - direction}): the
      * pulled block sits two steps out ({@code piston + 2 * direction}) and
@@ -972,8 +977,16 @@ public final class ProtectionListener implements Listener {
      * @return {@code true} when the move must be cancelled (fail-closed on any
      *         missing block, world, or direction)
      */
-    private boolean pistonMoveDenied(List<Block> moved, BlockFace direction, boolean retract) {
-        if (moved == null || direction == null) {
+    private boolean pistonMoveDenied(Block piston, List<Block> moved, BlockFace direction,
+                                     boolean retract) {
+        if (piston == null || piston.getWorld() == null || moved == null || direction == null) {
+            return true;
+        }
+        UUID worldId = piston.getWorld().getUID();
+        if (!retract && pistonReachDenied(worldId, piston,
+                piston.getX() + direction.getModX(),
+                piston.getY() + direction.getModY(),
+                piston.getZ() + direction.getModZ())) {
             return true;
         }
         int sign = retract ? -1 : 1;
@@ -981,18 +994,53 @@ public final class ProtectionListener implements Listener {
             if (block == null || block.getWorld() == null) {
                 return true;
             }
-            if (deniedAtBlock(ENVIRONMENT_ACTOR, block, ProtectionActionType.PISTON_MOVE)) {
+            if (pistonReachDenied(worldId, piston, block.getX(), block.getY(), block.getZ())) {
                 return true;
             }
-            if (deniedAt(ENVIRONMENT_ACTOR, block.getWorld(),
+            if (CrossBoundaryDecider.mechanicDenied(engine, worldId,
+                    block.getX(), block.getY(), block.getZ(),
                     block.getX() + sign * direction.getModX(),
                     block.getY() + sign * direction.getModY(),
                     block.getZ() + sign * direction.getModZ(),
-                    ProtectionActionType.PISTON_MOVE)) {
+                    ProtectionActionType.PISTON_MOVE,
+                    ProtectionActionType.BLOCK_MOVE_IN,
+                    ProtectionActionType.BLOCK_MOVE_OUT)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * The piston against one block it reaches (its extending head or a block
+     * it moves). Only a land boundary between the two intervenes: inside one
+     * land the moved block's own check already reads {@code PISTON_MOVE}.
+     */
+    private boolean pistonReachDenied(UUID worldId, Block piston,
+                                      int blockX, int blockY, int blockZ) {
+        if (!engine.isRegistryReady()) {
+            return true;
+        }
+        LandRegistry snapshot;
+        try {
+            snapshot = engine.snapshot();
+        } catch (RuntimeException ex) {
+            return true;
+        }
+        if (snapshot == null) {
+            return true;
+        }
+        var relation = CrossBoundaryDecider.relation(snapshot, worldId,
+                piston.getX() >> 4, piston.getZ() >> 4, blockX >> 4, blockZ >> 4);
+        if (relation == CrossBoundaryDecider.Relation.WILDERNESS
+                || relation == CrossBoundaryDecider.Relation.SAME_LAND) {
+            return false;
+        }
+        return CrossBoundaryDecider.mechanicDenied(engine, worldId,
+                piston.getX(), piston.getY(), piston.getZ(), blockX, blockY, blockZ,
+                ProtectionActionType.PISTON_MOVE,
+                ProtectionActionType.BLOCK_MOVE_IN,
+                ProtectionActionType.BLOCK_MOVE_OUT);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -1005,8 +1053,13 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtBlock(ENVIRONMENT_ACTOR, from, ProtectionActionType.FLUID_FLOW)
-                    || deniedAtBlock(ENVIRONMENT_ACTOR, to, ProtectionActionType.FLUID_FLOW)) {
+            if (!from.getWorld().getUID().equals(to.getWorld().getUID())
+                    || CrossBoundaryDecider.mechanicDenied(engine, from.getWorld().getUID(),
+                            from.getX(), from.getY(), from.getZ(),
+                            to.getX(), to.getY(), to.getZ(),
+                            ProtectionActionType.FLUID_FLOW,
+                            ProtectionActionType.FLUID_ENTER,
+                            ProtectionActionType.FLUID_EXIT)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {
@@ -1027,9 +1080,14 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            if (deniedAtLocation(ENVIRONMENT_ACTOR, source, ProtectionActionType.HOPPER_TRANSFER)
-                    || deniedAtLocation(ENVIRONMENT_ACTOR, destination,
-                            ProtectionActionType.HOPPER_TRANSFER)) {
+            if (!source.getWorld().getUID().equals(destination.getWorld().getUID())
+                    || CrossBoundaryDecider.mechanicDenied(engine, source.getWorld().getUID(),
+                            source.getBlockX(), source.getBlockY(), source.getBlockZ(),
+                            destination.getBlockX(), destination.getBlockY(),
+                            destination.getBlockZ(),
+                            ProtectionActionType.HOPPER_TRANSFER,
+                            ProtectionActionType.ITEM_TRANSFER_IN,
+                            ProtectionActionType.ITEM_TRANSFER_OUT)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {

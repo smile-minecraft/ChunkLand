@@ -22,12 +22,12 @@ import java.util.Objects;
   *       the projectile-landing extension of the dispense crossing, plus the
   *       five management actions enforced by the shared domain gate (no Bukkit
   *       block listener; command and future GUI/Form entry points resolve the
-  *       gate before touching the mutation pipeline).</li>
- *   <li>{@code DEFERRED}: directional cross actions with no dedicated Bukkit
- *       event. Their policy is already enforced indirectly: the piston,
- *       fluid, and hopper handlers judge both ends under the matching source
- *       action, which reads the same rule the directional action would read.
- *       Dedicated directional wiring stays a future milestone.</li>
+  *       gate before touching the mutation pipeline), plus the six
+  *       directional piston, fluid and hopper actions, which the matching
+  *       handlers read whenever a step touches a land boundary.</li>
+ *   <li>{@code DEFERRED}: no action sits here today. The tier stays so a
+ *       future action without an enforcement path has somewhere honest to
+ *       go.</li>
  * </ul>
  */
 public final class ProtectionCoverage {
@@ -103,11 +103,11 @@ public final class ProtectionCoverage {
         put(table, ProtectionActionType.PLAYER_DAMAGE_PLAYER, Tier.P0_ENFORCED,
                 "onEntityDamage player harming player (early skeleton)");
         put(table, ProtectionActionType.PISTON_MOVE, Tier.P0_ENFORCED,
-                "onPistonExtend/onPistonRetract at every moved block and destination");
+                "onPistonExtend/onPistonRetract at every moved block and destination inside one land");
         put(table, ProtectionActionType.FLUID_FLOW, Tier.P0_ENFORCED,
-                "onFluidFlow at source and destination blocks");
+                "onFluidFlow at source and destination blocks inside one land");
         put(table, ProtectionActionType.HOPPER_TRANSFER, Tier.P0_ENFORCED,
-                "onHopperTransfer at source and destination inventories");
+                "onHopperTransfer at source and destination inventories inside one land");
         put(table, ProtectionActionType.ENTRY, Tier.P0_ENFORCED,
                 "onPlayerMove at the destination (cross-chunk moves, plus in-chunk moves "
                         + "that cross a subland covering) plus onPlayerTeleport destination");
@@ -158,19 +158,20 @@ public final class ProtectionCoverage {
         put(table, ProtectionActionType.DELETE_LAND, Tier.P1_ENFORCED,
                 "ManagementPermissionGate domain gate shared by command/GUI/Form entry points");
         // --- Deferred: directional cross actions without a dedicated event ---
-        String indirect = "Deferred: no dedicated Bukkit event; enforced indirectly via ";
-        put(table, ProtectionActionType.BLOCK_MOVE_IN, Tier.DEFERRED,
-                indirect + "PISTON_MOVE, which the piston handler judges at both ends");
-        put(table, ProtectionActionType.BLOCK_MOVE_OUT, Tier.DEFERRED,
-                indirect + "PISTON_MOVE, which the piston handler judges at both ends");
-        put(table, ProtectionActionType.FLUID_ENTER, Tier.DEFERRED,
-                indirect + "FLUID_FLOW, which the fluid handler judges at both ends");
-        put(table, ProtectionActionType.FLUID_EXIT, Tier.DEFERRED,
-                indirect + "FLUID_FLOW, which the fluid handler judges at both ends");
-        put(table, ProtectionActionType.ITEM_TRANSFER_IN, Tier.DEFERRED,
-                indirect + "HOPPER_TRANSFER, which the hopper handler judges at both ends");
-        put(table, ProtectionActionType.ITEM_TRANSFER_OUT, Tier.DEFERRED,
-                indirect + "HOPPER_TRANSFER, which the hopper handler judges at both ends");
+        put(table, ProtectionActionType.BLOCK_MOVE_IN, Tier.P1_ENFORCED,
+                "onPistonExtend/onPistonRetract when a piston, its head or a moved block "
+                        + "enters a land from outside it");
+        put(table, ProtectionActionType.BLOCK_MOVE_OUT, Tier.P1_ENFORCED,
+                "onPistonExtend/onPistonRetract when a piston, its head or a moved block "
+                        + "leaves a land");
+        put(table, ProtectionActionType.FLUID_ENTER, Tier.P1_ENFORCED,
+                "onFluidFlow when the destination block is in a land the source is not in");
+        put(table, ProtectionActionType.FLUID_EXIT, Tier.P1_ENFORCED,
+                "onFluidFlow when the source block is in a land the destination is not in");
+        put(table, ProtectionActionType.ITEM_TRANSFER_IN, Tier.P1_ENFORCED,
+                "onHopperTransfer when the destination inventory is in a land the source is not in");
+        put(table, ProtectionActionType.ITEM_TRANSFER_OUT, Tier.P1_ENFORCED,
+                "onHopperTransfer when the source inventory is in a land the destination is not in");
         if (table.size() != ProtectionActionType.values().length) {
             throw new IllegalStateException("Coverage table incomplete; listed " + table.size()
                     + " of " + ProtectionActionType.values().length + " actions");

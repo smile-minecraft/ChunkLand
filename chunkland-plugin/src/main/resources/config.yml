@@ -8,7 +8,7 @@
 #   audit             -> audit history retention
 #   selection         -> selection sessions and particle budgets
 #   feedback          -> deny particles and push-out tuning
-#   economy           -> claim currency + owner-total price-per-chunk tiers
+#   economy           -> purchase switch, claim currency + price-per-chunk tiers
 #   worlds.<name>     -> per-world claim-enabled + vertical-mode
 #   subject-defaults  -> world/global SUBJECT_PERMISSION defaults (optional)
 #   rule-defaults     -> world/global LAND_RULE defaults (optional)
@@ -40,6 +40,17 @@ audit:
 
 # Claim economy (operator-tunable; changes apply on restart).
 #
+# `enabled` is the purchase switch and ships off: claiming and expanding cost
+# nothing, no Vault economy has to be installed, and the only thing bounding a
+# player is `limits` below. Set it to true to charge each chunk from the tiers;
+# claims then need a Vault economy provider and are refused without one.
+# Chunks claimed while it is off cost nothing and refund nothing. Chunks bought
+# while it was on keep their recorded price and still refund it on shrink or
+# delete, so leave the Vault provider installed if you switch a live server off:
+# a land that still owes a refund is refused up front without a provider, so no
+# land is ever removed for money that cannot be paid back.
+# The currency and tiers are validated whatever the switch says.
+#
 # `currency` names the money every price is stored and charged in; `scale`
 # is the minor-units-per-unit exponent (2 means 100 minor = 1 major).
 # `pricing.tiers` prices each chunk by the owner's global total chunk count
@@ -53,6 +64,7 @@ audit:
 # currency scale while the ledger holds live rows: stored minor units would
 # reconvert to different major amounts.
 economy:
+  enabled: false
   currency:
     code: EMC
     scale: 2
@@ -67,10 +79,13 @@ economy:
       - until: unbounded
         price-per-chunk: 8.00
 
+# Land quotas. A player may own `max-total-chunks-per-player` chunks across
+# all of their lands, split over at most `max-lands-per-player` lands, and one
+# land may hold at most `max-chunks-per-land` of them.
 limits:
   max-lands-per-player: 5
-  max-total-chunks-per-player: 256
-  max-chunks-per-land: 128
+  max-total-chunks-per-player: 10
+  max-chunks-per-land: 10
   max-sublands-per-land: 16
   max-selection-side-length: 32
   max-selection-chunks: 1024
@@ -134,6 +149,9 @@ worlds:
 # 權限的世界／全域預設（Direct Trust 基礎）。
 #
 # ENTRY 預設為 ALLOW，讓未受 ban 的陌生人可進入已載入領地。
+# 陌生人只有進入權：這裡沒有列出的動作（破壞、放置、開箱、門、按鈕、拉桿、
+# 紅石、載具、與實體互動、傷害生物等）一律落到隱含的 DENY，要由地主信任或
+# 調整領地預設才會開放。
 # ban 仍在 landBindings 層以 DENY 優先；landAuth 未載入或不可驗證時維持 fail-closed。
 subject-defaults:
   global:
@@ -145,10 +163,22 @@ subject-defaults:
 # to each other. World entries use world names and resolve to world UUIDs
 # once at load; unknown worlds warn and are ignored. A missing section, a
 # missing entry, or an explicit INHERIT all mean "fall through to the next
-# resolver layer", ending at implicit DENY. Action/rule keys are
-# case-insensitive; world names are case-sensitive. Land bindings, land
-# defaults and SubLand layers are NOT configured here (no durable source is
-# wired yet) and stay INHERIT.
+# resolver layer". A subject action ends at implicit DENY; a rule ends at its
+# built-in default below. Action/rule keys are case-insensitive; world names
+# are case-sensitive. Land bindings, land defaults and SubLand layers are NOT
+# configured here (no durable source is wired yet) and stay INHERIT.
+#
+# Built-in rule defaults: a land behaves like vanilla for the mechanics a
+# player builds with, and stays closed to the ones that destroy.
+#   ALLOW  FLUID_FLOW, PISTON, HOPPER_TRANSFER, HOSTILE_MOB_SPAWN,
+#          PASSIVE_MOB_SPAWN
+#   DENY   PVP, EXPLOSION_TERRAIN, EXPLOSION_ENTITY, FIRE_SPREAD, FIRE_BURN,
+#          MOB_GRIEFING
+# These rules only cover what stays inside one land. A piston, a fluid or a
+# hopper reaching across a land boundary - in either direction, and between
+# two different lands - is always refused and no rule here opens it, so a
+# machine standing outside a land cannot push into it, flood it or empty its
+# chests.
 #
 #rule-defaults:
 #  global:

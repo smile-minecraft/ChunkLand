@@ -36,20 +36,24 @@ import org.bukkit.util.Vector;
 import org.junit.jupiter.api.Test;
 
 /**
- * Cross-boundary matrix: the seven directional actions reuse their source
- * rule, and the four source/destination combinations resolve consistently.
+ * Cross-boundary matrix: a dispenser crossing reuses its source rule, the six
+ * piston/fluid/hopper directional actions deny whatever any rule says, and
+ * the four source/destination combinations resolve consistently.
  */
 class CrossBoundaryMatrixTest {
 
     /** Cross action -> the source rule it must reuse (no new rule types). */
     static final Map<ProtectionActionType, LandRuleType> EXPECTED_SOURCE_RULE = Map.of(
-            ProtectionActionType.BLOCK_MOVE_IN, LandRuleType.PISTON,
-            ProtectionActionType.BLOCK_MOVE_OUT, LandRuleType.PISTON,
-            ProtectionActionType.FLUID_ENTER, LandRuleType.FLUID_FLOW,
-            ProtectionActionType.FLUID_EXIT, LandRuleType.FLUID_FLOW,
-            ProtectionActionType.ITEM_TRANSFER_IN, LandRuleType.HOPPER_TRANSFER,
-            ProtectionActionType.ITEM_TRANSFER_OUT, LandRuleType.HOPPER_TRANSFER,
             ProtectionActionType.DISPENSER_CROSS_BOUNDARY, LandRuleType.MOB_GRIEFING);
+
+    /** Directional actions that never read a rule: a land boundary is a wall. */
+    static final List<ProtectionActionType> BOUNDARY_ACTIONS = List.of(
+            ProtectionActionType.BLOCK_MOVE_IN,
+            ProtectionActionType.BLOCK_MOVE_OUT,
+            ProtectionActionType.FLUID_ENTER,
+            ProtectionActionType.FLUID_EXIT,
+            ProtectionActionType.ITEM_TRANSFER_IN,
+            ProtectionActionType.ITEM_TRANSFER_OUT);
 
     private static LandSnapshot landAt(UUID worldId, LandId id, UUID owner, int chunkX, int chunkZ) {
         return new LandSnapshot(id, "TestLand", "testland", OwnerRef.player(owner),
@@ -92,6 +96,28 @@ class CrossBoundaryMatrixTest {
             assertEquals(PermissionState.DENY,
                     engine.decide(UUID.randomUUID(), landId, action).outcome(),
                     action + " must deny when its source rule denies");
+        }
+    }
+
+    @Test
+    void boundaryActionsDenyWhateverTheRuleSays() {
+        for (ProtectionActionType action : BOUNDARY_ACTIONS) {
+            AtomicInteger lookups = new AtomicInteger();
+            UUID worldId = UUID.randomUUID();
+            LandId landId = new LandId(UUID.randomUUID());
+            LandRegistryStore store = new LandRegistryStore();
+            store.publish(LandRegistry.from(List.of(landAt(worldId, landId, UUID.randomUUID(), 0, 0))));
+            var engine = new ProtectionEngine(store::snapshot,
+                    new SnapshotPermissionContextProvider((id, rule, snapshot) -> {
+                        lookups.incrementAndGet();
+                        return Optional.of(PermissionState.ALLOW);
+                    }, null));
+            assertEquals(PermissionState.DENY,
+                    engine.decide(UUID.randomUUID(), landId, action).outcome(),
+                    action + " must deny even when every rule allows");
+            assertEquals(0, lookups.get(),
+                    action + " must not read a rule: opening a mechanic inside a land "
+                            + "must never open its border");
         }
     }
 
@@ -176,10 +202,7 @@ class CrossBoundaryMatrixTest {
 
     @Test
     void everyDirectionalPairHonoursFourCombinations() {
-        List<ProtectionActionType[]> pairs = List.of(
-                new ProtectionActionType[]{ProtectionActionType.BLOCK_MOVE_IN, ProtectionActionType.BLOCK_MOVE_OUT},
-                new ProtectionActionType[]{ProtectionActionType.FLUID_ENTER, ProtectionActionType.FLUID_EXIT},
-                new ProtectionActionType[]{ProtectionActionType.ITEM_TRANSFER_IN, ProtectionActionType.ITEM_TRANSFER_OUT},
+        List<ProtectionActionType[]> pairs = List.<ProtectionActionType[]>of(
                 new ProtectionActionType[]{ProtectionActionType.DISPENSER_CROSS_BOUNDARY,
                         ProtectionActionType.DISPENSER_CROSS_BOUNDARY});
         int wild = blockX(9);
@@ -233,6 +256,81 @@ class CrossBoundaryMatrixTest {
         }
     }
 
+    // --- Mechanics: vanilla inside one land, a wall at its boundary ----------
+
+    private record Mechanic(ProtectionActionType inside, ProtectionActionType in,
+                            ProtectionActionType out, LandRuleType rule) {
+    }
+
+    private static final List<Mechanic> MECHANICS = List.of(
+            new Mechanic(ProtectionActionType.PISTON_MOVE, ProtectionActionType.BLOCK_MOVE_IN,
+                    ProtectionActionType.BLOCK_MOVE_OUT, LandRuleType.PISTON),
+            new Mechanic(ProtectionActionType.FLUID_FLOW, ProtectionActionType.FLUID_ENTER,
+                    ProtectionActionType.FLUID_EXIT, LandRuleType.FLUID_FLOW),
+            new Mechanic(ProtectionActionType.HOPPER_TRANSFER, ProtectionActionType.ITEM_TRANSFER_IN,
+                    ProtectionActionType.ITEM_TRANSFER_OUT, LandRuleType.HOPPER_TRANSFER));
+
+    private static boolean mechanicDenied(ProtectionEngine engine, UUID worldId,
+                                          int srcX, int dstX, Mechanic mechanic) {
+        return CrossBoundaryDecider.mechanicDenied(engine, worldId,
+                srcX, 64, 5, dstX, 64, 5, mechanic.inside(), mechanic.in(), mechanic.out());
+    }
+
+    @Test
+    void mechanicInsideOneLandFollowsItsRule() {
+        int inA = blockX(0);
+        for (Mechanic mechanic : MECHANICS) {
+            TwoLands fx = twoLands();
+            AtomicReference<LandRuleType> seen = new AtomicReference<>();
+            var allow = ruleEngine(fx.store(), (id, rule, snapshot) -> {
+                seen.set(rule);
+                return Optional.of(PermissionState.ALLOW);
+            });
+            assertFalse(mechanicDenied(allow, fx.worldId(), inA, inA + 1, mechanic),
+                    mechanic.inside() + ": same land passes when its rule allows");
+            assertEquals(mechanic.rule(), seen.get(),
+                    mechanic.inside() + " must read rule " + mechanic.rule());
+            var deny = ruleEngine(fx.store(),
+                    (id, rule, snapshot) -> Optional.of(PermissionState.DENY));
+            assertTrue(mechanicDenied(deny, fx.worldId(), inA, inA + 1, mechanic),
+                    mechanic.inside() + ": same land denied when its rule denies");
+        }
+    }
+
+    @Test
+    void mechanicTouchingALandBoundaryIsDeniedEvenWhenEveryRuleAllows() {
+        int wild = blockX(9);
+        int inA = blockX(0);
+        int inB = blockX(1);
+        for (Mechanic mechanic : MECHANICS) {
+            TwoLands fx = twoLands();
+            var allow = ruleEngine(fx.store(),
+                    (id, rule, snapshot) -> Optional.of(PermissionState.ALLOW));
+            assertFalse(mechanicDenied(allow, fx.worldId(), wild, wild + 1, mechanic),
+                    mechanic.inside() + ": wild -> wild stays vanilla");
+            assertTrue(mechanicDenied(allow, fx.worldId(), wild, inA, mechanic),
+                    mechanic.in() + ": wild -> land denied");
+            assertTrue(mechanicDenied(allow, fx.worldId(), inA, wild, mechanic),
+                    mechanic.out() + ": land -> wild denied");
+            assertTrue(mechanicDenied(allow, fx.worldId(), inA, inB, mechanic),
+                    mechanic.inside() + ": land A -> land B denied");
+            assertTrue(mechanicDenied(allow, fx.worldId(), inB, inA, mechanic),
+                    mechanic.inside() + ": land B -> land A denied");
+        }
+    }
+
+    @Test
+    void mechanicFailsClosedWithoutAConfirmedIndex() {
+        TwoLands fx = twoLands();
+        Mechanic piston = MECHANICS.get(0);
+        var throwing = new ProtectionEngine(() -> {
+            throw new IllegalStateException("registry unavailable");
+        }, new SnapshotPermissionContextProvider(
+                (id, rule, snapshot) -> Optional.of(PermissionState.ALLOW), null));
+        assertTrue(mechanicDenied(throwing, fx.worldId(), blockX(9), blockX(9) + 1, piston),
+                "an unreadable index must deny even a wilderness step");
+    }
+
     private static String pairName(ProtectionActionType[] pair) {
         return pair[0] + "/" + pair[1];
     }
@@ -248,7 +346,8 @@ class CrossBoundaryMatrixTest {
         int wild = blockX(9);
         assertFalse(CrossBoundaryDecider.crossDenied(engine, fx.worldId(),
                 wild, 5, wild, 5,
-                ProtectionActionType.FLUID_ENTER, ProtectionActionType.FLUID_EXIT));
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY,
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY));
         assertEquals(0, lookups.get(), "wild -> wild must stay index-only");
     }
 
@@ -263,7 +362,8 @@ class CrossBoundaryMatrixTest {
         int inA = blockX(0);
         assertTrue(CrossBoundaryDecider.crossDenied(engine, fx.worldId(),
                 inA, 5, inA, 5,
-                ProtectionActionType.FLUID_ENTER, ProtectionActionType.FLUID_EXIT));
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY,
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY));
         assertEquals(1, lookups.get(),
                 "same land must decide once at the destination, never re-read the source");
     }
@@ -523,7 +623,8 @@ class CrossBoundaryMatrixTest {
         int dstX = blockX(9);
         assertFalse(CrossBoundaryDecider.crossDenied(engine, worldId,
                 srcX, 5, dstX, 5,
-                ProtectionActionType.FLUID_ENTER, ProtectionActionType.FLUID_EXIT),
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY,
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY),
                 "v1 classifies land -> wild, so the decision must stay on v1 and pass");
         assertEquals(1, calls.get(),
                 "classification and decision must share a single snapshot read");
@@ -554,7 +655,8 @@ class CrossBoundaryMatrixTest {
         int inB = blockX(1);
         assertTrue(CrossBoundaryDecider.crossDenied(engine, worldId,
                 wild, 5, inB, 5,
-                ProtectionActionType.FLUID_ENTER, ProtectionActionType.FLUID_EXIT),
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY,
+                ProtectionActionType.DISPENSER_CROSS_BOUNDARY),
                 "v1 classifies wild -> land with a denying rule, so the decision must stay denied");
         assertEquals(1, calls.get(),
                 "classification and decision must share a single snapshot read");

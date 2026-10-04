@@ -202,21 +202,23 @@ public final class ConfigSchema {
     }
 
     /**
-     * Optional {@code economy} section: claim currency plus owner-total
-     * price-per-chunk tiers.
+     * Optional {@code economy} section: the purchase switch, the claim
+     * currency and the owner-total price-per-chunk tiers.
      *
-     * <p>Absent means a pre-economy config and stays backward-compatible
-     * (returns {@code null}; pricing resolution fails closed downstream, it
-     * never falls back to a zero table). A present section must be complete
-     * and exact: unknown keys, missing currency/pricing, blank codes,
-     * out-of-range scales, non-integer or non-positive bounds, overlapping
-     * tiers, a finite top tier (gap at infinity), negative, non-finite, or
-     * overflowing prices all fail closed here so a bad edit can never become
-     * a silent free land.
+     * <p>{@code enabled} is optional and defaults to {@code false}: claims
+     * are free until an operator turns purchases on. An absent section
+     * returns {@code null}, which downstream reads the same way (purchases
+     * off). A present section must be complete and exact whatever the
+     * switch says: unknown keys, a non-boolean {@code enabled}, missing
+     * currency/pricing, blank codes, out-of-range scales, non-integer or
+     * non-positive bounds, overlapping tiers, a finite top tier (gap at
+     * infinity), negative, non-finite, or overflowing prices all fail here,
+     * so turning purchases on can never meet a table nobody validated.
      *
      * <p>Shape:
      * <pre>
      * economy:
+     *   enabled: false
      *   currency:
      *     code: EMC
      *     scale: 2
@@ -242,7 +244,9 @@ public final class ConfigSchema {
                     path + " must not be null; remove the key or provide 'currency' and 'pricing'");
         }
         Map<String, Object> map = requireMapping(raw, path, "'currency' and 'pricing'");
-        rejectUnknownKeys(map, path, Set.of("currency", "pricing"));
+        rejectUnknownKeys(map, path, Set.of("enabled", "currency", "pricing"));
+        boolean enabled = map.containsKey("enabled")
+                && parseClaimEnabled(map.get("enabled"), path + ".enabled");
         if (!map.containsKey("currency")) {
             throw new ConfigValidationException(path + ".currency is required");
         }
@@ -252,7 +256,7 @@ public final class ConfigSchema {
         Currency currency = parseEconomyCurrency(map.get("currency"), path + ".currency");
         PricingTable pricing = parseEconomyPricing(map.get("pricing"), path + ".pricing", currency);
         try {
-            return new EconomySettings(currency, pricing);
+            return new EconomySettings(enabled, currency, pricing);
         } catch (IllegalArgumentException e) {
             throw new ConfigValidationException(path + " is inconsistent: " + e.getMessage());
         }

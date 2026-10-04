@@ -53,4 +53,16 @@ public interface ClaimEconomy {
     default boolean isAvailable() {
         return true;
     }
+
+    /**
+     * Whether a player claim or expand is charged at all.
+     *
+     * <p>{@code false} means purchases are switched off in the config: the
+     * saga skips the provider and zero-price gates, so a claim priced at
+     * zero commits without Economy. Everything else — quota, reservations,
+     * the ledger row — runs exactly as for a charged claim.
+     */
+    default boolean chargesClaims() {
+        return true;
+    }
 }

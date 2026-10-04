@@ -8,24 +8,38 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Typed view of {@code config.yml::economy}: the claim currency plus the
- * owner-total price-per-chunk tiers.
+ * Typed view of {@code config.yml::economy}: whether claims are purchased
+ * at all, the claim currency, and the owner-total price-per-chunk tiers.
  *
- * <p>Minimal shape for the Red phase: the parser that builds it from YAML
- * has not landed yet, so every snapshot still reports no economy.
+ * <p>{@code enabled} is the purchase switch. While it is {@code false} a
+ * player claim or expand costs nothing and needs no Economy provider; the
+ * currency and tiers are still parsed and validated so flipping the switch
+ * never meets an unchecked table.
  */
 public final class EconomySettings {
 
+    private final boolean enabled;
     private final Currency currency;
     private final PricingTable pricing;
 
+    /** Purchases enabled: the shape every pre-switch caller built. */
     public EconomySettings(Currency currency, PricingTable pricing) {
+        this(true, currency, pricing);
+    }
+
+    public EconomySettings(boolean enabled, Currency currency, PricingTable pricing) {
+        this.enabled = enabled;
         this.currency = Objects.requireNonNull(currency, "currency");
         this.pricing = Objects.requireNonNull(pricing, "pricing");
         if (!pricing.currency().equals(currency)) {
             throw new IllegalArgumentException(
                     "pricing currency " + pricing.currency() + " must match " + currency);
         }
+    }
+
+    /** Whether a player claim or expand is charged through Economy. */
+    public boolean enabled() {
+        return enabled;
     }
 
     public Currency currency() {
@@ -60,7 +74,8 @@ public final class EconomySettings {
         if (!(obj instanceof EconomySettings other)) {
             return false;
         }
-        return currency.equals(other.currency)
+        return enabled == other.enabled
+                && currency.equals(other.currency)
                 && tiersEqual(
                         new ArrayList<>(pricing.tiers()), new ArrayList<>(other.pricing.tiers()));
     }
@@ -73,11 +88,11 @@ public final class EconomySettings {
                     + Long.hashCode(tier.until())
                     + Long.hashCode(tier.price().minorUnits());
         }
-        return 31 * currency.hashCode() + tiers;
+        return 31 * (31 * currency.hashCode() + tiers) + Boolean.hashCode(enabled);
     }
 
     @Override
     public String toString() {
-        return "EconomySettings[currency=" + currency + ", tiers=" + pricing.tiers().size() + "]";
+        return "EconomySettings[enabled=" + enabled + ", currency=" + currency + ", tiers=" + pricing.tiers().size() + "]";
     }
 }

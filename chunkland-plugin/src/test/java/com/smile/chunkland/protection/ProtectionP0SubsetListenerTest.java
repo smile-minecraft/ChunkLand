@@ -509,19 +509,36 @@ class ProtectionP0SubsetListenerTest {
     void hopperDenyCancelsAndAllowPasses() throws Exception {
         Fixture fx = fixture();
         Inventory inside = inventoryProxy(new Location(fx.world(), 5, 64, 5));
-        Inventory outside = inventoryProxy(new Location(fx.world(), 900, 64, 900));
+        Inventory besideInside = inventoryProxy(new Location(fx.world(), 5, 63, 5));
 
         ProtectionListener denying = new ProtectionListener(
                 engineFor(fx.store(), ProtectionActionType.HOPPER_TRANSFER, PermissionState.DENY, null));
-        InventoryMoveItemEvent denied = moveItemEvent(outside, inside);
+        InventoryMoveItemEvent denied = moveItemEvent(inside, besideInside);
         denying.onHopperTransfer(denied);
         assertTrue(denied.isCancelled());
 
         ProtectionListener allowing = new ProtectionListener(
                 engineFor(fx.store(), ProtectionActionType.HOPPER_TRANSFER, PermissionState.ALLOW, null));
-        InventoryMoveItemEvent allowed = moveItemEvent(outside, inside);
+        InventoryMoveItemEvent allowed = moveItemEvent(inside, besideInside);
         allowing.onHopperTransfer(allowed);
         assertFalse(allowed.isCancelled());
+    }
+
+    @Test
+    void hopperCrossingALandBoundaryIsCancelledEvenWhenTheRuleAllows() throws Exception {
+        Fixture fx = fixture();
+        Inventory inside = inventoryProxy(new Location(fx.world(), 5, 64, 5));
+        Inventory outside = inventoryProxy(new Location(fx.world(), 900, 64, 900));
+        ProtectionListener allowing = new ProtectionListener(
+                engineFor(fx.store(), ProtectionActionType.HOPPER_TRANSFER, PermissionState.ALLOW, null));
+
+        InventoryMoveItemEvent pullingOut = moveItemEvent(inside, outside);
+        allowing.onHopperTransfer(pullingOut);
+        assertTrue(pullingOut.isCancelled(), "a hopper outside must not empty a chest inside");
+
+        InventoryMoveItemEvent pushingIn = moveItemEvent(outside, inside);
+        allowing.onHopperTransfer(pushingIn);
+        assertTrue(pushingIn.isCancelled(), "a hopper outside must not feed into the land either");
     }
 
     @Test
@@ -596,6 +613,69 @@ class ProtectionP0SubsetListenerTest {
                 blockProxy(fx.world(), 916, 64, 900, Material.AIR));
         denying.onFluidFlow(wild);
         assertFalse(wild.isCancelled(), "wilderness flow follows vanilla: never cancel");
+    }
+
+    @Test
+    void fluidCrossingALandBoundaryCancelsEvenWhenTheRuleAllows() {
+        Fixture fx = fixture();
+        ProtectionListener allowing = new ProtectionListener(
+                engineFor(fx.store(), ProtectionActionType.FLUID_FLOW, PermissionState.ALLOW, null));
+        BlockFromToEvent inside = new BlockFromToEvent(
+                blockProxy(fx.world(), 5, 64, 5, Material.WATER),
+                blockProxy(fx.world(), 6, 64, 5, Material.AIR));
+        allowing.onFluidFlow(inside);
+        assertFalse(inside.isCancelled(), "a flow inside one land follows its rule");
+
+        BlockFromToEvent flowingIn = new BlockFromToEvent(
+                blockProxy(fx.world(), 16, 64, 5, Material.LAVA),
+                blockProxy(fx.world(), 15, 64, 5, Material.AIR));
+        allowing.onFluidFlow(flowingIn);
+        assertTrue(flowingIn.isCancelled(), "lava poured outside must not flow into the land");
+
+        BlockFromToEvent flowingOut = new BlockFromToEvent(
+                blockProxy(fx.world(), 15, 64, 5, Material.WATER),
+                blockProxy(fx.world(), 16, 64, 5, Material.AIR));
+        allowing.onFluidFlow(flowingOut);
+        assertTrue(flowingOut.isCancelled(), "a flow leaving the land stops at the boundary");
+    }
+
+    @Test
+    void pistonOutsideCannotReachIntoLandEvenWhenTheRuleAllows() {
+        Fixture fx = fixture();
+        ProtectionListener allowing = new ProtectionListener(
+                engineFor(fx.store(), ProtectionActionType.PISTON_MOVE, PermissionState.ALLOW, null));
+        // The piston stands in the wilderness (x=16); the block it pushes and
+        // that block's destination are both inside the land (chunk 0,0).
+        Block piston = blockProxy(fx.world(), 16, 64, 5, Material.PISTON);
+        Block moved = blockProxy(fx.world(), 15, 64, 5, Material.STONE);
+        BlockPistonExtendEvent pushInside =
+                new BlockPistonExtendEvent(piston, List.of(moved), BlockFace.WEST);
+        allowing.onPistonExtend(pushInside);
+        assertTrue(pushInside.isCancelled(),
+                "a piston outside must not rearrange blocks inside the land");
+
+        BlockPistonExtendEvent headOnly =
+                new BlockPistonExtendEvent(piston, List.of(), BlockFace.WEST);
+        allowing.onPistonExtend(headOnly);
+        assertTrue(headOnly.isCancelled(), "the piston head itself must not cross the boundary");
+
+        // Sticky piston two blocks out pulls the block from x=15 (land) to x=16.
+        Block sticky = blockProxy(fx.world(), 17, 64, 5, Material.STICKY_PISTON);
+        BlockPistonRetractEvent pullOut =
+                new BlockPistonRetractEvent(sticky, List.of(moved), BlockFace.WEST);
+        allowing.onPistonRetract(pullOut);
+        assertTrue(pullOut.isCancelled(), "a piston outside must not pull a block out of the land");
+    }
+
+    @Test
+    void pistonInsideOneLandWithoutMovedBlocksStaysVanilla() {
+        Fixture fx = fixture();
+        ProtectionListener allowing = new ProtectionListener(
+                engineFor(fx.store(), ProtectionActionType.PISTON_MOVE, PermissionState.ALLOW, null));
+        Block piston = blockProxy(fx.world(), 5, 64, 5, Material.PISTON);
+        BlockPistonExtendEvent bare = new BlockPistonExtendEvent(piston, List.of(), BlockFace.EAST);
+        allowing.onPistonExtend(bare);
+        assertFalse(bare.isCancelled());
     }
 
     @Test

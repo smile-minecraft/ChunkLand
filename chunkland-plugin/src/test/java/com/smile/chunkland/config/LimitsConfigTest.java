@@ -14,11 +14,11 @@ class LimitsConfigTest {
     void defaultsAreSpecValues() {
         ChunkLandConfig cfg = ChunkLandConfig.defaults();
         assertEquals(5, cfg.limits().maxLandsPerPlayer());
-        assertEquals(256, cfg.limits().maxTotalChunksPerPlayer());
-        assertEquals(128, cfg.limits().maxChunksPerLand());
+        assertEquals(10, cfg.limits().maxTotalChunksPerPlayer());
+        assertEquals(10, cfg.limits().maxChunksPerLand());
         assertEquals(16, cfg.limits().maxSublandsPerLand());
         assertEquals(5, cfg.limits().valueFor(LimitType.MAX_LANDS_PER_PLAYER));
-        assertEquals(256, cfg.limits().valueFor(LimitType.MAX_TOTAL_CHUNKS_PER_PLAYER));
+        assertEquals(10, cfg.limits().valueFor(LimitType.MAX_TOTAL_CHUNKS_PER_PLAYER));
     }
 
     @Test
@@ -26,7 +26,7 @@ class LimitsConfigTest {
         String yaml = "worlds: {}\n";
         ChunkLandConfig cfg = ConfigSchema.parseYamlText(yaml);
         assertEquals(5, cfg.limits().maxLandsPerPlayer());
-        assertEquals(256, cfg.limits().maxTotalChunksPerPlayer());
+        assertEquals(10, cfg.limits().maxTotalChunksPerPlayer());
     }
 
     @Test
@@ -44,7 +44,7 @@ class LimitsConfigTest {
         String yaml = "limits:\n  max-lands-per-player: 7\n";
         ChunkLandConfig cfg = ConfigSchema.parseYamlText(yaml);
         assertEquals(7, cfg.limits().maxLandsPerPlayer());
-        assertEquals(256, cfg.limits().maxTotalChunksPerPlayer(), "missing keys must default");
+        assertEquals(10, cfg.limits().maxTotalChunksPerPlayer(), "missing keys must default");
     }
 
     @Test
@@ -138,8 +138,8 @@ class LimitsConfigTest {
         String yaml = "worlds:\n  world:\n    claim-enabled: true\n";
         ChunkLandConfig cfg = ConfigSchema.parseYamlText(yaml);
         assertEquals(5, cfg.limits().maxLandsPerPlayer());
-        assertEquals(256, cfg.limits().maxTotalChunksPerPlayer());
-        assertEquals(128, cfg.limits().maxChunksPerLand());
+        assertEquals(10, cfg.limits().maxTotalChunksPerPlayer());
+        assertEquals(10, cfg.limits().maxChunksPerLand());
         assertEquals(16, cfg.limits().maxSublandsPerLand());
     }
 
@@ -154,8 +154,8 @@ class LimitsConfigTest {
     void topLevelLimitsEmptyMapStillDefaults() {
         ChunkLandConfig cfg = ConfigSchema.parseYamlText("limits: {}\n");
         assertEquals(5, cfg.limits().maxLandsPerPlayer());
-        assertEquals(256, cfg.limits().maxTotalChunksPerPlayer());
-        assertEquals(128, cfg.limits().maxChunksPerLand());
+        assertEquals(10, cfg.limits().maxTotalChunksPerPlayer());
+        assertEquals(10, cfg.limits().maxChunksPerLand());
         assertEquals(16, cfg.limits().maxSublandsPerLand());
     }
 

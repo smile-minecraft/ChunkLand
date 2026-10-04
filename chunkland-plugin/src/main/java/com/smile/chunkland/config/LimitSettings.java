@@ -7,8 +7,8 @@ import java.util.Objects;
  * Immutable typed view of {@code config.yml::limits}.
  *
  * <p>All values are explicit integers, non-negative, with fixed defaults:
- * {@code max-lands-per-player=5}, {@code max-total-chunks-per-player=256},
- * {@code max-chunks-per-land=128}, {@code max-sublands-per-land=16},
+ * {@code max-lands-per-player=5}, {@code max-total-chunks-per-player=10},
+ * {@code max-chunks-per-land=10}, {@code max-sublands-per-land=16},
  * {@code max-selection-side-length=32}, {@code max-selection-chunks=1024}.
  * Zero is allowed (means the operation is fully disabled for that kind).
  * Negative values are rejected. Values are stored as {@code int} to keep the

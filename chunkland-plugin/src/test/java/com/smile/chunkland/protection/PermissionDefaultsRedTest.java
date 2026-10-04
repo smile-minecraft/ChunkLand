@@ -205,8 +205,11 @@ class PermissionDefaultsRedTest {
         assertEquals(PermissionState.ALLOW,
                 engine.decide(UUID.randomUUID(), landId, ProtectionActionType.PLAYER_DAMAGE_PLAYER).outcome());
         assertEquals(PermissionState.DENY,
+                engine.decide(UUID.randomUUID(), landId, ProtectionActionType.EXPLOSION_TERRAIN).outcome(),
+                "rule entries only answer their own rule; other destructive rules stay closed");
+        assertEquals(PermissionState.ALLOW,
                 engine.decide(UUID.randomUUID(), landId, ProtectionActionType.PISTON_MOVE).outcome(),
-                "rule entries only answer their own rule; other mechanics stay fail-closed");
+                "a mechanic with no entry keeps its vanilla built-in default");
     }
 
     // 5) Namespace isolation: a subject world default must not decide rule actions.

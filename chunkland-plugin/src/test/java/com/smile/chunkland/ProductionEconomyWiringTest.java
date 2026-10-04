@@ -3,10 +3,14 @@ package com.smile.chunkland;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.api.land.LandName;
+import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.api.money.Money;
@@ -15,8 +19,11 @@ import com.smile.chunkland.api.money.PricingTier;
 import com.smile.chunkland.claim.ClaimOutcome;
 import com.smile.chunkland.claim.ClaimRequest;
 import com.smile.chunkland.claim.ClaimSaga;
+import com.smile.chunkland.claim.ExpandRequest;
+import com.smile.chunkland.claim.ExpandSaga;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.claim.VaultClaimEconomy;
+import com.smile.chunkland.claim.WorldClaimPolicy;
 import com.smile.chunkland.config.ChunkLandConfig;
 import com.smile.chunkland.config.ConfigSchema;
 import com.smile.chunkland.economy.BukkitVaultBridge;
@@ -28,6 +35,7 @@ import com.smile.chunkland.persistence.LedgerEntry;
 import com.smile.chunkland.persistence.OperationLedger;
 import com.smile.chunkland.persistence.OperationPayload;
 import com.smile.chunkland.persistence.PersistenceStore;
+import com.smile.chunkland.persistence.SqliteChunkRepository;
 import com.smile.chunkland.persistence.SqliteLandRepository;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
@@ -146,7 +154,7 @@ class ProductionEconomyWiringTest {
 
     private ClaimSaga buildSaga(LandRegistryStore registryStore, SelectionSessionManager selections,
             OwnerQuotaService quotas, PricingTable pricing, LogicalReservationRegistry reservations,
-            OperationLedger ledger, VaultClaimEconomy economy,
+            OperationLedger ledger, com.smile.chunkland.claim.ClaimEconomy economy,
             RuntimeRegistryRebuilder rebuilder, ExecutorService async) {
         return ChunkLandPlugin.buildClaimSaga(registryStore, selections, quotas, pricing,
                 reservations, ledger, economy, rebuilder, async);
@@ -178,6 +186,36 @@ class ProductionEconomyWiringTest {
                 Duration.ofMinutes(10),
                 ignored -> Optional.of("world"),
                 SelectionStructureRevisionLookup.unavailable());
+    }
+
+    /** Selections bound to the published snapshot, so a target land resolves. */
+    private SelectionSessionManager newSelections(SelectionStructureRevisionLookup structures) {
+        return new SelectionSessionManager(
+                (playerId, delay, task) -> SelectionTimeoutScheduler.Cancellable.noop(),
+                SelectionVisualizationTaskController.noop(),
+                SelectionNotifier.noop(),
+                (SelectionClock) () -> NOW,
+                Duration.ofMinutes(10),
+                ignored -> Optional.of("world"),
+                structures);
+    }
+
+    /** Live structure-revision source reading the published snapshot. */
+    private static SelectionStructureRevisionLookup liveStructures(LandRegistryStore registryStore) {
+        return landId -> {
+            try {
+                var snapshot = registryStore.snapshot();
+                if (snapshot == null) {
+                    return java.util.OptionalLong.empty();
+                }
+                var land = snapshot.land(landId);
+                return land == null
+                        ? java.util.OptionalLong.empty()
+                        : java.util.OptionalLong.of(land.structureRevision());
+            } catch (RuntimeException unresolved) {
+                return java.util.OptionalLong.empty();
+            }
+        };
     }
 
     private OwnerQuotaService newQuotas() {
@@ -342,6 +380,165 @@ class ProductionEconomyWiringTest {
         }
     }
 
+    private static final String ECONOMY_BODY = """
+              currency:
+                code: EMC
+                scale: 2
+              pricing:
+                tiers:
+                  - until: unbounded
+                    price-per-chunk: 1.00
+            """;
+
+    @Test
+    void purchasesAreOffUnlessTheConfigTurnsThemOn() {
+        ChunkLandConfig silent = ConfigSchema.parseYamlText("economy:\n" + ECONOMY_BODY);
+        ChunkLandConfig off = ConfigSchema.parseYamlText("economy:\n  enabled: false\n" + ECONOMY_BODY);
+        ChunkLandConfig on = ConfigSchema.parseYamlText("economy:\n  enabled: true\n" + ECONOMY_BODY);
+        ChunkLandConfig noSection =
+                ConfigSchema.parseYamlText("limits:\n  max-lands-per-player: 5\n");
+
+        assertFalse(ChunkLandPlugin.purchasesEnabled(silent), "an absent switch means off");
+        assertFalse(ChunkLandPlugin.purchasesEnabled(off));
+        assertFalse(ChunkLandPlugin.purchasesEnabled(noSection), "no economy section means off");
+        assertTrue(ChunkLandPlugin.purchasesEnabled(on));
+        assertTrue(ChunkLandPlugin.purchasesEnabled(null),
+                "a missing config keeps charging so nothing turns free by accident");
+
+        assertTrue(ChunkLandPlugin.claimPricing(off).priceForClaim(0, 10).isZero());
+        assertEquals(EMC, ChunkLandPlugin.claimPricing(off).currency(),
+                "a free claim is still recorded in the configured currency");
+        assertEquals(1000L, ChunkLandPlugin.claimPricing(on).priceForClaim(0, 10).minorUnits());
+
+        VaultClaimEconomy real = new VaultClaimEconomy(new UnavailableVaultBridge(), EMC);
+        assertSame(real, ChunkLandPlugin.claimEconomy(on, real));
+        assertFalse(ChunkLandPlugin.claimEconomy(off, real).chargesClaims());
+        // Purchases off buys free claims and expands, not refunds: the wrapper
+        // stops charging and reports the real provider's availability, so a
+        // shrink or delete that still owes money fails closed instead of
+        // deleting the land and quarantining the refund.
+        assertFalse(ChunkLandPlugin.claimEconomy(off, real).isAvailable(),
+                "the wrapper must not invent an Economy provider that is not there");
+    }
+
+    @Test
+    void economySwitchMustBeABoolean() {
+        assertThrows(com.smile.chunkland.config.ConfigValidationException.class,
+                () -> ConfigSchema.parseYamlText("economy:\n  enabled: maybe\n" + ECONOMY_BODY));
+    }
+
+    @Test
+    void playerClaimIsFreeAndNeedsNoProviderWhilePurchasesAreOff() throws Exception {
+        UUID world = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        ChunkLandConfig off = ConfigSchema.parseYamlText("economy:\n  enabled: false\n" + ECONOMY_BODY);
+        VaultClaimEconomy real = new VaultClaimEconomy(new UnavailableVaultBridge(), EMC);
+        ExecutorService async = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "wiring-free-claim-test");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try (PersistenceStore store = PersistenceStore.open(temp.resolve("wiring-free-claim.db"))) {
+            OperationLedger ledger = new OperationLedger(store);
+            OwnerQuotaService quotas = newQuotas();
+            LogicalReservationRegistry reservations = new LogicalReservationRegistry();
+            LandRegistryStore registryStore = new LandRegistryStore();
+            RuntimeRegistryRebuilder rebuilder =
+                    new RuntimeRegistryRebuilder(new SqliteLandRepository(store), registryStore);
+            SelectionSessionManager selections = newSelections();
+
+            // Same provider with purchases on: fail-closed, exactly as before.
+            ClaimSaga charging = buildSaga(registryStore, selections, quotas, defaultTiers(),
+                    reservations, ledger, real, rebuilder, async);
+            assertEquals("economy.unavailable",
+                    charging.claim(playerClaimRequest(selections, actor, world))
+                            .toCompletableFuture().get(10, TimeUnit.SECONDS).diagnosticKey());
+
+            ClaimSaga free = buildSaga(registryStore, selections, quotas,
+                    ChunkLandPlugin.claimPricing(off), reservations, ledger,
+                    ChunkLandPlugin.claimEconomy(off, real), rebuilder, async);
+            ClaimOutcome outcome = free.claim(playerClaimRequest(selections, actor, world))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+
+            assertEquals(ClaimOutcome.Status.SUCCESS, outcome.status());
+            List<LedgerEntry> rows = ledger.findAll().toCompletableFuture().join();
+            assertEquals(1, rows.size());
+            assertEquals("ACTIVE", rows.get(0).state());
+            assertEquals(0L, rows.get(0).priceMinorUnits(), "a free claim records a zero cost basis");
+        } finally {
+            async.shutdownNow();
+        }
+    }
+
+    @Test
+    void playerExpandIsFreeAndNeedsNoProviderWhilePurchasesAreOff() throws Exception {
+        UUID world = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        LandId land = new LandId(UUID.randomUUID());
+        ChunkKey existing = new ChunkKey(world, 0, 0);
+        ChunkKey added = new ChunkKey(world, 1, 0);
+        ChunkLandConfig off = ConfigSchema.parseYamlText("economy:\n  enabled: false\n" + ECONOMY_BODY);
+        // Same fail-closed provider as the free-claim case: an expand that
+        // charges nothing must not need it.
+        VaultClaimEconomy real = new VaultClaimEconomy(new UnavailableVaultBridge(), EMC);
+        ExecutorService async = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "wiring-free-expand-test");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try (PersistenceStore store = PersistenceStore.open(temp.resolve("wiring-free-expand.db"))) {
+            OperationLedger ledger = new OperationLedger(store);
+            SqliteLandRepository lands = new SqliteLandRepository(store);
+            SqliteChunkRepository chunks = new SqliteChunkRepository(store);
+            OwnerQuotaService quotas = newQuotas();
+            LogicalReservationRegistry reservations = new LogicalReservationRegistry();
+            LandRegistryStore registryStore = new LandRegistryStore();
+            RuntimeRegistryRebuilder rebuilder = new RuntimeRegistryRebuilder(lands, registryStore);
+            SelectionStructureRevisionLookup structures = liveStructures(registryStore);
+            SelectionSessionManager selections = newSelections(structures);
+
+            String displayName = "Home " + land.value().toString().substring(0, 8);
+            lands.save(new LandSnapshot(land, displayName, LandName.normalize(displayName),
+                    OwnerRef.player(actor), world, Set.of(existing), List.of(),
+                    0, 0, NOW, NOW)).toCompletableFuture().get(10, TimeUnit.SECONDS);
+            chunks.addChunk(land, existing, 64, UUID.randomUUID(), 0L)
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            rebuilder.rebuild().toCompletableFuture().get(10, TimeUnit.SECONDS);
+            quotas.setChunkCommitted(OwnerRef.player(actor), 1);
+
+            SelectionSession initial = SelectionSession.initial(
+                    actor, world, SelectionMode.CREATE_LAND,
+                    Optional.of(land), Optional.empty(),
+                    Optional.of(new SelectionPoint(world, 0, 64, 0)),
+                    Optional.of(new SelectionPoint(world, 16, 64, 16)),
+                    0, NOW);
+            SelectionSession stamped = selections.start(initial);
+            SelectionSession live = selections.updateSelection(actor, stamped, new SelectionUpdate(
+                            initial.pointA(), initial.pointB(), Set.of(added), Map.of()))
+                    .orElseThrow();
+
+            ExpandSaga free = ChunkLandPlugin.buildExpandSaga(registryStore, selections, quotas,
+                    ChunkLandPlugin.claimPricing(off), reservations, ledger,
+                    ChunkLandPlugin.claimEconomy(off, real), rebuilder, async,
+                    structures, WorldClaimPolicy.allowAll());
+            ClaimOutcome outcome = free.expand(new ExpandRequest(OwnerRef.player(actor), actor, world,
+                    land, live.selectedChunks(), live.selectionRevision(),
+                    live.sessionGeneration(), live.baseStructureRevision()))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+
+            assertEquals(ClaimOutcome.Status.SUCCESS, outcome.status());
+            List<LedgerEntry> rows = ledger.findAll().toCompletableFuture().join();
+            assertEquals(1, rows.size());
+            assertEquals("ACTIVE", rows.get(0).state());
+            assertEquals(0L, rows.get(0).priceMinorUnits(), "a free expand records a zero price");
+            assertEquals(0L, chunks.factsByLand(land).toCompletableFuture()
+                    .get(10, TimeUnit.SECONDS).get(added).costBasisMinorUnits(),
+                    "a free expand records a zero cost basis on the new chunk");
+        } finally {
+            async.shutdownNow();
+        }
+    }
+
     @Test
     void economyCurrencyFollowsTypedConfig() {
         ChunkLandConfig withEconomy = ConfigSchema.parseYamlText("""
@@ -375,6 +572,11 @@ class ProductionEconomyWiringTest {
         }
 
         assertTrue(config.economy() != null, "bundled config must carry an economy section");
+        assertFalse(config.economy().enabled(), "purchases ship switched off");
+        assertFalse(ChunkLandPlugin.purchasesEnabled(config));
+        assertEquals(10, config.limits().maxTotalChunksPerPlayer());
+        assertEquals(10, config.limits().maxChunksPerLand());
+        assertEquals(5, config.limits().maxLandsPerPlayer());
         assertEquals(EMC, config.economy().currency());
         assertEquals(4, config.economy().pricing().tiers().size());
         assertEquals(2000L, config.economy().pricing().priceForClaim(0, 20).minorUnits());

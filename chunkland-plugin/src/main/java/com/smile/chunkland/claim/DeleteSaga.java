@@ -60,6 +60,12 @@ import java.util.concurrent.Executor;
  * NEEDS_RECONCILIATION} for operator reconciliation instead of resending.
  * Server Land moves no money and never calls Economy.
  *
+ * <p>Economy gate: a refund needs a provider only when the derived amount is
+ * positive, so the check runs after the durable bases are read and fails closed
+ * with {@code delete.economy_unavailable} before the ledger row and the domain
+ * commit. A zero refund moves no money and settles without a provider, so a
+ * server with purchases switched off can still delete land it never charged for.
+ *
  * <p>The provider cannot dedup deposits (Vault Legacy drops the idempotency
  * key at the bridge), so cross-restart exactly-once rests solely on this
  * ledger ordering: never resend a parked row. See the execution-intent note
@@ -178,17 +184,6 @@ public final class DeleteSaga {
             return completed(DeleteOutcome.failed("delete.validation_failed"));
         }
         final boolean serverOwned = plan.owner() instanceof OwnerRef.ServerOwnerRef;
-        if (!serverOwned) {
-            boolean available;
-            try {
-                available = economy.isAvailable();
-            } catch (RuntimeException failure) {
-                available = false;
-            }
-            if (!available) {
-                return completed(DeleteOutcome.rejected("delete.economy_unavailable"));
-            }
-        }
         // Public Pre: synchronous veto before reservations, the ledger row,
         // the domain commit and any Economy refund. A veto (or any dispatch
         // failure, which fails closed) rejects with zero side effects.
@@ -231,6 +226,16 @@ public final class DeleteSaga {
         } catch (RuntimeException failure) {
             release(reservationKeys, operationId);
             return completed(DeleteOutcome.failed("delete.validation_failed"));
+        }
+        // A refund only needs an Economy provider when it actually pays out, so the
+        // provider gate belongs here: the durable bases are read and the refund
+        // is derived above, and a positive amount with no provider fails closed
+        // before the ledger row, the domain commit and any deposit. A zero
+        // refund (Server Land, or chunks bought while purchases were off) moves
+        // no money and settles without one.
+        if (materials.refundAmount() > 0L && !refundProviderReady()) {
+            release(reservationKeys, operationId);
+            return completed(DeleteOutcome.rejected("delete.economy_unavailable"));
         }
         CompletionStage<Void> created;
         try {
@@ -538,6 +543,19 @@ public final class DeleteSaga {
                     post.actorUuid(), post.refundMinorUnits(), true));
         } catch (Throwable ignored) {
             // Post dispatch must never break the committed delete path.
+        }
+    }
+
+    /**
+     * Whether a provider that can move money exists right now. An economy that
+     * cannot answer fails closed, so a missing provider is never mistaken for a
+     * free one.
+     */
+    private boolean refundProviderReady() {
+        try {
+            return economy.isAvailable();
+        } catch (RuntimeException failure) {
+            return false;
         }
     }
 

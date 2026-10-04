@@ -150,6 +150,74 @@ public final class CrossBoundaryDecider {
         }
     }
 
+    /**
+     * Two-ended check for a piston, fluid or hopper step between two blocks.
+     * A step that stays inside one land reads the in-land action at both
+     * blocks, so the covering subland decides first at each end. A step
+     * that touches a land boundary reads the directional actions instead:
+     * the in-land rule never decides what crosses in or out.
+     *
+     * <p>Classification and every decision share the one snapshot taken on
+     * entry. Any failure denies (fail-closed).
+     *
+     * @param insideAction action read at both ends when they share one land
+     * @param inAction     directional action read at the destination land
+     * @param outAction    directional action read at the source land
+     * @return {@code true} when the step must be denied
+     */
+    public static boolean mechanicDenied(ProtectionEngine engine, UUID worldId,
+                                         int srcBlockX, int srcBlockY, int srcBlockZ,
+                                         int dstBlockX, int dstBlockY, int dstBlockZ,
+                                         ProtectionActionType insideAction,
+                                         ProtectionActionType inAction,
+                                         ProtectionActionType outAction) {
+        Objects.requireNonNull(engine, "engine");
+        Objects.requireNonNull(worldId, "worldId");
+        Objects.requireNonNull(insideAction, "insideAction");
+        Objects.requireNonNull(inAction, "inAction");
+        Objects.requireNonNull(outAction, "outAction");
+        if (!engine.isRegistryReady()) {
+            return true;
+        }
+        try {
+            LandRegistry snapshot = engine.snapshot();
+            if (snapshot == null) {
+                return true;
+            }
+            Relation relation = relation(snapshot, worldId,
+                    srcBlockX >> 4, srcBlockZ >> 4, dstBlockX >> 4, dstBlockZ >> 4);
+            return switch (relation) {
+                case WILDERNESS -> false;
+                case SAME_LAND ->
+                        deniedAtBlock(snapshot, engine, worldId,
+                                srcBlockX, srcBlockY, srcBlockZ, insideAction)
+                                || deniedAtBlock(snapshot, engine, worldId,
+                                        dstBlockX, dstBlockY, dstBlockZ, insideAction);
+                case WILD_TO_LAND ->
+                        deniedAtBlock(snapshot, engine, worldId,
+                                dstBlockX, dstBlockY, dstBlockZ, inAction);
+                case LAND_TO_WILD ->
+                        deniedAtBlock(snapshot, engine, worldId,
+                                srcBlockX, srcBlockY, srcBlockZ, outAction);
+                case CROSS_LAND ->
+                        deniedAtBlock(snapshot, engine, worldId,
+                                srcBlockX, srcBlockY, srcBlockZ, outAction)
+                                || deniedAtBlock(snapshot, engine, worldId,
+                                        dstBlockX, dstBlockY, dstBlockZ, inAction);
+            };
+        } catch (RuntimeException ex) {
+            return true;
+        }
+    }
+
+    private static boolean deniedAtBlock(LandRegistry snapshot, ProtectionEngine engine, UUID worldId,
+                                         int blockX, int blockY, int blockZ,
+                                         ProtectionActionType action) {
+        return engine.decideAtBlockOnSnapshot(ProtectionListener.ENVIRONMENT_ACTOR,
+                worldId, blockX, blockY, blockZ, action, snapshot).outcome()
+                == PermissionState.DENY;
+    }
+
     private static boolean deniedAt(LandRegistry snapshot, ProtectionEngine engine, UUID worldId,
                                     int blockX, int blockZ, ProtectionActionType action) {
         return engine.decideAtOnSnapshot(ProtectionListener.ENVIRONMENT_ACTOR,
