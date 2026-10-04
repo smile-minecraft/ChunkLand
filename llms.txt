@@ -1,0 +1,57 @@
+# ChunkLand
+
+> Land-claim plugin for Folia 26.2. Players fence off a claim with a selection wand; every attempt to break, place, open, use, fight inside, or enter that claim is then decided individually rather than by a one-time check when the chunk loads.
+
+Source version in this checkout: **0.1.0**. No release has been published, so the jar is built from a checkout. Supports **Folia 26.2** on **Java 25** with **AceLib 1.3.0** required. Paper is not a supported runtime. All permission nodes default to `op`.
+
+## Start here
+
+- [README (English)](https://github.com/smile-minecraft/ChunkLand/blob/main/README.md): what the plugin decides, how to build and install it, and the two defaults to change before opening a server.
+- [Documentation index (English)](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/README.md): pick the guide by what you are doing.
+- [Limitations (English)](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/limitations.md): confirmed broken or incomplete behaviour, with workarounds.
+- [llms-full.txt](https://github.com/smile-minecraft/ChunkLand/blob/main/llms-full.txt): the reference material bundled into a single file.
+
+## Other languages
+
+Every guide exists in English, Traditional Chinese and Simplified Chinese with identical file names.
+
+- [Traditional Chinese index](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/zh-TW/README.md)
+- [Simplified Chinese index](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/zh-CN/README.md)
+- [README (繁體中文)](https://github.com/smile-minecraft/ChunkLand/blob/main/README.zh-TW.md)
+- [README (简体中文)](https://github.com/smile-minecraft/ChunkLand/blob/main/README.zh-CN.md)
+
+## Guides
+
+- [User guide (English)](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/user-guide.md): claiming land, expanding and shrinking, trust and bans, sublands, the management screen, and what a refusal looks like.
+- [Server guide (English)](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/server-guide.md): installation, configuration changes and restarts, granting permissions, pricing, backups, and recovery when the config file is corrupt or missing.
+- [Developer guide (English)](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/developer-guide.md): building locally, depending on the local jars, the two entry points, and the Folia threading rules inside event listeners.
+
+## Reference
+
+- [Commands](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/reference/commands.md): every `/land` and `/chunkland` subcommand with usage and permission node, plus how player references are resolved.
+- [Configuration](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/reference/configuration.md): every `config.yml` key with its default, accepted range and effect.
+- [Permissions](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/reference/permissions.md): the 29 nodes and what each one gates.
+- [API](https://github.com/smile-minecraft/ChunkLand/blob/main/docs/en/reference/api.md): `ChunkLandApi`, the event bus, domain types, and the two methods that are not wired to production data.
+
+## Project
+
+- [CHANGELOG.md](https://github.com/smile-minecraft/ChunkLand/blob/main/CHANGELOG.md): what changed.
+- [CONTRIBUTING.md](https://github.com/smile-minecraft/ChunkLand/blob/main/CONTRIBUTING.md): build and test commands, module rules, documentation rules.
+- [LICENSE](https://github.com/smile-minecraft/ChunkLand/blob/main/LICENSE): MIT.
+
+## Notes for agents integrating with ChunkLand
+
+- There is no published artifact, no Maven coordinate and no JitPack entry. Depend on `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar` from a local build with `compileOnly`, and declare `depend: [ChunkLand]` in your own `plugin.yml`. Bundling the jar is wrong — the server already loads it.
+- ChunkLand does **not** register itself in Bukkit's `ServicesManager`. `getRegistration(ChunkLandApi.class)` returns `null`. Get the API from the plugin instance instead: `((ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand")).getReadApi()`.
+- `getReadApi()` never returns `null`. It returns a holder that reads as an empty registry before the first enable and after disable, and it keeps observing later changes, so it is safe to cache for the lifetime of one enable.
+- `publicEventBus()` is `null` **only** before the first enable. A disable does not clear it: the accessor keeps handing back the previous enable's bus, and that stale bus silently receives no further events. Register listeners on a handle you acquired in the current enable, and re-acquire after every enable — do not carry a handle across a disable, because it goes quiet instead of throwing.
+- Four of the six `ChunkLandApi` methods work: `getLandSnapshot`, `getSubLandSnapshot`, `getOwner`, `getProtectionDepth`. Two do not: `can(UUID, LandId, ProtectionActionType)` always returns `false` and `getRule(LandId, LandRuleType)` always returns empty, because `getReadApi()` injects a permission-context provider that returns `null` and a rule lookup that returns `Optional.empty()`. Do not build features on those two.
+- Every read takes exactly one volatile snapshot, does no I/O, never loads a chunk, and returns immutable values. It is safe to call from any thread. There is no way to observe a half-applied mutation through it.
+- Event dispatch is synchronous on the publishing thread. A throwing Pre listener cancels the mutation and it produces zero side effects; a throwing Post listener is logged and isolated while the committed mutation stands.
+- Event listeners must return immediately: no blocking, no I/O, no waiting, and no Bukkit world access outside the matching Folia thread. Post listeners run on the async continuation after the commit.
+- There is no supported write entry point. The type `com.smile.chunkland.api.mutation.ChunkLandMutations` exists and declares `submit(MutationRequest)`, and the plugin contains an implementation of it, but `ChunkLandPlugin` exposes no accessor for it — only `getReadApi()` and `publicEventBus()`. Do not plan on a programmatic claim.
+- Player references in commands accept a raw UUID, then an exact case-sensitive online name, then an offline-player lookup that runs on an async executor and only answers for players the server already knows. Names that never joined do not resolve.
+- Protection is fail-closed: until the registry is hydrated, an empty result means unknown, not wilderness, and the answer is deny.
+- Land rules — PVP, explosions, fire, mob griefing, fluid flow, pistons, hopper transfer, mob spawning — cannot be changed from any interface. The `rule-defaults` block in `config.yml` is a commented example and is not wired.
+- Entry defaults to `ALLOW`. Strangers can walk into a loaded claim until the operator sets `subject-defaults.global.ENTRY: DENY`. Entry bans override the default in the other direction.
+- There is no reload command. Configuration changes need a server restart.

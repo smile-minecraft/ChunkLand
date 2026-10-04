@@ -1,9 +1,12 @@
-# 企劃書與實作參考文件（僅本機保留，不上傳到 repo）
+# 企劃書與內部決策文件（僅本機保留，不上傳到 repo）
 企劃書/
-docs/
+.project-doc/
+
+# 公開文件（docs/）照常追蹤，不在此忽略清單
 
 # OpenCode 工作狀態（計畫、任務登記、專案記憶）
 .opencode/
+.ultrawork/
 
 # Gradle / Java 編譯輸出（多模組 build、bin 與 Gradle 本機快取）
 **/build/

@@ -1,0 +1,348 @@
+# ChunkLand — bundled reference
+
+> Single-file bundle of ChunkLand's English reference material, for language models that would rather read one document than follow links. The per-page documents under `docs/en/` are canonical; if this file and a page disagree, the page is right.
+>
+> Source version in this checkout: **0.1.0**. No release has been published. Supported runtime: **Folia 26.2** on **Java 25**, with **AceLib 1.3.0** required. Paper is not supported. The `api-version: '26.1.2'` in `plugin.yml` and the paper-api 26.1.2 compile dependency are build markers, not a compatibility claim.
+
+## What the plugin is
+
+A land-claim plugin for Folia. Players fence off a claim with a selection wand, and from then on each attempt to break, place, open, use, fight inside, or enter that claim is decided individually at the moment it happens. Claims are chunk-aligned rectangles. Claims can grow, shrink, be released, renamed and deleted; paid chunks are refunded.
+
+## Obtaining and installing
+
+No published artifact, no Maven coordinate, no JitPack entry. Build from a checkout:
+
+```bash
+./scripts/build-acelib.sh          # AceLib 1.3.0 into $XDG_CACHE_HOME/chunkland-acelib, SHA-256 verified
+./gradlew build --no-daemon --console=plain
+```
+
+Output: `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar` — self-contained, with `chunkland-api`, SQLite and SnakeYAML embedded. `chunkland-api/build/libs/chunkland-api-0.1.0.jar` is produced alongside. Copy the plugin jar into `plugins/`. AceLib must already be in `plugins/` because `plugin.yml` declares `depend: [AceLib]`.
+
+First start creates `plugins/ChunkLand/` with `config.yml`, `config-last-known-good.yml`, `lang/en_US.yml`, `lang/zh_TW.yml` and `chunkland.db` (SQLite — all land, chunk, permission and ledger data). Language files are written only when missing and never overwritten, so keys added by a later version come from the jar while your existing values stay.
+
+**There is no reload command.** Edit `config.yml`, restart. Bukkit `/reload` is not supported either.
+
+Optional plugins: a Vault-ecosystem economy plugin for claim pricing, LuckPerms for quota metadata, CoreProtect for `/land history`. None are required; the plugin starts without them and the corresponding features report unavailable.
+
+## The three things that surprise people
+
+**Entry is allowed by default.** `subject-defaults.global.ENTRY: ALLOW` means an unbanned stranger can walk into a loaded claim. Entry bans still deny, because a ban is decided at the land binding layer with deny priority. Set `ENTRY: DENY` to close claims to everyone who is not trusted.
+
+**The eleven land rules cannot be changed.** PVP, terrain explosion, entity explosion, fire spread, fire burn, mob griefing, fluid flow, pistons, hopper transfer, hostile mob spawning and passive mob spawning run on built-in defaults — everything denied except passive mob spawning. The `rule-defaults` block in `config.yml` is a commented example that is not wired to anything.
+
+**All 29 permission nodes default to `op`.** A regular player cannot claim land, trust a member or open the management screen until an operator grants the node explicitly.
+
+## Commands
+
+`/land` and `/chunkland`. "Player" means the command is refused from the console.
+
+### Land actions
+
+| Subcommand | Usage | Permission |
+| --- | --- | --- |
+| `help` | `/land help [subcommand]` | `chunkland.command.land.help` |
+| `wand` | `/land wand` | `chunkland.command.land.wand` |
+| `claim` | `/land claim <land_name>` | `chunkland.command.land.claim` |
+| `confirm` | `/land confirm <generation> <revision> <land_name>` | `chunkland.command.land.confirm` |
+| `expand` | `/land expand` | `chunkland.command.land.expand` |
+| `shrink` | `/land shrink` | `chunkland.command.land.shrink` |
+| `unclaim` | `/land unclaim` | `chunkland.command.land.shrink` |
+| `rename` | `/land rename <new_name>` | `chunkland.command.land.rename` |
+| `delete` | `/land delete confirm <revision>` | `chunkland.command.land.delete` |
+| `subland` | `/land subland (select\|create\|update\|delete\|extend) [generation revision] [name]` | `chunkland.command.land.subland` |
+
+`claim` alone proposes; `confirm` commits. `shrink` and `unclaim` share one node.
+
+### Permissions on a land
+
+| Subcommand | Usage | Permission |
+| --- | --- | --- |
+| `trust` | `/land trust <player>` | `chunkland.command.land.trust` |
+| `untrust` | `/land untrust <player>` | `chunkland.command.land.untrust` |
+| `ban` | `/land ban <player>` | `chunkland.command.land.ban` |
+| `unban` | `/land unban <player>` | `chunkland.command.land.unban` |
+| `default` | `/land default <action> [ALLOW\|DENY\|INHERIT]` | `chunkland.command.land.default` |
+| `binding` | `/land binding (bind\|unbind) player <player> <profile>` | `chunkland.command.land.binding` |
+| `binding` | `/land binding (bind\|unbind) group <group> <profile> [--in-subland]` | `chunkland.command.land.binding` |
+
+### Groups, profiles, queries, administration
+
+| Subcommand | Usage | Permission |
+| --- | --- | --- |
+| `group` | `/land group create <group>` | `chunkland.command.land.group` |
+| `group` | `/land group list` | `chunkland.command.land.group` |
+| `group` | `/land group add <group> <player>` | `chunkland.command.land.group` |
+| `group` | `/land group remove <group> <player>` | `chunkland.command.land.group` |
+| `group` | `/land group delete <group>` | `chunkland.command.land.group` |
+| `profile` | `/land profile create <profile>` | `chunkland.command.land.profile` |
+| `profile` | `/land profile list` | `chunkland.command.land.profile` |
+| `profile` | `/land profile set <profile> <action> <state>` | `chunkland.command.land.profile` |
+| `profile` | `/land profile delete <profile>` | `chunkland.command.land.profile` |
+| `explain` | `/land explain <action>` | `chunkland.command.land.explain` |
+| `inspect` | `/land inspect [player]` | `chunkland.command.land.inspect` |
+| `log` | `/land log [u:<player-uuid>] [t:<duration>] [a:<action>] [land:<land-uuid>] [world:<world-uuid>] [limit:<n>] [page:<n>]` | `chunkland.command.land.log` |
+| `history` | `/land history` | `chunkland.command.land.history` |
+| `manage` | `/land manage` | `chunkland.command.land.manage` |
+| `bypass` | `/land bypass [on\|off]` | `chunkland.admin.bypass` |
+| `admin` | `/land admin ledger list [state]` / `show [operation]` / `resolve <operation> [RESOLVED\|REFUNDED\|IGNORED]` | `chunkland.admin.ledger` |
+| `admin` | `/land admin orphan list` | `chunkland.admin.orphan` |
+| `admin` | `/land admin orphan purge <world-uuid> confirm <nonce>` | `chunkland.admin.orphan` |
+
+`explain`, `inspect` and `manage` require standing inside a land you manage. `<action>` matches `ProtectionActionType` names case-insensitively and must be exact; tab completion offers valid names by prefix. `orphan purge` is irreversible and does not refund.
+
+### Diagnostics
+
+| Subcommand | Usage | Permission |
+| --- | --- | --- |
+| `m0message` | `/chunkland m0message [locale]` | `chunkland.debug.m0message` |
+| `m0test` | `/chunkland m0test [scheduler\|gui\|form\|cancelall]` | `chunkland.debug.m0test` |
+| `viz` | `/chunkland viz <start\|stop\|status>` | `chunkland.debug.visualization` |
+
+### Player reference resolution
+
+Raw UUID text first. Then an exact, case-sensitive online name. Then an offline-player lookup on an async executor, which may block on a profile request and fails closed on timeout. It only answers for players the server already knows — has played before, or is online. Everything else reports an unknown target. There is no partial-name matching.
+
+## Permissions
+
+29 nodes, all `default: op`. Enforcement is on the subcommand, not on the land; who a player may actually trust is decided separately by the land's own permission layers.
+
+22 land nodes: `help`, `wand`, `claim`, `confirm`, `trust`, `untrust`, `default`, `ban`, `unban`, `binding`, `group`, `profile`, `subland`, `expand`, `shrink`, `rename`, `delete`, `explain`, `inspect`, `log`, `history`, `manage` — all under `chunkland.command.land.`.
+
+4 admin nodes: `chunkland.admin.bypass` (separate by design — holding it never grants ledger, orphan or steward powers, and holding those never grants bypass), `chunkland.admin.ledger`, `chunkland.admin.orphan`, `chunkland.admin.serverland` (stewardship over the server's own land; not bound to a `/land` subcommand).
+
+3 debug nodes: `chunkland.debug.m0message`, `chunkland.debug.m0test`, `chunkland.debug.visualization`.
+
+## Configuration
+
+Every accepted top-level key is validated on load. An unrecognised top-level key fails the load loudly rather than being ignored.
+
+### messages
+
+| Key | Default |
+| --- | --- |
+| `messages.default-locale` | `en_US` (bundled: `en_US`, `zh_TW`) |
+| `messages.cooldown-seconds` | `2` |
+
+### audit
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `audit.retention-days` | `180` | `0` keeps forever and runs no purge. Otherwise deletes audit rows strictly older than the cutoff, in batches on the persistence thread. Land, chunk and ledger rows are never touched |
+
+### economy
+
+| Key | Default |
+| --- | --- |
+| `economy.currency.code` | `EMC` |
+| `economy.currency.scale` | `2` (100 minor = 1 major) |
+
+Default tiers, priced per chunk by the owner's total chunk count across all Player Lands (never Server Land), where each `until` is exclusive on the previous bound `(previousUntil, until]`:
+
+| Range | Price per chunk |
+| --- | --- |
+| first 20 | `1.00` |
+| 20–50 | `2.00` |
+| 50–100 | `4.00` |
+| beyond 100 (`unbounded`) | `8.00` |
+
+The table must stay a contiguous partition ending in `unbounded`; a gap, overlap, negative, non-finite or overflowing entry fails the load and keeps the previous snapshot, so player claims fail closed instead of being repriced. Refunds always come from the durable per-chunk cost basis, never from the tiers, so editing tiers never changes a past refund. Do not change `currency.scale` while the ledger holds rows.
+
+### limits
+
+| Key | Default |
+| --- | --- |
+| `limits.max-lands-per-player` | `5` |
+| `limits.max-total-chunks-per-player` | `256` |
+| `limits.max-chunks-per-land` | `128` |
+| `limits.max-sublands-per-land` | `16` |
+| `limits.max-selection-side-length` | `32` |
+| `limits.max-selection-chunks` | `1024` |
+| `limits.max-decision-cache-entries` | `4096` (`0` disables reuse; every decision recomputes, still fail-closed) |
+
+`/land inspect` reports which limit applied and which layer it came from — this file, LuckPerms metadata, or the built-in default.
+
+### selection
+
+| Key | Default | Range |
+| --- | --- | --- |
+| `selection.session-timeout-seconds` | `600` | — |
+| `selection.visualization-max-segments` | `256` | 1–4096 |
+| `selection.visualization-max-particles-per-tick` | `512` | 1–1024 |
+| `selection.visualization-render-distance-blocks` | `64` | 8–128 |
+| `selection.visualization-refresh-interval-ticks` | `10` | 1–200 |
+
+Player-scoped, never queries terrain.
+
+### feedback
+
+Shown to the denied player only; changes nothing about what is allowed.
+
+| Key | Default | Range |
+| --- | --- | --- |
+| `feedback.entry-wall-enabled` | `true` | — |
+| `feedback.entry-wall-radius-blocks` | `6` | 2–16 |
+| `feedback.entry-wall-particle-size-percent` | `160` | 25–400 (100 = vanilla) |
+| `feedback.entry-wall-points-per-block` | `2` | 1–4 |
+| `feedback.entry-wall-cooldown-millis` | `2000` | 100–60000 |
+| `feedback.action-mark-enabled` | `true` | — |
+| `feedback.action-mark-particle-size-percent` | `110` | 25–400 |
+| `feedback.action-mark-cooldown-millis` | `400` | 100–60000 |
+| `feedback.push-out-distance-blocks` | `3` | 1–8 |
+| `feedback.push-out-cooldown-millis` | `500` | 100–60000 |
+
+Keep the push-out cooldown at or below the time a player needs to walk the distance back — about 500 ms for 3 blocks — or the player is held on cancelled moves and the screen stutters.
+
+Landing spots only use already-loaded chunks from the current region; the plugin never loads a chunk to find one. With no safe spot it falls back to the pre-entry position, then to cancelling the move.
+
+### worlds
+
+| Key | Default |
+| --- | --- |
+| `worlds.<name>.claim-enabled` | `true` for unlisted worlds |
+| `worlds.<name>.vertical-mode` | `PER_CHUNK_DEPTH` or `FULL_HEIGHT` |
+
+Shipped: `world` claim-enabled; `world_nether` and `world_the_end` disabled. Switching `vertical-mode` changes how effective depth is read and never migrates or rewrites stored depths. World names are case-sensitive; unknown worlds warn and are ignored.
+
+### subject-defaults
+
+Answers "may this actor act?" per `ProtectionActionType`. Separate from `rule-defaults`, which answers "can this mechanic happen here?" per `LandRuleType`; the two never fall back to each other.
+
+Shape: `subject-defaults.global.<ACTION>` and `subject-defaults.worlds.<world>.<ACTION>`, values `ALLOW` / `DENY` / `INHERIT`. A missing section, a missing entry or an explicit `INHERIT` all mean fall through to the next resolver layer, ending at implicit `DENY`. Action keys are case-insensitive. Land bindings, land defaults and subland layers are not configured here — no durable source is wired, so they stay `INHERIT`.
+
+### rule-defaults
+
+Documented in the shipped file as a commented example. **Not wired to anything.** Editing it has no effect.
+
+## Configuration sources and recovery
+
+- **File present but unreadable, unparseable or invalid** → falls back to the last-known-good copy; with no usable copy, to a deliberately conservative configuration. This path never substitutes the built-in defaults, and protection is never silently widened.
+- **File missing, fresh install** (no trace of previous use) → generates `config.yml` from built-in defaults and starts on it. Once.
+- **File missing after previous use** → no default file generated; last-known-good copy, or the conservative configuration.
+
+The conservative configuration can be **stricter**: new claims disabled in every world, economy operations disabled so pricing is unavailable, protection coverage tightened with deny as the default. Deliberate — a corrupt or missing file must not quietly relax protection.
+
+Console output: `INFO` with the generated file's absolute path and the restart requirement on a fresh install; `ERROR` with the config path, the fallback used, the failing key path (e.g. `worlds.world.vertical-mode`) and that built-in defaults were not used, on corruption or on a missing-after-use file; `WARNING` if the default file cannot be written, in which case the plugin still starts on the in-memory built-in defaults.
+
+Recovery: stop the server, fix `plugins/ChunkLand/config.yml` or restore the missing settings, start the server. The original file is never overwritten, deleted or renamed on failure.
+
+> This behaviour is confirmed at the code and automated-test level. It has not been re-verified on a live server: generating the file, console wording, and the full repair-restart-apply cycle have not been run.
+
+## API
+
+There is no published artifact, no Maven coordinate, and **no `ServicesManager` registration**. Depend on the locally built jar with `compileOnly` and declare `depend: [ChunkLand]`.
+
+```java
+ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand");
+ChunkLandApi api = plugin.getReadApi();           // never null; empty view before enable and after disable
+ChunkLandEventBus bus = plugin.publicEventBus();  // null only before the first enable
+```
+
+| Accessor | Nullability | Lifetime |
+| --- | --- | --- |
+| `getReadApi()` | Never null | Safe to cache; reads the live snapshot each call, so later changes are visible. A cached handle keeps returning empty after disable rather than reviving on the next enable |
+| `publicEventBus()` | `null` only before the first enable. A disable leaves the previous bus in place, so a stale handle is non-null but permanently silent | Acquire it per enable. Re-acquire after every enable and never keep a handle across a disable |
+
+### ChunkLandApi
+
+```java
+Optional<LandSnapshot> getLandSnapshot(LandId landId);
+Optional<SubLandSnapshot> getSubLandSnapshot(SubLandId subLandId);
+Optional<OwnerRef> getOwner(LandId landId);
+boolean can(UUID actor, LandId landId, ProtectionActionType action);
+Optional<PermissionState> getRule(LandId landId, LandRuleType rule);
+Optional<Integer> getProtectionDepth(LandId landId);
+```
+
+| Method | Wired | Notes |
+| --- | --- | --- |
+| `getLandSnapshot` | Yes | Empty for unknown id |
+| `getSubLandSnapshot` | Yes | Searches the snapshot's subland indexes |
+| `getOwner` | Yes | Derived from the land snapshot |
+| `getProtectionDepth` | Yes | `PER_CHUNK_DEPTH` lands report their stored minimum depth; `FULL_HEIGHT` lands report the world minimum. Reads never rewrite stored depths |
+| `can` | **No** | Always `false` |
+| `getRule` | **No** | Always `Optional.empty()` |
+
+`can` and `getRule` are not backed by production data: `getReadApi()` injects a permission-context provider returning `null` and a rule lookup returning `Optional.empty()`. `can()` maps a `null` context to `false`; `getRule()` has nothing to report. Both are fail-closed answers working as designed. Do not build features on them — for diagnosis, have a player in the land run `/land explain <action>`.
+
+Contract for all six: callable from any thread; one volatile snapshot per call; no I/O; never loads a chunk; returns only immutable values. Unknown ids return empty; a null argument throws `NullPointerException`.
+
+### Events
+
+```java
+<E> void register(Class<E> eventType, ChunkLandEventListener<? super E> listener);
+<E> void unregister(Class<E> eventType, ChunkLandEventListener<? super E> listener);
+<E> void publish(E event);   // called by ChunkLand
+```
+
+Dispatch is synchronous on the publishing thread. Pre events run before any economy or durable side effect; a throwing Pre listener cancels the mutation, which then produces zero side effects. Post events run after the durable commit and the runtime snapshot publish; a throwing Post listener is caught, logged and isolated, and the committed mutation stands.
+
+Listeners must return immediately: no blocking, no I/O, no waiting, no Bukkit world access outside the matching Folia thread. Post listeners run on the async continuation after the commit. `NoopChunkLandEventBus.instance()` is the inert implementation for tests.
+
+There are 16 event types in `com.smile.chunkland.api.event`: `LandCreatePreEvent`, `LandCreatePostEvent`, `LandDeletePreEvent`, `LandDeletePostEvent`, `LandChunkAddPreEvent`, `LandChunkAddPostEvent`, `LandChunkRemovePreEvent`, `LandChunkRemovePostEvent`, `SubLandPreEvent`, `SubLandPostEvent`, `LandEnterEvent`, `LandLeaveEvent`, `SubLandEnterEvent`, `SubLandLeaveEvent`, `PermissionChangedEvent`, `RuleChangedEvent`. The five `*PreEvent` types are cancellable. **`RuleChangedEvent` is declared and wired on both channels but never fired** — land rules have no writable interface, so nothing constructs it and a listener for it never runs.
+
+Each public event also has a Bukkit view class under `com.smile.chunkland.event.bukkit`, named after the event with the suffix changed: `LandCreatePostEvent` → `LandCreatePostBukkitEvent`, `PermissionChangedEvent` → `PermissionChangedBukkitEvent`. All extend `ChunkLandBukkitEvent`. The views exist for plugins that cannot take a compile-time dependency; `RuleChangedBukkitEvent` is subject to the same never-fired caveat.
+
+### Domain types
+
+`api.land`: `LandId`, `SubLandId`, `LandSnapshot`, `SubLandSnapshot`, `OwnerRef`, `LandName`, `LandNameKey`, `ChunkKey`, `Cuboid`, `SubLandTopologyValidator`, `LandNameUniqueness`.
+`api.permission`: `ProtectionActionType`, `Permission`, `PermissionState`, `PermissionDecision`, `PermissionResolver`, `PermissionContext`, `PermissionSubject`, `PermissionBinding`, `DecisionSource`, `SubjectPermissionTier`.
+`api.rule`: `LandRuleType`, `LandRule`.
+`api.geometry`: `ChunkGeometry`, `BoundaryExtractor`, `BoundarySegment`, `Direction`.
+`api.money`: `Money`, `Currency`, `PricingTable`, `PricingTier`, `CostBasisCalculator`, `CostBasisAllocation`, `ChunkCoordinate`.
+`api.limit`: `LimitType`, `LimitResult`, `LimitSource`, `ExternalLimitProvider`.
+`api.mutation`: `ChunkLandMutations`, `MutationRequest`, `MutationKind`, `MutationResult`, `MutationOutcome`.
+`api.history`: `HistoryQuery`, `HistoryResult`, `HistoryEntry`, `WorldHistoryProvider`.
+
+`ProtectionActionType` has 40 constants, each declaring the `DecisionSource` it resolves from.
+
+`SUBJECT_PERMISSION` (22): `BLOCK_BREAK`, `BLOCK_PLACE`, `CONTAINER_OPEN`, `WORKSTATION_USE`, `DOOR_USE`, `BUTTON_USE`, `LEVER_USE`, `REDSTONE_USE`, `BUCKET_USE`, `ENTRY`, `VEHICLE_USE`, `ENTITY_INTERACT`, `ENTITY_DAMAGE`, `ITEM_FRAME`, `ARMOR_STAND`, `HANGING_ENTITY`, `FARMLAND_TRAMPLE`, plus `MANAGE_MEMBER`, `MANAGE_PERMISSION`, `MANAGE_SUBLAND`, `EXPAND_LAND`, `DELETE_LAND` — where the owner guarantee applies and the owner always passes without admin bypass.
+
+`LAND_RULE` (18): `PLAYER_DAMAGE_PLAYER`, `PISTON_MOVE`, `FLUID_FLOW`, `HOPPER_TRANSFER`, `FIRE_SPREAD`, `FIRE_BURN`, `EXPLOSION_TERRAIN`, `EXPLOSION_ENTITY`, `MOB_GRIEFING`, `HOSTILE_MOB_SPAWN`, `PASSIVE_MOB_SPAWN`, `BLOCK_MOVE_IN`, `BLOCK_MOVE_OUT`, `FLUID_ENTER`, `FLUID_EXIT`, `ITEM_TRANSFER_IN`, `ITEM_TRANSFER_OUT`, `DISPENSER_CROSS_BOUNDARY`.
+
+`LandRuleType` has 11 values: `PVP`, `EXPLOSION_TERRAIN`, `EXPLOSION_ENTITY`, `FIRE_SPREAD`, `FIRE_BURN`, `MOB_GRIEFING`, `FLUID_FLOW`, `PISTON`, `HOPPER_TRANSFER`, `HOSTILE_MOB_SPAWN`, `PASSIVE_MOB_SPAWN`.
+
+`chunkland-api` is pure domain. A build guard fails the build if it declares any external production dependency — no Bukkit, no SQL, no AceLib.
+
+## Known limitations
+
+Ignition is unprotected — fire spread and burn are blocked, but nothing checks the act of starting a fire, so lava can light one and it must be put out by hand.
+
+Land rules cannot be changed from any interface.
+
+`/land manage` works, and its only remaining limit is that adding from a roster page offers online players only; use `/land trust` or `/land unban` for offline players. Bedrock players get the same operations as forms, and a step with no form yet tells the player to use chat.
+
+Refusal messages on the action bar render in the server's default locale, not per player.
+
+Selection is rectangle-only — per-chunk add and remove is not implemented, and both wand buttons do the same thing. After a subland depth `extend`, run the create or update confirmation once more; the live index refreshes on the next confirmation.
+
+A banned player already inside is not removed immediately — they are pushed out on their next movement, to the nearest verified exit about 3 blocks past the boundary, or the world spawn if no exit exists. Push-out cooldown defaults to 500 ms.
+
+Entry is judged from a movement's start and end points only. A subland thinner than one tick of travel, with start and end both outside it, can be crossed and is not judged. Elytra, ice boats, a trident, a long fall or plugin movement can do this. Damage, placing, containers, interaction and combat after the crossing are still judged per action at the actual position, so crossing grants nothing; land-level bans are whole-chunk and cannot be crossed; walking, sprinting and jumping move under one block per tick. Workaround: make a boundary subland 4+ blocks thick vertically and 8+ horizontally — reasoned, not measured — or use a land-level ban or the ENTRY default. Confirmed from code and static analysis, not reproduced at speed on a live server.
+
+`/tp` into a claim is not intercepted. An operator teleporting a player in is not blocked by entry rules; the player can then move and walk out, and was not pushed out during testing. Walking entry is still blocked. There is no setting or command that brings `/tp` under entry control — use `/land ban` and control administrative permission. Verified on Folia 26.2 with walking blocked and `/tp` not blocked in the same session; it comes from how the server teleports, not from a setting. Only `/tp` was checked.
+
+Atomic authorisation compares the authorisation generation inside the transaction and covers database-backed writes only — trust and untrust, bindings, groups and members, permission profiles, and land defaults. A rename does not advance the generation. In-memory sources (config defaults, admin bypass, server-land steward) take no part in the in-transaction comparison; their revocation is visible only at the gate before a write is submitted, so an in-flight write can still succeed after such a revocation. There is no fixed upper bound on the wait — writes share one persistence thread and queue. Database revocations are always caught.
+
+Behaviour not listed here is not promised by this document.
+
+## Repository layout for contributors
+
+| Path | Contents |
+| --- | --- |
+| `chunkland-api` | Domain types, `ChunkLandApi`, event bus interface. Pure domain, build-guarded |
+| `chunkland-plugin` | The server plugin: protection, persistence, commands, GUI and forms, economy, config |
+| `docs/en`, `docs/zh-TW`, `docs/zh-CN` | Three-language documentation, identical file names |
+| `LIMITATIONS.md` | Traditional Chinese delivery copy of the limitations |
+| `scripts/build-acelib.sh` | Downloads and verifies AceLib 1.3.0 into the local cache |
+
+Build and test: `./gradlew build --no-daemon --console=plain` runs `check` as well as the tests. Archives drop file timestamps and fix entry order, so two clean builds of the same source produce byte-identical jars.
+
+Protection is fail-closed: the registry starts empty and only becomes readable for occupancy after the startup rebuild publishes a complete snapshot. Until then an empty result means unknown, not wilderness, and the answer is deny. Decision cache hits are scoped to one policy epoch.
+
+## Translations
+
+- Traditional Chinese: <https://github.com/smile-minecraft/ChunkLand/blob/main/docs/zh-TW/README.md>
+- Simplified Chinese: <https://github.com/smile-minecraft/ChunkLand/blob/main/docs/zh-CN/README.md>
+
+MIT licensed.

@@ -1,0 +1,4 @@
+# Everything in here is history: superseded sources, earlier renders and the
+# copies of previously published PNGs. The files stay on disk, untracked.
+*
+!.gitignore
