@@ -38,7 +38,8 @@ import org.bukkit.event.player.PlayerTeleportEvent;
  * Movement listener that announces Land / SubLand boundary crossings as
  * ActionBar prompts.
  *
- * <p>Every event reads exactly one volatile {@link LandRegistry} snapshot and
+ * <p>Every inter-block event reads exactly one volatile
+ * {@link LandRegistry} snapshot and
  * resolves both the previous tracker state and the destination from that same
  * snapshot; only coordinates already on the event are used, so nothing here
  * loads a chunk, touches SQL, or looks up an offline player. An unreadable
@@ -46,8 +47,13 @@ import org.bukkit.event.player.PlayerTeleportEvent;
  * tracker update, so the next good observation still reports the true
  * crossing.
  *
- * <p>Movement shares the entry path's chunk pre-filter: walking inside one
- * chunk never consults the snapshot. Teleports always resolve the
+ * <p>Movement shares the entry path's look-around filter: staying inside
+ * one block never consults the snapshot. Every other move — including one
+ * that stays inside a single X/Z chunk — resolves the destination on
+ * exactly one snapshot, so a SubLand boundary inside the chunk (a precise
+ * cuboid splitting it horizontally, or stacked Y ranges splitting it
+ * vertically) announces the same crossing the entry check enforces, and
+ * the tracker baseline advances with it. Teleports always resolve the
  * destination. Registration runs at {@code MONITOR} with cancelled events
  * ignored, so a denied (cancelled) move never announces a crossing that did
  * not happen.
@@ -109,8 +115,9 @@ public final class EnterLeaveListener implements Listener {
         }
         if (from != null && from.getWorld() != null
                 && from.getWorld().getUID().equals(to.getWorld().getUID())
-                && (from.getBlockX() >> 4) == (to.getBlockX() >> 4)
-                && (from.getBlockZ() >> 4) == (to.getBlockZ() >> 4)) {
+                && from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ()) {
             return;
         }
         handleArrival(event.getPlayer(), to);

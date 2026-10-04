@@ -119,7 +119,9 @@ class ProtectionHotPathStructureTest {
                 "LandRegistry snapshot = registrySupplier.get();",
                 "int chunkX = block.getX() >> 4;",
                 "cooldown.tryAcquire(playerId, action);",
-                "return PermissionResolver.resolve(ctx);");
+                "return PermissionResolver.resolve(ctx);",
+                "if (type == Material.VAULT) {",
+                "Material.VAULT);");
         List<String> falsePositives = new ArrayList<>();
         for (String line : clean) {
             if (HotPathStructure.hotPathViolation(line).isPresent()

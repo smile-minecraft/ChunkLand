@@ -24,9 +24,11 @@ import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.gui.BedrockFormNavigator;
 import com.smile.chunkland.gui.BedrockManageForms;
 import com.smile.chunkland.gui.ManagementGuiModel;
+import com.smile.chunkland.protection.ManagementPermissionGate;
 import com.smile.chunkland.protection.PermissionExplain;
 import com.smile.chunkland.protection.PermissionExplainLayer;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
+import com.smile.chunkland.protection.SubjectPermissionLookup;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.index.LandRegistry;
 import java.io.File;
@@ -40,6 +42,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Consumer;
@@ -582,6 +585,160 @@ class BedrockManageFormHandlerTest {
 
         assertEquals(1, recorders.get("ban").calls.get());
         assertArrayEquals(new String[] {"ban", "Alice"}, recorders.get("ban").lastArgs);
+    }
+
+    // ------------------------------------------------------------------
+    // 送出時重新授權：固定目標領地、每操作各自的 gate
+    //
+    // 開表單只證明「可以看管理」，真正寫入的那一下必須以開表單時固定
+    // 的領地為對象，用該操作自己的 gate（trust／untrust／ban → MANAGE_MEMBER，
+    // delete → DELETE_LAND）外加該槽位的 Bukkit 節點重新裁決。開表單後
+    // 走到別的領地，不得改判到新位置，一律明確拒絕。
+    // ------------------------------------------------------------------
+
+    private static Player playerWithNodes(UUID id, Set<String> nodes) {
+        Set<String> granted = nodes == null ? Set.of() : Set.copyOf(nodes);
+        return (Player) Proxy.newProxyInstance(
+                Player.class.getClassLoader(),
+                new Class<?>[] {Player.class},
+                (proxy, method, args) -> {
+                    String name = method.getName();
+                    if (name.equals("getUniqueId")) {
+                        return id;
+                    }
+                    if (name.equals("hasPermission")) {
+                        Object raw = args == null || args.length == 0 ? null : args[0];
+                        return raw instanceof String node && granted.contains(node);
+                    }
+                    if (name.equals("getName")) {
+                        return "BedrockPlayer";
+                    }
+                    if (name.equals("equals")) {
+                        return proxy == args[0];
+                    }
+                    if (name.equals("hashCode")) {
+                        return System.identityHashCode(proxy);
+                    }
+                    if (name.equals("toString")) {
+                        return "BedrockPlayer-proxy";
+                    }
+                    Class<?> rt = method.getReturnType();
+                    if (rt == boolean.class) {
+                        return false;
+                    }
+                    if (rt == int.class) {
+                        return 0;
+                    }
+                    return null;
+                });
+    }
+
+    private static SubjectPermissionLookup managePermissionOnly(UUID member) {
+        return (actor, landId, action, snapshot) -> {
+            if (member.equals(actor) && action == ProtectionActionType.MANAGE_PERMISSION) {
+                return new SubjectPermissionLookup.Grant(
+                        List.of(new PermissionBinding(PermissionSubject.player(actor),
+                                new Permission(action, PermissionState.ALLOW))),
+                        PermissionState.INHERIT, PermissionState.INHERIT,
+                        PermissionState.INHERIT);
+            }
+            return SubjectPermissionLookup.empty()
+                    .grants(actor, landId, action, snapshot);
+        };
+    }
+
+    private static void openTrustFlowToChoice(FakeLookup lookup, ManagementGateResolver resolver,
+            Map<String, RecordingHandler> recorders, FakeSender sender, RecordingSink sink,
+            Player player, List<String> names) {
+        handler(lookup, resolver,
+                (actor, landId) -> twoRowModel(), recorders, sender,
+                new BedrockClaimFormHandlerTest.ImmediateScheduler(), () -> names)
+                .handle(player, new String[] {"manage"}, sink);
+
+        assertEquals(1, sender.sends.get(), "the opener passes the open gate and sees the menu");
+        sender.fire(valid(rootIndexOf(BedrockManageForms.Capability.TRUST_UNTRUST)));
+        sender.fire(valid(0));
+        sender.fire(valid(0));
+    }
+
+    @Test
+    void trustSubmitWithoutMemberGrantIsDenied() {
+        UUID member = UUID.randomUUID();
+        LandId landId = new LandId(UUID.randomUUID());
+        LandRegistry snapshot = LandRegistry.from(List.of(playerLand(landId, OWNER)));
+        PermissionContextProvider provider =
+                new SnapshotPermissionContextProvider(null, managePermissionOnly(member));
+        ManagementGateResolver.Request pinned = new ManagementGateResolver.Request(
+                member, landId, snapshot, false, false, provider);
+
+        assertEquals(PermissionState.ALLOW,
+                ManagementPermissionGate.check(member, landId,
+                        ProtectionActionType.MANAGE_PERMISSION, snapshot, false, false, provider)
+                        .outcome(),
+                "the shared gate lets this member open management");
+        assertEquals(PermissionState.DENY,
+                ManagementPermissionGate.check(member, landId,
+                        ProtectionActionType.MANAGE_MEMBER, snapshot, false, false, provider)
+                        .outcome(),
+                "the same gate refuses member changes for the same member");
+
+        FakeLookup lookup = new FakeLookup();
+        lookup.bedrock = true;
+        FakeSender sender = new FakeSender();
+        Map<String, RecordingHandler> recorders = handlers();
+        RecordingSink sink = new RecordingSink();
+        openTrustFlowToChoice(lookup, fixed(pinned), recorders, sender, sink,
+                player(member), List.of("Alice"));
+
+        assertEquals(0, recorders.get("trust").calls.get(),
+                "submit-time member gate must block the trust mutation");
+        assertEquals(List.of("command.land.manage.denied"), sink.keys);
+    }
+
+    @Test
+    void trustSubmitWithoutBukkitNodeIsDenied() {
+        ManagementGateResolver.Request pinned = ownerRequest();
+        FakeLookup lookup = new FakeLookup();
+        lookup.bedrock = true;
+        FakeSender sender = new FakeSender();
+        Map<String, RecordingHandler> recorders = handlers();
+        RecordingSink sink = new RecordingSink();
+        Player player = playerWithNodes(pinned.actor(), Set.of(LandPermissions.MANAGE));
+        openTrustFlowToChoice(lookup, fixed(pinned), recorders, sender, sink,
+                player, List.of("Alice"));
+
+        assertEquals(0, recorders.get("trust").calls.get(),
+                "the trust Bukkit node is required at submit time, like the chat path");
+        assertEquals(List.of("command.land.manage.denied"), sink.keys);
+    }
+
+    @Test
+    void submitAfterMovingToAnotherLandIsDeniedOnPinnedTarget() {
+        PermissionContextProvider provider =
+                new SnapshotPermissionContextProvider(null, null);
+        LandId landA = new LandId(UUID.randomUUID());
+        LandId landB = new LandId(UUID.randomUUID());
+        ManagementGateResolver.Request requestA = new ManagementGateResolver.Request(OWNER, landA,
+                LandRegistry.from(List.of(playerLand(landA, OWNER))), false, false, provider);
+        ManagementGateResolver.Request requestB = new ManagementGateResolver.Request(OWNER, landB,
+                LandRegistry.from(List.of(playerLand(landB, OWNER))), false, false, provider);
+        AtomicInteger resolutions = new AtomicInteger();
+        ManagementGateResolver moving = (sender, action, args) ->
+                Optional.of(resolutions.getAndIncrement() == 0 ? requestA : requestB);
+
+        FakeLookup lookup = new FakeLookup();
+        lookup.bedrock = true;
+        FakeSender sender = new FakeSender();
+        Map<String, RecordingHandler> recorders = handlers();
+        RecordingSink sink = new RecordingSink();
+        openTrustFlowToChoice(lookup, moving, recorders, sender, sink,
+                player(OWNER), List.of("Alice"));
+
+        assertEquals(0, recorders.get("trust").calls.get(),
+                "a submit after moving must not re-adjudicate onto the new land");
+        assertEquals(0, totalHandlerCalls(recorders),
+                "no management slot may run once the standing land leaves the pinned target");
+        assertEquals(List.of("command.land.manage.denied"), sink.keys);
     }
 
     @Test

@@ -9,7 +9,7 @@ import com.smile.acelib.scheduler.SafeScheduler;
 import java.util.Objects;
 
 /**
- * Immutable bundle of the AceLib v1.2.0 capability services ChunkLand holds for M0-07
+ * Immutable bundle of the AceLib v1.3.0 capability services ChunkLand holds for M0-07
  * capability smoke. Construction is server-assisted via {@link Builder} so unit tests can
  * assemble the bundle without standing up an AceLib production facade.
  *

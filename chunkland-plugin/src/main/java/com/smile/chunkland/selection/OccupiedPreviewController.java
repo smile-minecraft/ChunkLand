@@ -25,6 +25,11 @@ public interface OccupiedPreviewController {
      */
     void show(UUID playerId, Set<ChunkKey> chunks, double planeY);
 
+    /** Show a semantically coloured preview; legacy sinks receive the same call. */
+    default void show(UUID playerId, Set<ChunkKey> chunks, double planeY, SelectionPreviewColor color) {
+        show(playerId, chunks, planeY);
+    }
+
     /** Stop and forget the player's preview loop. */
     void stop(UUID playerId);
 

@@ -21,7 +21,7 @@ final class StubAceLibApi {
     }
 
     static AceLibApi readyWithBedrock() {
-        return AceLibApi.ready("1.2.0", Platform.UNKNOWN, () -> true, () -> {
+        return AceLibApi.ready("1.3.0", Platform.UNKNOWN, () -> true, () -> {
         });
     }
 }

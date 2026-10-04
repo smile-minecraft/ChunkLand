@@ -11,15 +11,12 @@ import org.yaml.snakeyaml.Yaml;
 /**
  * {@link ConfigLoader} backed by a file on disk.
  *
- * <p>If the file is missing the loader returns the defaults parsed from
- * {@code null} (which the schema treats as an empty document) so that a fresh
- * install does not block startup. The optional first-run behaviour of writing
- * a default file is intentionally not implemented here — the caller may add it
- * once a future task owns plugin-data bootstrap.</p>
- *
- * <p>This class is intentionally not test-covered by the unit tests in this
- * milestone; integration with a real file system is covered indirectly by the
- * schema tests, which exercise the same parsing pipeline.</p>
+ * <p>A missing file throws {@link ConfigMissingException} instead of
+ * succeeding with schema defaults: at startup a missing file and a damaged
+ * file pick different policies (first install vs corrupt), and at reload a
+ * deleted file must keep the previous snapshot instead of publishing defaults
+ * over a stricter live config. Callers that need the lenient "absent means
+ * defaults" shape must opt in explicitly; this loader never does it silently.
  */
 public final class YamlFileConfigLoader implements ConfigLoader {
 
@@ -31,8 +28,8 @@ public final class YamlFileConfigLoader implements ConfigLoader {
 
     @Override
     public ChunkLandConfig load() throws ConfigValidationException, IOException {
-        if (!Files.exists(file)) {
-            return ConfigSchema.parseAndValidate(null);
+        if (!Files.isRegularFile(file)) {
+            throw new ConfigMissingException(file);
         }
         try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             Object root = new Yaml().load(reader);

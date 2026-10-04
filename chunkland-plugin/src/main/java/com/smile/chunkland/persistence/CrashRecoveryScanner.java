@@ -141,11 +141,20 @@ public final class CrashRecoveryScanner {
     /**
      * Route a domain-committed row by operation kind. Claim rows rebuild the
      * runtime towards {@code ACTIVE}; refund, shrink and delete rows already
-     * released their domain but may never have moved money, so they park for
-     * compensation and retry the deposit through the shared compensation path
-     * instead of being marked active with an unpaid refund. A zero-amount
-     * refund, shrink or delete row moves no money, so it settles directly with
-     * the zero marker and a runtime rebuild, without parking or calling Economy.
+     * released their domain but may never have moved money, so they park the
+     * durable execution intent and attempt the deposit exactly once through
+     * the shared compensation path instead of being marked active with an
+     * unpaid refund. A zero-amount refund, shrink or delete row moves no
+     * money, so it settles directly with the zero marker and a runtime
+     * rebuild, without parking or calling Economy.
+     *
+     * <p>A {@code DOMAIN_COMMITTED} refund-class row is the only row that is
+     * provably never sent to the provider, hence the only one that may be
+     * attempted: one park plus one deposit. Any outcome other than a
+     * confirmed deposit quarantines for operator reconciliation instead of
+     * scheduling another automatic attempt, because the attempt itself may
+     * have moved money and the provider offers no dedup to make a resend
+     * safe.
      */
     private CompletionStage<RecoveryResult> recoverDomainCommittedByType(LedgerEntry entry) {
         if ("REFUND".equals(entry.operationType()) || "SHRINK".equals(entry.operationType())
@@ -171,11 +180,79 @@ public final class CrashRecoveryScanner {
             return ledger.parkForRefundCompensation(
                             entry.operationId(), compensationRef(entry), now())
                     .thenCompose(ignored -> ledger.find(entry.operationId()))
-                    .thenCompose(this::recoverCompensation)
+                    .thenCompose(this::attemptSingleRefundCompensation)
                     .exceptionally(failure -> unchanged(entry,
                             LedgerState.RecoveryClassification.RETRY_COMPENSATION,
                             "refund could not be parked for compensation"));
         });
+    }
+
+    /**
+     * The single permitted deposit for a definitely-unsent refund-class row.
+     * The caller has just parked the durable execution intent, so this attempt
+     * is safe to run once; afterwards the row is either settled (confirmed
+     * deposit) or quarantined (anything else), and is never deposited again
+     * automatically.
+     */
+    private CompletionStage<RecoveryResult> attemptSingleRefundCompensation(LedgerEntry parked) {
+        return payloadFor(parked).thenCompose(payload -> {
+            if (payload == null
+                    || (!"REFUND".equals(payload.operationType())
+                            && !"SHRINK".equals(payload.operationType())
+                            && !"DELETE".equals(payload.operationType()))) {
+                return moveToReconciliation(parked, "refund compensation payload is invalid");
+            }
+            if (payload.priceMinorUnits() == 0L) {
+                return settleZeroFromCompensationPending(parked, payload);
+            }
+            CompletionStage<RefundOutcome> refund;
+            try {
+                refund = handlers.refund(parked);
+            } catch (Throwable failure) {
+                refund = CompletableFuture.failedFuture(failure);
+            }
+            if (refund == null) {
+                refund = CompletableFuture.failedFuture(
+                        new IllegalStateException("refund returned null"));
+            }
+            return refund.handle(
+                            (result, failure) -> failure == null && result != null
+                                    ? result : RefundOutcome.UNKNOWN)
+                    .thenCompose(result -> {
+                        if (result == RefundOutcome.REFUNDED) {
+                            return settleRefundCompensatedWithRuntime(parked);
+                        }
+                        return quarantineWithoutResend(parked,
+                                "refund was attempted once and not confirmed; "
+                                        + "awaiting operator reconciliation");
+                    })
+                    .exceptionally(failure -> unchanged(parked,
+                            LedgerState.RecoveryClassification.RETRY_COMPENSATION,
+                            "compensation retry could not be persisted"));
+        });
+    }
+
+    /**
+     * Quarantine a possibly-sent refund-class row for operator reconciliation
+     * without calling Economy. The parked execution intent proves a deposit
+     * may already have moved money; because the provider cannot dedup, any
+     * automatic resend could double-credit. The resulting {@code
+     * NEEDS_RECONCILIATION} row stays visible to the ledger admin tooling
+     * until an operator resolves it.
+     */
+    private CompletionStage<RecoveryResult> quarantineWithoutResend(
+            LedgerEntry entry, String diagnostic) {
+        try {
+            LedgerState expected = LedgerState.parse(entry.state());
+            return ledger.quarantine(entry.operationId(), expected, now())
+                    .thenApply(ignored -> changed(entry, LedgerState.NEEDS_RECONCILIATION,
+                            LedgerState.RecoveryClassification.WAIT_FOR_OPERATOR, diagnostic))
+                    .exceptionally(failure -> unchanged(entry,
+                            LedgerState.RecoveryClassification.INVALID_RECORD, diagnostic));
+        } catch (RuntimeException failure) {
+            return completed(unchanged(entry,
+                    LedgerState.RecoveryClassification.INVALID_RECORD, diagnostic));
+        }
     }
 
     /**
@@ -233,13 +310,20 @@ public final class CrashRecoveryScanner {
     }
 
     /**
-     * Retry a parked compensation. Refund, shrink and delete rows carry their
-     * own payload contract, so the payload is validated before touching Economy:
-     * an untrusted payload quarantines without a deposit, a settle, or a
-     * runtime rebuild. Claim rows keep their existing retry path unchanged.
-     * A zero-amount refund, shrink or delete row moves no money, so the payload
-     * amount settles it directly without calling Economy; the amount always
-     * comes from the authoritative payload, never from current ownership.
+     * Handle a parked compensation row. Refund, shrink and delete rows carry
+     * their own payload contract, so the payload is validated before anything
+     * else: an untrusted payload quarantines without a deposit, a settle, or
+     * a runtime rebuild. A zero-amount refund, shrink or delete row moves no
+     * money, so the payload amount settles it directly without calling
+     * Economy; the amount always comes from the authoritative payload, never
+     * from current ownership.
+     *
+     * <p>A non-zero refund-class row waiting in {@code COMPENSATION_PENDING}
+     * has a durably parked execution intent, which means a deposit may
+     * already have moved money. It is therefore quarantined for operator
+     * reconciliation without calling Economy: no automatic resend, because
+     * the provider cannot dedup and a resend could double-credit. Claim rows
+     * keep their existing retry path unchanged.
      */
     private CompletionStage<RecoveryResult> recoverCompensation(LedgerEntry entry) {
         if (entry.economyTransactionRef() == null || entry.economyTransactionRef().isBlank()) {
@@ -257,7 +341,9 @@ public final class CrashRecoveryScanner {
                 if (payload.priceMinorUnits() == 0L) {
                     return settleZeroFromCompensationPending(entry, payload);
                 }
-                return refundCompensation(entry);
+                return quarantineWithoutResend(entry,
+                        "compensation was already attempted or its outcome is unknown; "
+                                + "awaiting operator reconciliation without resending");
             });
         }
         return refundCompensation(entry);

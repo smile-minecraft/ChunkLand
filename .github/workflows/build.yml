@@ -37,11 +37,11 @@ jobs:
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
       # AceLib is compileOnly/testImplementation and resolved only via flatDir at
-      # $ACE_OUTPUT_DIR (see settings.gradle.kts). We fetch the pinned v1.2.0
-      # release asset (AceLib-1.2.0.jar) from GitHub Releases before any Gradle
+      # $ACE_OUTPUT_DIR (see settings.gradle.kts). We fetch the pinned v1.3.0
+      # release asset (AceLib-1.3.0.jar) from GitHub Releases before any Gradle
       # compile/test. The same pinned output is reused for build/test and both
       # reproducibility jar builds; no Maven fallback, no embedded jar, no source build.
-      - name: Fetch AceLib 1.2.0 release asset
+      - name: Fetch AceLib 1.3.0 release asset
         env:
           ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-acelib
         run: bash scripts/build-acelib.sh
@@ -97,7 +97,7 @@ jobs:
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
-      - name: Fetch AceLib 1.2.0 release asset
+      - name: Fetch AceLib 1.3.0 release asset
         env:
           ACE_OUTPUT_DIR: ${{ runner.temp }}/chunkland-acelib
         run: bash scripts/build-acelib.sh

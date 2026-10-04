@@ -15,6 +15,7 @@ import com.smile.chunkland.runtime.index.SubLandIndex;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -30,6 +31,13 @@ import java.util.function.Supplier;
  * {@code DENY}; wilderness (no land) follows vanilla and yields
  * {@code ALLOW}, never {@code DENY}.
  *
+ * <p>An index that was never confirmed complete (startup hydration still
+ * running or failed) is not wilderness: every decision entry denies while
+ * the readiness gate reports unready, and {@link #snapshot()} withholds the
+ * partial index so classification can never prove "no land" from it either.
+ * Readiness itself is one volatile read, so the gate costs nothing
+ * measurable on the hot path.
+ *
  * <p>An optional {@link PermissionDecisionCache} reuses decisions across
  * identical calls: the key names the actor, land, covering subland,
  * action and all four epochs plus the structure revision and owner
@@ -44,10 +52,24 @@ public final class ProtectionEngine {
     private final Map<ProtectionActionType, DecisionSource> routes;
     private final PermissionDecisionCache cache;
     private final PermissionDecisionEpochSource epochs;
+    private final BooleanSupplier readiness;
 
     public ProtectionEngine(Supplier<LandRegistry> registrySupplier,
                             PermissionContextProvider contextProvider) {
         this(registrySupplier, contextProvider, ProtectionActionRegistry.defaults());
+    }
+
+    /**
+     * Gated enforcement: {@code readiness} reports whether the backing index
+     * has been confirmed complete (startup hydration published). While it
+     * reports unready, every decision denies and {@link #snapshot()} returns
+     * {@code null}; a throwing gate reads as unready (fail-closed).
+     */
+    public ProtectionEngine(Supplier<LandRegistry> registrySupplier,
+                            PermissionContextProvider contextProvider,
+                            BooleanSupplier readiness) {
+        this(registrySupplier, contextProvider, ProtectionActionRegistry.defaults(),
+                null, null, readiness);
     }
 
     /**
@@ -82,19 +104,54 @@ public final class ProtectionEngine {
                             Map<ProtectionActionType, DecisionSource> routes,
                             PermissionDecisionCache cache,
                             PermissionDecisionEpochSource epochs) {
+        this(registrySupplier, contextProvider, routes, cache, epochs, () -> true);
+    }
+
+    /**
+     * Full gated enforcement: {@code readiness} reports whether the backing
+     * index has been confirmed complete. Callers without a hydration concept
+     * keep the historical always-ready behaviour through the overload above;
+     * production wiring passes the startup hydration flag.
+     */
+    public ProtectionEngine(Supplier<LandRegistry> registrySupplier,
+                            PermissionContextProvider contextProvider,
+                            Map<ProtectionActionType, DecisionSource> routes,
+                            PermissionDecisionCache cache,
+                            PermissionDecisionEpochSource epochs,
+                            BooleanSupplier readiness) {
         this.registrySupplier = Objects.requireNonNull(registrySupplier, "registrySupplier");
         this.contextProvider = Objects.requireNonNull(contextProvider, "contextProvider");
         this.routes = ProtectionActionRegistry.validated(routes);
         this.cache = cache;
         this.epochs = epochs;
+        this.readiness = Objects.requireNonNull(readiness, "readiness");
+    }
+
+    /**
+     * Whether the backing land index has been confirmed complete. One
+     * volatile read; an unreadable gate reads as unready (fail-closed).
+     */
+    public boolean isRegistryReady() {
+        try {
+            return readiness.getAsBoolean();
+        } catch (RuntimeException ex) {
+            return false;
+        }
     }
 
     /**
      * Returns the current memory-only land index snapshot backing decisions.
      * Each call observes one volatile publish; the registry itself is
      * immutable, so a returned snapshot is always self-consistent.
+     *
+     * <p>Returns {@code null} while the index is unconfirmed: an incomplete
+     * snapshot must never classify a position as wilderness. Callers already
+     * treat {@code null} as fail-closed.
      */
     public LandRegistry snapshot() {
+        if (!isRegistryReady()) {
+            return null;
+        }
         return registrySupplier.get();
     }
 
@@ -124,6 +181,9 @@ public final class ProtectionEngine {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(landId, "landId");
         Objects.requireNonNull(action, "action");
+        if (!isRegistryReady()) {
+            return failClosed(action, "land registry is not hydrated");
+        }
         LandRegistry snapshot = takeSnapshot(action);
         if (snapshot == null) {
             return failClosed(action, "snapshot unavailable");
@@ -148,6 +208,9 @@ public final class ProtectionEngine {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(action, "action");
+        if (!isRegistryReady()) {
+            return failClosed(action, "land registry is not hydrated");
+        }
         LandRegistry snapshot = takeSnapshot(action);
         if (snapshot == null) {
             return failClosed(action, "snapshot unavailable");
@@ -160,13 +223,17 @@ public final class ProtectionEngine {
      * touching the registry supplier. Callers that already hold the snapshot
      * they classified with (for example cross-boundary checks) use this so
      * classification and decision can never mix index versions. The snapshot
-     * is memory-only; a {@code null} snapshot still fails closed.
+     * is memory-only; a {@code null} snapshot still fails closed, as does an
+     * unconfirmed index regardless of the snapshot handed in.
      */
     public PermissionDecision decideAtOnSnapshot(UUID actor, UUID worldId, int chunkX, int chunkZ,
                                                  ProtectionActionType action, LandRegistry snapshot) {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(action, "action");
+        if (!isRegistryReady()) {
+            return failClosed(action, "land registry is not hydrated");
+        }
         if (snapshot == null) {
             return failClosed(action, "snapshot unavailable");
         }
@@ -194,6 +261,9 @@ public final class ProtectionEngine {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(action, "action");
+        if (!isRegistryReady()) {
+            return failClosed(action, "land registry is not hydrated");
+        }
         LandRegistry snapshot = takeSnapshot(action);
         if (snapshot == null) {
             return failClosed(action, "snapshot unavailable");
@@ -204,7 +274,8 @@ public final class ProtectionEngine {
     /**
      * Decides for a block position against a caller-supplied snapshot, never
      * touching the registry supplier. Memory-only like
-     * {@link #decideAtOnSnapshot}; a {@code null} snapshot still fails closed.
+     * {@link #decideAtOnSnapshot}; a {@code null} snapshot still fails closed,
+     * as does an unconfirmed index regardless of the snapshot handed in.
      */
     public PermissionDecision decideAtBlockOnSnapshot(UUID actor, UUID worldId,
                                                       int blockX, int blockY, int blockZ,
@@ -212,6 +283,9 @@ public final class ProtectionEngine {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(action, "action");
+        if (!isRegistryReady()) {
+            return failClosed(action, "land registry is not hydrated");
+        }
         if (snapshot == null) {
             return failClosed(action, "snapshot unavailable");
         }

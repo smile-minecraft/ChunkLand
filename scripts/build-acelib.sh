@@ -2,15 +2,15 @@
 # build-acelib.sh — 從 GitHub Release 固定附件取得已驗證的 AceLib server JAR。
 #
 # 來源與版本皆寫死，不使用 mavenLocal() / SNAPSHOT / latest / 浮動下載：
-#   - 來源：GitHub Release v1.2.0 固定附件 AceLib-1.2.0.jar（固定 HTTPS URL）
-#   - 標籤：v1.2.0（annotated tag，見 acelib-common.sh provenance sidecar）
-#   - 產物：AceLib-1.2.0.jar（plugin JAR，供 Folia plugins/ 使用）
+#   - 來源：GitHub Release v1.3.0 固定附件 AceLib-1.3.0.jar（固定 HTTPS URL）
+#   - 標籤：v1.3.0（annotated tag，見 acelib-common.sh provenance sidecar）
+#   - 產物：AceLib-1.3.0.jar（plugin JAR，供 Folia plugins/ 使用）
 #   - 完整性：下載後以固定 SHA-256、plugin.yml 版本、AceLibVersion.class 驗證
 #
 # 失敗語意（安全失敗，非零離開，暫存目錄清理）：
 #   - 下載失敗（curl 非零、網路錯誤、非 200、非 JAR/HTML 回應）
 #   - 下載內容為空或非預期檔案類型
-#   - plugin.yml 版本不是 1.2.0（錯版本）
+#   - plugin.yml 版本不是 1.3.0（錯版本）
 #   - 缺少 com/smile/acelib/AceLibVersion.class
 #   - 產物 SHA-256 與預期不符（checksum 不符）
 #

@@ -17,7 +17,7 @@ dependencies {
     compileOnly(libs.paper.api)
     // Compile-only: AceLib is a server-provided plugin (depend: [AceLib] in plugin.yml).
     // Resolved from the locally built jar via the flatDir repo; never embedded.
-    compileOnly("com.smile.acelib:AceLib:1.2.0")
+    compileOnly("com.smile.acelib:AceLib:1.3.0")
     // Compile-only: Vault Legacy Economy boundary (net.milkbowl.vault.economy).
     // Provided by the Vault plugin at runtime (softdepend: [Vault]); never embedded.
     compileOnly(libs.vault.api)
@@ -30,7 +30,7 @@ dependencies {
     // so both must be available on the test classpath. testImplementation does not
     // affect the plugin jar (only main sources are packaged).
     testImplementation(libs.paper.api)
-    testImplementation("com.smile.acelib:AceLib:1.2.0")
+    testImplementation("com.smile.acelib:AceLib:1.3.0")
     testImplementation(libs.vault.api)
 }
 

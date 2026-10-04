@@ -17,7 +17,10 @@ import java.util.function.Supplier;
  * owning land) also answers {@code false}. An unloaded ban snapshot — cache
  * startup before the first durable load, or a failed reload — answers empty
  * on known lands so the adapter fails closed instead of trusting a
- * known-unbanned read. Anything else unverifiable — a missing supplier, a
+ * known-unbanned read. Push-out candidates on those lands are excluded with
+ * it, so the deny stands as cancel-only until the snapshot loads; that is
+ * the intended freeze, not a wedge — movement itself is denied while the
+ * ban state is unverifiable. Anything else unverifiable — a missing supplier, a
  * missing snapshot, an unknown lookup failure — answers empty so the
  * adapter fails closed.
  */

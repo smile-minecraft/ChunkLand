@@ -143,7 +143,7 @@ class RefundRecoveryTest {
     }
 
     @Test
-    void domainCommittedRefundFailureStaysPendingWithAttempts() throws Exception {
+    void domainCommittedRefundFailureQuarantinesWithoutResend() throws Exception {
         try (Harness h = new Harness()) {
             h.refundOutcome.set(RefundOutcome.FAILED);
             UUID operationId = UUID.randomUUID();
@@ -154,10 +154,14 @@ class RefundRecoveryTest {
 
             List<RecoveryResult> results = h.scan(3);
 
-            assertEquals("COMPENSATION_PENDING", results.get(0).resultingState());
-            assertEquals("COMPENSATION_PENDING", h.state(operationId));
+            // The single permitted attempt ran and was not confirmed: the row
+            // quarantines instead of scheduling another automatic deposit.
+            assertEquals("NEEDS_RECONCILIATION", results.get(0).resultingState());
+            assertEquals("NEEDS_RECONCILIATION", h.state(operationId));
             LedgerEntry row = h.ledger.find(operationId).toCompletableFuture().join();
-            assertEquals(1, row.compensationAttempts());
+            assertEquals(1, h.refundCalls.get(), "exactly one attempt, never retried");
+            assertEquals(0, row.compensationAttempts(),
+                    "no retry counter is consumed by the single attempt");
             assertEquals("refund:" + operationId, row.economyTransactionRef());
         }
     }
@@ -200,7 +204,7 @@ class RefundRecoveryTest {
     }
 
     @Test
-    void compensationPendingRefundSuccessSettles() throws Exception {
+    void compensationPendingRefundIsNeverResent() throws Exception {
         try (Harness h = new Harness()) {
             UUID operationId = UUID.randomUUID();
             OperationPayload payload = refundPayload(operationId, UUID.randomUUID(),
@@ -210,15 +214,18 @@ class RefundRecoveryTest {
 
             List<RecoveryResult> results = h.scan(3);
 
-            assertEquals("COMPENSATED", results.get(0).resultingState());
-            assertEquals("COMPENSATED", h.state(operationId));
-            assertEquals(1, h.refundCalls.get(), "a valid pending refund must retry the deposit");
-            assertEquals(1, h.rebuildCalls.get(), "a settled refund must republish the runtime");
+            // The parked intent proves a deposit may already have moved
+            // money: recovery quarantines without calling Economy, even
+            // though the provider would currently succeed.
+            assertEquals("NEEDS_RECONCILIATION", results.get(0).resultingState());
+            assertEquals("NEEDS_RECONCILIATION", h.state(operationId));
+            assertEquals(0, h.refundCalls.get(), "a possibly-sent row must never be auto-resent");
+            assertEquals(0, h.rebuildCalls.get(), "a quarantined refund rebuilds nothing");
         }
     }
 
     @Test
-    void compensationPendingUnknownOutcomeKeepsPending() throws Exception {
+    void compensationPendingUnknownOutcomeQuarantinesWithoutResend() throws Exception {
         try (Harness h = new Harness()) {
             h.refundOutcome.set(RefundOutcome.UNKNOWN);
             UUID operationId = UUID.randomUUID();
@@ -229,9 +236,11 @@ class RefundRecoveryTest {
 
             List<RecoveryResult> results = h.scan(3);
 
-            assertEquals("COMPENSATION_PENDING", results.get(0).resultingState());
+            assertEquals("NEEDS_RECONCILIATION", results.get(0).resultingState());
+            assertEquals("NEEDS_RECONCILIATION", h.state(operationId));
+            assertEquals(0, h.refundCalls.get(), "a possibly-sent row must never be auto-resent");
             LedgerEntry row = h.ledger.find(operationId).toCompletableFuture().join();
-            assertEquals(1, row.compensationAttempts());
+            assertEquals(0, row.compensationAttempts());
         }
     }
 
@@ -249,6 +258,7 @@ class RefundRecoveryTest {
 
             assertEquals("NEEDS_RECONCILIATION", results.get(0).resultingState());
             assertEquals("NEEDS_RECONCILIATION", h.state(operationId));
+            assertEquals(0, h.refundCalls.get(), "a possibly-sent row must never be auto-resent");
         }
     }
 

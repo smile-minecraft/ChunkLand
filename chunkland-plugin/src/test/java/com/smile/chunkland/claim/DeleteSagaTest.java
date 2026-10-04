@@ -358,7 +358,7 @@ class DeleteSagaTest {
     // ------------------------------------------------------------------
 
     @Test
-    void refundFailureParksCompensationPendingWithoutRollback() throws Exception {
+    void refundFailureQuarantinesForReconciliationWithoutRollback() throws Exception {
         try (Harness h = new Harness(10, 100)) {
             UUID actor = UUID.randomUUID();
             UUID world = UUID.randomUUID();
@@ -370,16 +370,22 @@ class DeleteSagaTest {
 
             DeleteOutcome outcome = h.run(h.requestFor(owner, actor, world, land, 0));
 
-            assertEquals(DeleteOutcome.Status.COMPENSATION_PENDING, outcome.status());
+            // The deposit ran exactly once behind a durably parked intent;
+            // the unconfirmed outcome quarantines instead of resending,
+            // because a resend could double-credit.
+            assertEquals(DeleteOutcome.Status.NEEDS_RECONCILIATION, outcome.status());
             assertEquals(200L, outcome.refundMinorUnits());
+            assertEquals(1, h.economy.refunds.size(), "exactly one deposit attempt");
             // The committed delete is never rolled back for the refund.
             assertTrue(!h.landExists(land), "compensation must never resurrect the land");
             assertEquals(List.of("LAND_DELETE"), h.auditActions(land));
             List<LedgerEntry> rows = h.ledgerRows();
             assertEquals(1, rows.size(), "exactly one DELETE ledger row");
-            assertEquals(LedgerState.COMPENSATION_PENDING.name(), rows.get(0).state());
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), rows.get(0).state());
             assertEquals("delete:" + rows.get(0).operationId(), rows.get(0).economyTransactionRef(),
-                    "the parked row must carry the delete idempotency reference");
+                    "the quarantined row must carry the delete idempotency reference");
+            assertEquals(0, rows.get(0).compensationAttempts(),
+                    "no automatic retry is scheduled after a parked attempt");
             // The runtime already published the deletion before the refund ran.
             assertTrue(h.registryStore.snapshot().findLandId(world, 0, 0) == null);
         }

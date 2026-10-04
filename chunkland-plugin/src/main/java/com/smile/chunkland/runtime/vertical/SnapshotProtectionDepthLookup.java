@@ -24,19 +24,39 @@ import java.util.function.ToIntFunction;
  * through {@link VerticalDepths#LEGACY_STORED_FALLBACK_Y}.
  *
  * <p>Mode and world heights are injected seams: the lookup never reads Bukkit,
- * SQL or the network. Unknown worlds default to {@code PER_CHUNK_DEPTH} with
- * the supplied world-min fallback so decisions stay fail-closed without I/O.
+ * SQL or the network. Worlds the mode seam cannot resolve use the injected
+ * unknown-world mode: production passes {@code PER_CHUNK_DEPTH} for the
+ * normal config path (stored depths stay authoritative) and
+ * {@code FULL_HEIGHT} while the conservative startup fallback is active, so
+ * a world the damaged config never listed cannot shrink protection. The
+ * constructor without an explicit unknown mode keeps the historical
+ * {@code PER_CHUNK_DEPTH} behaviour.
  */
 public final class SnapshotProtectionDepthLookup implements ProtectionDepthLookup {
 
     private final Function<UUID, VerticalMode> modeByWorld;
     private final ToIntFunction<UUID> worldMinByWorld;
+    private final VerticalMode unknownMode;
 
     public SnapshotProtectionDepthLookup(
             Function<UUID, VerticalMode> modeByWorld,
             ToIntFunction<UUID> worldMinByWorld) {
+        this(modeByWorld, worldMinByWorld, VerticalMode.defaultMode());
+    }
+
+    /**
+     * Lookup with an explicit fallback mode for worlds the mode seam cannot
+     * resolve (missing entry, {@code null} answer or throwing seam).
+     *
+     * @param unknownMode mode used when the seam has no answer; never null
+     */
+    public SnapshotProtectionDepthLookup(
+            Function<UUID, VerticalMode> modeByWorld,
+            ToIntFunction<UUID> worldMinByWorld,
+            VerticalMode unknownMode) {
         this.modeByWorld = Objects.requireNonNull(modeByWorld, "modeByWorld");
         this.worldMinByWorld = Objects.requireNonNull(worldMinByWorld, "worldMinByWorld");
+        this.unknownMode = Objects.requireNonNull(unknownMode, "unknownMode");
     }
 
     /** Fixed-mode lookup for tests and single-world wiring. */
@@ -110,9 +130,9 @@ public final class SnapshotProtectionDepthLookup implements ProtectionDepthLooku
     private VerticalMode modeOrDefault(UUID worldId) {
         try {
             VerticalMode mode = modeByWorld.apply(worldId);
-            return mode == null ? VerticalMode.defaultMode() : mode;
+            return mode == null ? unknownMode : mode;
         } catch (RuntimeException failure) {
-            return VerticalMode.defaultMode();
+            return unknownMode;
         }
     }
 }

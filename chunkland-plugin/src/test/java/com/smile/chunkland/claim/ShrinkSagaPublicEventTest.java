@@ -330,11 +330,11 @@ class ShrinkSagaPublicEventTest {
     }
 
     @Test
-    void failedRefundParksForCompensationWithoutPost() throws Exception {
+    void failedRefundQuarantinesWithoutPost() throws Exception {
         // Contract pin: unlike delete/create/expand posts (commit+publish,
         // before refund/finalize), the shrink Post fires only after a
-        // confirmed refund. A failed refund parks for compensation and must
-        // not fire, even though the domain commit itself succeeded.
+        // confirmed refund. A failed refund quarantines for reconciliation
+        // and must not fire, even though the domain commit itself succeeded.
         try (Harness h = new Harness()) {
             h.economy.refundOutcome = RefundOutcome.FAILED;
             UUID actor = UUID.randomUUID();
@@ -349,7 +349,7 @@ class ShrinkSagaPublicEventTest {
 
             ShrinkOutcome outcome = h.run(requestFor(session, owner));
 
-            assertEquals(ShrinkOutcome.Status.COMPENSATION_PENDING, outcome.status());
+            assertEquals(ShrinkOutcome.Status.NEEDS_RECONCILIATION, outcome.status());
             assertEquals(1, h.preCalls.get());
             assertEquals(0, h.postCalls.get());
             assertTrue(h.posts.isEmpty());

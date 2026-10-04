@@ -502,4 +502,30 @@ class RuntimeIndexRedTest {
         assertNull(idx.findAtBlock(8, -2, 8));
         assertNull(idx.findAtBlock(8, 65536, 8));
     }
+
+    /**
+     * Regression: a cuboid covering only part of its chunk column must not
+     * claim blocks that share the column (and the Y range) but sit outside
+     * its X/Z geometry. The chunk+Y fallback used to return the cuboid
+     * itself for those points, so both the engine covering and the movement
+     * pre-filter read the wrong subland.
+     */
+    @Test
+    void findAtBlockIgnoresPartialCuboidOutsideItsGeometry() {
+        UUID w = UUID.randomUUID();
+        LandId lid = new LandId(UUID.randomUUID());
+        SubLandSnapshot den = new SubLandSnapshot(
+                new SubLandId(UUID.randomUUID()), lid, "den",
+                new Cuboid(0, 0, 0, 7, 255, 15), w);
+
+        SubLandIndex idx = SubLandIndex.from(lid, List.of(den));
+
+        assertEquals("den", idx.findAtBlock(5, 64, 5).name());
+        assertEquals("den", idx.findAtBlock(7, 255, 15).name(),
+                "inclusive cuboid edges still belong to the subland");
+        assertNull(idx.findAtBlock(8, 64, 5),
+                "same column and Y but outside the cuboid X range must not resolve");
+        assertNull(idx.findAtBlock(10, 64, 10),
+                "same column and Y but outside the cuboid must not resolve");
+    }
 }

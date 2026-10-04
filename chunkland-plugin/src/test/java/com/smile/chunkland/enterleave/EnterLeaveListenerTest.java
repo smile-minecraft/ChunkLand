@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.Cuboid;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
@@ -23,7 +24,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -123,20 +124,143 @@ class EnterLeaveListenerTest {
     }
 
     @Test
-    void sameChunkMoveNeverConsultsSnapshot() {
-        AtomicReference<LandRegistry> seen = new AtomicReference<>();
+    void moveInsideChunkDownIntoSubLandSendsEnter() {
+        Player player = playerProxy(UUID.randomUUID());
+        listener.onPlayerMove(move(player, 900, 900, 950, 900));
+        listener.onPlayerMove(move3d(player, 950, 300, 900, 5, 300, 5));
+        sender.clear();
+        // Same X/Z chunk (0,0): y=300 sits above Storage, y=64 inside it.
+        listener.onPlayerMove(move3d(player, 5, 300, 5, 5, 64, 5));
+        assertEquals(List.of("Entered Home › Storage"), sender.actionBars());
+    }
+
+    @Test
+    void moveInsideChunkUpOutOfSubLandSendsLeave() {
+        Player player = playerProxy(UUID.randomUUID());
+        listener.onPlayerMove(move(player, 900, 900, 950, 900));
+        listener.onPlayerMove(move3d(player, 950, 300, 900, 5, 64, 5));
+        sender.clear();
+        listener.onPlayerMove(move3d(player, 5, 64, 5, 5, 300, 5));
+        assertEquals(List.of("Left Home › Storage"), sender.actionBars());
+    }
+
+    @Test
+    void moveInsideChunkAcrossCuboidBoundarySendsEnterAndLeave() {
+        EnterLeaveNotifier notifier =
+                new EnterLeaveNotifier(pipeline, preferences, PlayerScheduler.direct());
+        EnterLeaveListener local = new EnterLeaveListener(
+                this::cuboidSnapshot, new EnterLeaveTracker(), preferences, null, notifier);
+        Player player = playerProxy(UUID.randomUUID());
+        // Baseline inside chunk (0,0) and land Home but outside the x=0..7 Nook.
+        local.onPlayerMove(move3d(player, 900, 64, 900, 10, 64, 5));
+        sender.clear();
+        // Same chunk (0,0): x=10 is outside the cuboid, x=5 inside it.
+        local.onPlayerMove(move3d(player, 10, 64, 5, 5, 64, 5));
+        assertEquals(List.of("Entered Home › Nook"), sender.actionBars());
+        local.onPlayerMove(move3d(player, 5, 64, 5, 10, 64, 5));
+        assertEquals(
+                List.of("Entered Home › Nook", "Left Home › Nook"), sender.actionBars());
+    }
+
+    @Test
+    void inChunkCrossingUpdatesBaselineWithoutDelayedOrDuplicateNotice() {
+        Player player = playerProxy(UUID.randomUUID());
+        listener.onPlayerMove(move(player, 900, 900, 950, 900));
+        listener.onPlayerMove(move3d(player, 950, 300, 900, 5, 300, 5));
+        sender.clear();
+        listener.onPlayerMove(move3d(player, 5, 300, 5, 5, 64, 5));
+        // Chunk (0,0) to chunk (1,0), leaving the SubLand behind: exactly one
+        // leave, attached to the SubLand just left, with nothing delayed.
+        listener.onPlayerMove(move3d(player, 5, 64, 5, 20, 300, 5));
+        assertEquals(
+                List.of("Entered Home › Storage", "Left Home › Storage"),
+                sender.actionBars());
+    }
+
+    @Test
+    void sameBlockMoveNeverConsultsSnapshot() {
+        AtomicInteger reads = new AtomicInteger();
+        EnterLeaveNotifier notifier =
+                new EnterLeaveNotifier(pipeline, preferences, PlayerScheduler.direct());
+        EnterLeaveTracker localTracker = new EnterLeaveTracker();
+        EnterLeaveListener counting = new EnterLeaveListener(
+                () -> {
+                    reads.incrementAndGet();
+                    return store.snapshot();
+                },
+                localTracker, preferences, null, notifier);
+        Player player = playerProxy(UUID.randomUUID());
+        // Looking around inside one block: no snapshot, no prompt, no baseline.
+        counting.onPlayerMove(move3d(player, 5, 64, 5, 5, 64, 5));
+        assertEquals(0, reads.get(), "same-block movement must not read the snapshot");
+        assertTrue(sender.actionBars().isEmpty());
+        assertEquals(0, localTracker.sizeForTest());
+    }
+
+    @Test
+    void inChunkSameCoveringMoveReadsSnapshotOnceAndStaysSilent() {
+        AtomicInteger reads = new AtomicInteger();
         EnterLeaveNotifier notifier =
                 new EnterLeaveNotifier(pipeline, preferences, PlayerScheduler.direct());
         EnterLeaveListener counting = new EnterLeaveListener(
                 () -> {
-                    seen.set(store.snapshot());
+                    reads.incrementAndGet();
                     return store.snapshot();
                 },
                 tracker, preferences, null, notifier);
         Player player = playerProxy(UUID.randomUUID());
+        counting.onPlayerMove(move(player, 900, 900, 950, 900));
+        counting.onPlayerMove(move(player, 950, 900, 5, 5));
+        sender.clear();
+        reads.set(0);
+        // Same chunk (0,0), y=300 above Storage at both ends: same covering.
         counting.onPlayerMove(move(player, 5, 5, 6, 6));
-        assertTrue(seen.get() == null, "same-chunk movement must not read the snapshot");
+        assertEquals(1, reads.get(), "in-chunk moves resolve on exactly one snapshot");
         assertTrue(sender.actionBars().isEmpty());
+    }
+
+    /**
+     * Hot-path budget for notification handling: in-process throughput over
+     * the three move shapes (look-around skip, same-covering skip, in-chunk
+     * crossing). Prints mean ns/event for the pre/post comparison; the
+     * ceiling is deliberately generous (proxy mocks dominate) so this guards
+     * against pathological regressions such as I/O on the move path, not
+     * against small constant shifts. No chunk loads, SQL, or blocking I/O
+     * happen on any of these paths by construction (one snapshot read per
+     * inter-block move at most, zero for look-around).
+     */
+    @Test
+    void moveHotPathStaysWithinBudget() {
+        Player player = playerProxy(UUID.randomUUID());
+        Location lookFrom = new Location(world, 5, 64, 5);
+        Location lookTo = new Location(world, 5.3, 64.2, 5.7);
+        Location skipFrom = new Location(world, 5, 300, 5);
+        Location skipTo = new Location(world, 6, 300, 5);
+        Location crossFrom = new Location(world, 5, 300, 5);
+        Location crossTo = new Location(world, 5, 64, 5);
+
+        double lookNs = meanMoveNs(player, lookFrom, lookTo);
+        double skipNs = meanMoveNs(player, skipFrom, skipTo);
+        double crossNs = meanMoveNs(player, crossFrom, crossTo);
+        System.out.printf("enterleave-hot-path ns/event: look=%.0f skip=%.0f cross=%.0f%n",
+                lookNs, skipNs, crossNs);
+
+        assertTrue(lookNs < 100_000, "look-around path must stay far below 100us/event");
+        assertTrue(skipNs < 100_000, "same-covering skip must stay far below 100us/event");
+        assertTrue(crossNs < 100_000, "in-chunk crossing must stay far below 100us/event");
+    }
+
+    private double meanMoveNs(Player player, Location from, Location to) {
+        int warmup = 5_000;
+        int measured = 20_000;
+        for (int i = 0; i < warmup; i++) {
+            listener.onPlayerMove(new PlayerMoveEvent(player, from, to));
+        }
+        long start = System.nanoTime();
+        for (int i = 0; i < measured; i++) {
+            listener.onPlayerMove(new PlayerMoveEvent(player, from, to));
+        }
+        return (double) (System.nanoTime() - start) / measured;
     }
 
     @Test
@@ -244,6 +368,24 @@ class EnterLeaveListenerTest {
         return new PlayerTeleportEvent(player,
                 new Location(world, fromX, fromY, fromZ),
                 new Location(world, toX, toY, toZ));
+    }
+
+    private PlayerMoveEvent move3d(Player player,
+            int fromX, int fromY, int fromZ, int toX, int toY, int toZ) {
+        return new PlayerMoveEvent(player,
+                new Location(world, fromX, fromY, fromZ),
+                new Location(world, toX, toY, toZ));
+    }
+
+    private LandRegistry cuboidSnapshot() {
+        Instant now = Instant.now();
+        ChunkKey chunk = new ChunkKey(WORLD_ID, 0, 0);
+        SubLandSnapshot nook = new SubLandSnapshot(SUB_A, LAND_A, "Nook",
+                new Cuboid(0, 0, 0, 7, 255, 15), WORLD_ID);
+        LandSnapshot home = new LandSnapshot(LAND_A, "Home", "home",
+                OwnerRef.player(UUID.randomUUID()), WORLD_ID,
+                Set.of(chunk), List.of(nook), 0, 0, now, now);
+        return LandRegistry.from(List.of(home));
     }
 
     private static World worldProxy() {

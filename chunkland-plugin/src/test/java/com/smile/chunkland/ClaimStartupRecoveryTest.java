@@ -1,6 +1,7 @@
 package com.smile.chunkland;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -10,6 +11,8 @@ import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.LandName;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.api.permission.PermissionState;
+import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.persistence.AuditEntry;
 import com.smile.chunkland.persistence.ClaimCommit;
 import com.smile.chunkland.persistence.LedgerEntry;
@@ -68,7 +71,7 @@ class ClaimStartupRecoveryTest {
 
     private static com.smile.acelib.AceLibApi readyApi() {
         return com.smile.acelib.AceLibApi.ready(
-                "1.2.0",
+                "1.3.0",
                 com.smile.acelib.platform.Platform.PAPER,
                 () -> true,
                 () -> {});
@@ -231,6 +234,23 @@ class ClaimStartupRecoveryTest {
         assertNotNull(plugin.getProtectionStore().snapshot().findLand(payload.worldUuid(), 7, -3),
                 "shared protection store must publish the rebuilt runtime");
 
+        // Hydration must confirm the index before protection trusts it, and
+        // opening the gate must not over-block afterwards.
+        bootstrap.hydrationFuture().toCompletableFuture().get(15, TimeUnit.SECONDS);
+        assertNotNull(plugin.getProtectionEngine(), "protection engine must exist");
+        assertTrue(plugin.getProtectionEngine().isRegistryReady(),
+                "hydrated index must report ready");
+        var wilderness = plugin.getProtectionEngine().decideAtBlock(UUID.randomUUID(),
+                UUID.randomUUID(), 1600, 64, 1600, ProtectionActionType.BLOCK_BREAK);
+        assertEquals(PermissionState.ALLOW, wilderness.outcome(),
+                "hydrated wilderness must stay vanilla");
+        var ownerBreak = plugin.getProtectionEngine().decideAtBlock(
+                UUID.fromString("00000000-0000-0000-0000-000000000011"),
+                UUID.fromString("00000000-0000-0000-0000-000000000012"),
+                117, 64, -43, ProtectionActionType.BLOCK_BREAK);
+        assertEquals(PermissionState.ALLOW, ownerBreak.outcome(),
+                "owner must keep working their own hydrated land");
+
         plugin.onDisable();
         assertNull(plugin.getClaimStartup(), "onDisable must release the bootstrap");
         assertNull(plugin.getProtectionStore(), "onDisable must clear the shared store");
@@ -287,6 +307,7 @@ class ClaimStartupRecoveryTest {
 
         ChunkLandPlugin plugin = allocatePlugin();
         AtomicBoolean disabled = new AtomicBoolean(false);
+        AtomicBoolean protectionRegistered = new AtomicBoolean(false);
         PluginManager managers = (PluginManager) Proxy.newProxyInstance(
                 PluginManager.class.getClassLoader(),
                 new Class[]{PluginManager.class},
@@ -294,6 +315,12 @@ class ClaimStartupRecoveryTest {
                     String name = method.getName();
                     if (name.equals("disablePlugin")) {
                         disabled.set(true);
+                        return null;
+                    }
+                    if (name.equals("registerEvents") && args != null && args.length > 0
+                            && args[0] instanceof
+                            com.smile.chunkland.protection.ProtectionListener) {
+                        protectionRegistered.set(true);
                         return null;
                     }
                     if (name.equals("isPluginEnabled")) {
@@ -315,7 +342,27 @@ class ClaimStartupRecoveryTest {
         assertNull(plugin.getClaimStartup(), "failed bootstrap must not leave a half-open caller");
         assertNotNull(plugin.getProtectionStore(), "protection store must still exist");
         assertTrue(plugin.getProtectionStore().snapshot().isEmpty(),
-                "failed recovery keeps the empty fail-closed runtime");
+                "failed recovery keeps the empty runtime");
+        // The empty index is unconfirmed, never wilderness: protection stays
+        // up and denies instead of allowing, and the listener was registered
+        // normally (no deferred registration, no disabled protection).
+        assertTrue(protectionRegistered.get(),
+                "protection listener must be registered even when bootstrap fails");
+        assertNotNull(plugin.getProtectionEngine(), "protection engine must exist");
+        assertFalse(plugin.getProtectionEngine().isRegistryReady(),
+                "failed hydration must report unready");
+        assertNull(plugin.getProtectionEngine().snapshot(),
+                "unconfirmed index must be withheld, never classified");
+        for (ProtectionActionType action : List.of(
+                ProtectionActionType.BLOCK_BREAK,
+                ProtectionActionType.BLOCK_PLACE,
+                ProtectionActionType.CONTAINER_OPEN,
+                ProtectionActionType.DOOR_USE)) {
+            var decision = plugin.getProtectionEngine().decideAtBlock(UUID.randomUUID(),
+                    UUID.randomUUID(), 115, 64, -47, action);
+            assertEquals(PermissionState.DENY, decision.outcome(),
+                    "failed bootstrap must deny, never wilderness-allow, for " + action);
+        }
         plugin.onDisable();
     }
 }

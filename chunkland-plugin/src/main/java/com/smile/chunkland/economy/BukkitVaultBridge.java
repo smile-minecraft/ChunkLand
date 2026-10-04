@@ -42,9 +42,13 @@ import org.bukkit.OfflinePlayer;
  * live Folia build, so callers must keep every call on the async claim
  * executor the saga already uses — never on a region thread and never
  * inside a SQL transaction. The Legacy API has no provider-side idempotency
- * key (the {@code operationId} is carried for the bridge contract but Vault
- * cannot consume it); exactly-once rests on the saga ledger plus the
- * adapter's in-flight dedup.
+ * key: the {@code operationId} is accepted by the bridge contract but
+ * discarded here, because Vault {@code depositPlayer}/{@code withdrawPlayer}
+ * take no idempotency parameter and the provider can never dedup. Cross-
+ * restart exactly-once therefore rests solely on the saga ledger (park the
+ * execution intent before depositing, never resend a parked row); the
+ * adapter's in-process dedup only coalesces concurrent callers and is not a
+ * restart guarantee.
  */
 public final class BukkitVaultBridge implements VaultBridge {
 

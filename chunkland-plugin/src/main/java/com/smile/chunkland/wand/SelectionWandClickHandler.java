@@ -13,6 +13,8 @@ import com.smile.chunkland.selection.SelectionLandContext;
 import com.smile.chunkland.selection.SelectionLandLookup;
 import com.smile.chunkland.selection.SelectionMode;
 import com.smile.chunkland.selection.SelectionPoint;
+import com.smile.chunkland.selection.SelectionPreviewColor;
+import com.smile.chunkland.selection.SelectionPreviewColorResolver;
 import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionUpdate;
@@ -65,6 +67,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
     private final SelectionLandLookup landLookup;
     private final SelectionLandBoundaryLookup boundaryLookup;
     private final OccupiedPreviewController preview;
+    private final SelectionPreviewColorResolver previewColors;
     /**
      * Last blocked token per player, so a repeated blocked click does not
      * re-prompt. The token is the live session generation, or {@code
@@ -75,7 +78,10 @@ public final class SelectionWandClickHandler implements WandClickHandler {
     /** Players already told that the land registry is not hydrated yet. */
     private final Set<UUID> unavailableNotified = ConcurrentHashMap.newKeySet();
     /** Land currently previewed per player, so a repeated click does not restart it. */
-    private final Map<UUID, LandId> previewedLand = new ConcurrentHashMap<>();
+    private final Map<UUID, PreviewState> previewedLand = new ConcurrentHashMap<>();
+
+    private record PreviewState(LandId land, SelectionPreviewColor color) {
+    }
 
     private static final long NO_SESSION_TOKEN = -1L;
 
@@ -101,7 +107,8 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             WandFeedback feedback,
             SelectionLandLookup landLookup) {
         this(manager, editServices, clock, feedback, landLookup,
-                SelectionLandBoundaryLookup.none(), OccupiedPreviewController.noop());
+                SelectionLandBoundaryLookup.none(), OccupiedPreviewController.noop(),
+                SelectionPreviewColorResolver.blocked());
     }
 
     public SelectionWandClickHandler(
@@ -112,6 +119,19 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             SelectionLandLookup landLookup,
             SelectionLandBoundaryLookup boundaryLookup,
             OccupiedPreviewController preview) {
+        this(manager, editServices, clock, feedback, landLookup, boundaryLookup, preview,
+                SelectionPreviewColorResolver.blocked());
+    }
+
+    public SelectionWandClickHandler(
+            SelectionSessionManager manager,
+            Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback,
+            SelectionLandLookup landLookup,
+            SelectionLandBoundaryLookup boundaryLookup,
+            OccupiedPreviewController preview,
+            SelectionPreviewColorResolver previewColors) {
         this.manager = Objects.requireNonNull(manager, "manager");
         this.editServices = Objects.requireNonNull(editServices, "editServices");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -120,6 +140,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         this.guard = new SelectionWandGuard(landLookup);
         this.boundaryLookup = Objects.requireNonNull(boundaryLookup, "boundaryLookup");
         this.preview = Objects.requireNonNull(preview, "preview");
+        this.previewColors = Objects.requireNonNull(previewColors, "previewColors");
     }
 
     @Override
@@ -286,7 +307,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         if (firstPoint == null || firstPoint.kind() == SelectionWandGuard.FirstPointKind.BLOCKED) {
             Optional<LandId> occupied = firstPoint == null ? Optional.empty() : firstPoint.occupiedLandId();
             notifyBlocked(playerId, player, current);
-            showPreview(playerId, occupied, point.blockY() + 1.0);
+            showPreview(playerId, occupied, point, point.blockY() + 1.0);
             return;
         }
         if (firstPoint.kind() == SelectionWandGuard.FirstPointKind.EDIT_SELECTION) {
@@ -294,7 +315,8 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             // the baseline until the player accepts a new selection.
             startSession(playerId, player, worldId, point, now, SelectionMode.EDIT_SELECTION,
                     firstPoint.targetLandId(), firstPoint.baseStructureRevision(), WandFeedback.Kind.EDIT_TARGET);
-            showPreview(playerId, firstPoint.targetLandId(), point.blockY() + 1.0);
+            showPreview(playerId, firstPoint.targetLandId(), point, point.blockY() + 1.0,
+                    SelectionPreviewColor.OWN);
             return;
         }
         // Wilderness first point: no existing boundary to preview.
@@ -454,7 +476,8 @@ public final class SelectionWandClickHandler implements WandClickHandler {
                 // actual boundary preview.
                 if (outcome != null && outcome.reason() == SelectionEditReason.COLLISION) {
                     notifyBlocked(playerId, player, current);
-                    showPreview(playerId, occupiedLandAt(outcome.conflictChunk()), point.blockY() + 1.0);
+                    showPreview(playerId, occupiedLandAt(outcome.conflictChunk()), point,
+                            point.blockY() + 1.0);
                 }
                 return;
             }
@@ -548,13 +571,24 @@ public final class SelectionWandClickHandler implements WandClickHandler {
      * controller. Best-effort: a missing land or a failing preview never
      * affects the session or the claim tokens.
      */
-    private void showPreview(UUID playerId, Optional<LandId> landId, double planeY) {
-        if (landId == null || landId.isEmpty()) {
+    private void showPreview(UUID playerId, Optional<LandId> landId,
+                             SelectionPoint target, double planeY) {
+        showPreview(playerId, landId, target, planeY, null);
+    }
+
+    private void showPreview(UUID playerId, Optional<LandId> landId,
+                             SelectionPoint target, double planeY,
+                             SelectionPreviewColor forcedColor) {
+        if (landId == null || landId.isEmpty() || target == null) {
             return;
         }
         LandId land = landId.get();
-        if (land.equals(previewedLand.get(playerId))) {
-            // Same blocking land: the running preview already outlines it.
+        SelectionPreviewColor color = forcedColor == null
+                ? resolvePreviewColor(playerId, land, target)
+                : forcedColor;
+        PreviewState current = previewedLand.get(playerId);
+        if (current != null && current.land().equals(land) && current.color() == color) {
+            // Same land and colour: the running preview already outlines it.
             return;
         }
         Optional<Set<ChunkKey>> chunks;
@@ -571,10 +605,32 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             return;
         }
         try {
-            preview.show(playerId, boundary, planeY);
-            previewedLand.put(playerId, land);
+            preview.show(playerId, boundary, planeY, color);
+            previewedLand.put(playerId, new PreviewState(land, color));
         } catch (RuntimeException ignored) {
             // Preview is best-effort; selection data is unaffected.
+        }
+    }
+
+    private SelectionPreviewColor resolvePreviewColor(UUID playerId, LandId landId,
+                                                       SelectionPoint target) {
+        final SelectionLandContext context;
+        try {
+            context = landLookup.landAt(target.worldId(), target.blockX() >> 4, target.blockZ() >> 4);
+        } catch (RuntimeException failure) {
+            return SelectionPreviewColor.BLOCKED;
+        }
+        if (context == null || !landId.equals(context.landId())) {
+            return SelectionPreviewColor.BLOCKED;
+        }
+        if (context.ownedBy(playerId)) {
+            return SelectionPreviewColor.OWN;
+        }
+        try {
+            SelectionPreviewColor resolved = previewColors.resolve(playerId, context, target);
+            return resolved == null ? SelectionPreviewColor.BLOCKED : resolved;
+        } catch (RuntimeException failure) {
+            return SelectionPreviewColor.BLOCKED;
         }
     }
 

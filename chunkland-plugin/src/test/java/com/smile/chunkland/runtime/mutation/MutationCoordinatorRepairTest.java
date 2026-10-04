@@ -17,6 +17,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -201,11 +202,20 @@ class MutationCoordinatorRepairTest {
      * after close, but no later stage may run and the terminal result is
      * exactly-once FAILED with reservation released. This uses a deterministic
      * latch barrier between authorization and invocation, not sleep.
+     *
+     * <p>{@code close()} both unblocks the authorization gap (via the
+     * {@code shutdownNow()} interrupt) and terminalizes the promise, so on
+     * its own it provides no barrier between the test thread and the pipeline
+     * thread. The test therefore captures the pipeline thread inside the
+     * post-authorization hook and joins it, so every assertion below observes
+     * a finished pipeline instead of racing it.
      */
     @Test
     void authorizedCollaboratorMayBeInvokedAfterCloseButLaterStagesSuppressed() throws Exception {
         CountDownLatch authorized = new CountDownLatch(1);
         CountDownLatch blockInvoke = new CountDownLatch(1);
+        CountDownLatch ledgerInvokedLatch = new CountDownLatch(1);
+        AtomicReference<Thread> pipelineThread = new AtomicReference<>();
         AtomicBoolean ledgerInvoked = new AtomicBoolean(false);
         AtomicBoolean economyInvoked = new AtomicBoolean(false);
         AtomicBoolean domainInvoked = new AtomicBoolean(false);
@@ -216,6 +226,7 @@ class MutationCoordinatorRepairTest {
         LedgerWriter ledger = new LedgerWriter() {
             @Override public CompletionStage<Void> insert(UUID opId, MutationRequest r) {
                 ledgerInvoked.set(true);
+                ledgerInvokedLatch.countDown();
                 return CompletableFuture.completedFuture(null);
             }
             @Override public CompletionStage<Void> finalizeState(UUID opId, MutationOutcome o) {
@@ -239,6 +250,7 @@ class MutationCoordinatorRepairTest {
         fresh(rec, null, ledger, economy, committer, publisher);
         coordinator.testPostAuthorizeHookForTest = stage -> {
             if ("Ledger".equals(stage)) {
+                pipelineThread.set(Thread.currentThread());
                 authorized.countDown();
                 try {
                     blockInvoke.await(5, TimeUnit.SECONDS);
@@ -256,8 +268,19 @@ class MutationCoordinatorRepairTest {
         long closeMs = (System.nanoTime() - closeStart) / 1_000_000;
         assertTrue(closeMs < 800, "close must remain bounded while collaborator is blocked in auth->invoke gap, was " + closeMs + "ms");
 
-        // Release the gap – collaborator will now be invoked even though close has already won
         blockInvoke.countDown();
+
+        // The gap was already released by close()'s shutdownNow() interrupt,
+        // so the pipeline thread is now racing us toward insert(). Wait for
+        // the invocation itself instead of sampling the flag, then join the
+        // pipeline thread so the "no later stage" assertions below observe a
+        // finished pipeline rather than one that is still in flight.
+        assertTrue(ledgerInvokedLatch.await(5, TimeUnit.SECONDS),
+                "already-authorized collaborator must be invoked after close");
+        Thread pipeline = pipelineThread.get();
+        assertNotNull(pipeline, "post-authorization hook must run on the pipeline thread");
+        pipeline.join(TimeUnit.SECONDS.toMillis(5));
+        assertFalse(pipeline.isAlive(), "pipeline must not stay blocked after close");
 
         MutationResult r = f.get(2, TimeUnit.SECONDS);
         assertEquals(MutationOutcome.FAILED, r.outcome());

@@ -44,8 +44,14 @@ public final class OccupiedPreviewRenderer implements OccupiedPreviewController 
 
     @Override
     public void show(UUID playerId, Set<ChunkKey> chunks, double planeY) {
+        show(playerId, chunks, planeY, SelectionPreviewColor.BLOCKED);
+    }
+
+    @Override
+    public void show(UUID playerId, Set<ChunkKey> chunks, double planeY, SelectionPreviewColor color) {
         Objects.requireNonNull(playerId, "playerId");
         Objects.requireNonNull(chunks, "chunks");
+        Objects.requireNonNull(color, "color");
         if (chunks.isEmpty()) {
             stop(playerId);
             return;
@@ -54,7 +60,8 @@ public final class OccupiedPreviewRenderer implements OccupiedPreviewController 
         Entry next;
         synchronized (monitor) {
             previous = loops.remove(playerId);
-            next = new Entry(Set.copyOf(chunks), planeY, previous == null ? 0L : previous.generation + 1L);
+            next = new Entry(Set.copyOf(chunks), planeY, color,
+                    previous == null ? 0L : previous.generation + 1L);
             loops.put(playerId, next);
         }
         if (previous != null) {
@@ -166,7 +173,7 @@ public final class OccupiedPreviewRenderer implements OccupiedPreviewController 
         }
         try {
             for (SelectionVisualizationGeometry.Point point : window) {
-                sink.emit(playerId, point.x(), point.y(), point.z());
+                sink.emit(playerId, point.x(), point.y(), point.z(), entry.color);
             }
         } catch (RuntimeException emitFailure) {
             drop(playerId, generation);
@@ -228,13 +235,15 @@ public final class OccupiedPreviewRenderer implements OccupiedPreviewController 
     private static final class Entry {
         final Set<ChunkKey> chunks;
         final double planeY;
+        final SelectionPreviewColor color;
         final long generation;
         long tickIndex;
         SelectionTimeoutScheduler.Cancellable handle = SelectionTimeoutScheduler.Cancellable.noop();
 
-        Entry(Set<ChunkKey> chunks, double planeY, long generation) {
+        Entry(Set<ChunkKey> chunks, double planeY, SelectionPreviewColor color, long generation) {
             this.chunks = chunks;
             this.planeY = planeY;
+            this.color = color;
             this.generation = generation;
         }
     }

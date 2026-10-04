@@ -203,7 +203,10 @@ public final class SubLandIndex {
      * Precise block position lookup within the parent land. If any SubLand
      * has precise geometry, tests cuboid containment first. Otherwise inspects
      * the chunk column pointed at by the block and discriminates by block Y.
-     * Returns {@code null} if no SubLand covers the position.
+     * Candidates with precise geometry already failed containment above, so
+     * the column fallback only considers chunk-based SubLands: a partial
+     * cuboid never covers its whole column. Returns {@code null} if no
+     * SubLand covers the position.
      */
     public SubLandSnapshot findAtBlock(int blockX, int blockY, int blockZ) {
         if (subLands.isEmpty()) return null;
@@ -230,6 +233,9 @@ public final class SubLandIndex {
                 int end = start + lengths[idx];
                 for (int i = start; i < end; i++) {
                     SubLandSnapshot s = flatCandidates[i];
+                    if (s.cuboid() != null) {
+                        continue;
+                    }
                     if (blockY >= s.minBlockY() && blockY <= s.maxBlockY()) {
                         return s;
                     }

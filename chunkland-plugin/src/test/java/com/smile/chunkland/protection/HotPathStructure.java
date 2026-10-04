@@ -65,7 +65,15 @@ final class HotPathStructure {
             return Optional.empty();
         }
         for (String token : HOT_PATH_TOKENS) {
-            if (code.contains(token)) {
+            String haystack = code;
+            if (token.equals("vault")) {
+                // Material.VAULT is a Bukkit trial-chamber block kind, not the
+                // Vault economy API: strip the qualified constant so the
+                // economy ban keeps firing on vaultHook, Vault.getEconomy,
+                // and net.milkbowl imports without flagging the block.
+                haystack = code.replace("material.vault", "");
+            }
+            if (haystack.contains(token)) {
                 return Optional.of("hot path must not reference '" + token + "': " + line.trim());
             }
         }

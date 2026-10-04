@@ -576,7 +576,7 @@ class ShrinkSagaTest {
     }
 
     @Test
-    void depositFailureParksForCompensationWithoutRollback() throws Exception {
+    void depositFailureQuarantinesForReconciliationWithoutRollback() throws Exception {
         try (Harness h = new Harness(10, 100)) {
             UUID actor = UUID.randomUUID();
             UUID world = UUID.randomUUID();
@@ -588,16 +588,23 @@ class ShrinkSagaTest {
 
             SelectionSession session = h.selectDelta(actor, world, land, Set.of(chunk(world, 1, 0)));
             ShrinkOutcome outcome = h.run(h.requestFor(session, owner));
-            assertEquals(ShrinkOutcome.Status.COMPENSATION_PENDING, outcome.status());
+            // The deposit ran exactly once behind a durably parked intent;
+            // the unconfirmed outcome quarantines instead of resending,
+            // because a resend could double-credit.
+            assertEquals(ShrinkOutcome.Status.NEEDS_RECONCILIATION, outcome.status());
+            assertEquals(1, h.economy.refunds.size(), "exactly one deposit attempt");
             // The committed removal is never rolled back for the refund.
             assertEquals(1, h.facts(land).size());
             assertEquals(1L, h.structureRevision(land));
             assertEquals(List.of("CHUNK_REMOVE"), h.auditActions(land));
             assertEquals(1, h.ledgerRows().size());
-            assertEquals(LedgerState.COMPENSATION_PENDING.name(), h.ledgerRows().get(0).state());
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), h.ledgerRows().get(0).state());
+            assertEquals(0, h.ledgerRows().get(0).compensationAttempts(),
+                    "no automatic retry is scheduled after a parked attempt");
             // The runtime publish waits for a confirmed deposit (same as the
-            // refund saga): recovery retries the deposit and rebuilds the map.
-            // The durable domain above is already authoritative.
+            // refund saga): an unconfirmed deposit quarantines for operator
+            // reconciliation instead of publishing or resending. The durable
+            // domain above is already authoritative.
         }
     }
 

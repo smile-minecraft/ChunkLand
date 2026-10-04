@@ -117,6 +117,12 @@ public final class CrossBoundaryDecider {
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(inAction, "inAction");
         Objects.requireNonNull(outAction, "outAction");
+        if (!engine.isRegistryReady()) {
+            // An unconfirmed index reads every position as wilderness, so no
+            // crossing can prove both ends are unowned. Deny until hydration
+            // confirms the index is complete.
+            return true;
+        }
         try {
             LandRegistry snapshot;
             try {

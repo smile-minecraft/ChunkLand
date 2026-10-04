@@ -45,6 +45,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -84,9 +85,27 @@ class ClaimSagaTest {
         volatile RuntimeException chargeThrow;
         volatile RefundOutcome refundResult = RefundOutcome.REFUNDED;
         volatile OperationLedger ledgerProbe;
+        /**
+         * Optional gate the winner's charge waits on before touching any side
+         * effect. Null (the default) means no waiting, so every other test is
+         * unaffected. The same-chunk race sets it so the winner cannot finish
+         * while a straggler is still on its way to arbitration.
+         */
+        volatile CountDownLatch chargeGate;
 
         @Override
         public CompletionStage<ClaimEconomy.ChargeResult> charge(UUID operationId, ClaimRequest request, Money price) {
+            CountDownLatch gate = chargeGate;
+            if (gate != null) {
+                try {
+                    // Bounded wait: only a deadlock detector. If arbitration
+                    // itself is stuck the test must fail loudly elsewhere, so
+                    // the gate never blocks forever.
+                    gate.await(60, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             if (chargeThrow != null) {
                 throw chargeThrow;
             }
@@ -895,8 +914,27 @@ class ClaimSagaTest {
         UUID world = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
         OwnerRef owner = OwnerRef.player(actor);
+        // Exactly one winner is decided synchronously on the caller threads by
+        // the atomic logical-reservation acquire, so the outcome does not
+        // depend on timing. The generous timeouts below are only deadlock
+        // detectors for a stuck thread or store; they never bound how fast a
+        // healthy run must finish, which is what makes this race stable when
+        // the machine is heavily loaded.
+        //
+        // The charge gate closes the one remaining timing hole: without it a
+        // straggler delayed by load could arrive after the winner has already
+        // completed and released the reservation. It would then take the
+        // sequential second-claim path (charge, then a compensated failure on
+        // the already-committed chunk) instead of the concurrent-loser path,
+        // and the loser-key assertion below would fail even though every
+        // component behaved correctly. Gating the winner's charge on "every
+        // party has finished arbitration" forces all losers to observe the
+        // held reservation, so the contention the test means to check is
+        // actually what happens on every run.
         try (Harness h = new Harness(tiered(), 100, 100)) {
             CyclicBarrier ready = new CyclicBarrier(parties);
+            CountDownLatch attempted = new CountDownLatch(parties);
+            h.economy.chargeGate = attempted;
             ExecutorService callers = Executors.newFixedThreadPool(parties, r -> {
                 Thread t = new Thread(r, "chunk-race");
                 t.setDaemon(true);
@@ -907,14 +945,23 @@ class ClaimSagaTest {
                 for (int i = 0; i < parties; i++) {
                     final int index = i;
                     futures.add(callers.submit(() -> {
-                        ready.await(10, TimeUnit.SECONDS);
-                        return h.saga.claim(claim(owner, actor, world, 11, 11, "Race" + index))
-                                .toCompletableFuture().get(10, TimeUnit.SECONDS);
+                        ready.await(60, TimeUnit.SECONDS);
+                        // Arbitration (quota + reservation acquire) happens
+                        // synchronously inside claim() on this thread; count
+                        // down as soon as it returns so the winner's charge
+                        // waits for every party, including stragglers.
+                        CompletionStage<ClaimOutcome> stage;
+                        try {
+                            stage = h.saga.claim(claim(owner, actor, world, 11, 11, "Race" + index));
+                        } finally {
+                            attempted.countDown();
+                        }
+                        return stage.toCompletableFuture().get(60, TimeUnit.SECONDS);
                     }));
                 }
                 List<ClaimOutcome> outcomes = new ArrayList<>();
                 for (Future<ClaimOutcome> f : futures) {
-                    outcomes.add(f.get(15, TimeUnit.SECONDS));
+                    outcomes.add(f.get(60, TimeUnit.SECONDS));
                 }
                 long successes = outcomes.stream()
                         .filter(o -> o.status() == ClaimOutcome.Status.SUCCESS).count();
@@ -922,15 +969,15 @@ class ClaimSagaTest {
                         .filter(o -> o.status() == ClaimOutcome.Status.REJECTED
                                 && "reservation.conflict".equals(o.diagnosticKey()))
                         .count();
-                assertEquals(1, successes);
-                assertEquals(parties - 1, conflicts);
+                assertEquals(1, successes, "exactly one racer must win: " + outcomes);
+                assertEquals(parties - 1, conflicts, "every loser must be a reservation conflict: " + outcomes);
                 assertEquals(1, ledgerCount(h.ledger));
                 assertEquals(1, h.economy.charges.size());
                 assertEquals(0, h.reservations.size());
                 assertEquals(0, h.quota.chunkReserved(owner));
             } finally {
                 callers.shutdownNow();
-                assertTrue(callers.awaitTermination(10, TimeUnit.SECONDS), "caller pool must terminate");
+                assertTrue(callers.awaitTermination(60, TimeUnit.SECONDS), "caller pool must terminate");
             }
         }
     }

@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.logging.Logger;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -27,15 +28,37 @@ import org.bukkit.event.player.PlayerTeleportEvent;
  *
  * <p>Push-out: an entry deny ejects under a per-player throttle
  * ({@link #DEFAULT_PUSH_OUT_COOLDOWN} unless constructed otherwise) so a
- * stuck client hammering the border costs one teleport per window. The target
- * prefers the pre-entry position (the boundary side) and falls back to the
- * world spawn; each candidate is used only when its chunk is already loaded
- * (verified through {@link ChunkLoadedCheck}) <em>and</em> the player is not
- * ENTRY-denied there (verified through {@link EntryAllowedCheck}). When no
- * candidate passes both checks the deny stands as cancel-only: this adapter
- * never loads a chunk and never sends a player back into a denying land. A
- * missing entry check verifies nothing and therefore allows nothing
- * (fail-closed, cancel-only).
+ * stuck client hammering the border costs one teleport per window. Transport
+ * runs over {@code teleportAsync}: sync {@code Entity#teleport} is broken on
+ * Folia and must never be used, and the transport must defer to a later tick
+ * because an inline teleport from the deny handler is undone by the platform
+ * before the client ever sees it (see {@link PushOutSink}). The target
+ * prefers the pre-entry position
+ * (the boundary side) and falls back to the world spawn; each candidate is
+ * used only when its chunk is already loaded (verified through
+ * {@link ChunkLoadedCheck}), the player is not ENTRY-denied there (verified
+ * through {@link EntryAllowedCheck}), <em>and</em> the player is not banned
+ * there (so the landing never walks straight into another banned-inside
+ * stop). When no candidate passes all checks the deny stands as cancel-only:
+ * this adapter never loads a chunk and never sends a player back into a
+ * denying land. A missing entry check verifies nothing and therefore allows
+ * nothing (fail-closed, cancel-only). The throttle slot is spent before
+ * target resolution, so the exhausted-candidate path records one warning
+ * log per window no matter how fast a stuck player hammers the border;
+ * routine ejects stay quiet. A transport that refuses the landing is recorded
+ * the same way instead of reading as a successful eject.
+ *
+ * <p>A push-out teleport always departs from the denying area, so without
+ * help the banned-inside stop would cancel the very teleport sent to rescue
+ * the player and wedge them inside. Every initiated push-out therefore
+ * registers a single-use pass for its validated landing
+ * ({@link #consumePushOutPass}): the next teleport event arriving at exactly
+ * that block skips the origin ban stop once, while the destination ENTRY
+ * check still runs. The pass is claimed for every arrival before the origin
+ * ban stop runs, so ENTRY-deny rescues (whose landing is not banned) spend
+ * it too instead of leaving it behind; quit discards any pass still
+ * pending. Passes never widen anything else, and an unmatched or
+ * replayed arrival stays fully enforced.
  *
  * <p>Banned-inside: ban writes and storage live in the durable ENTRY ban
  * table; this adapter only defines the read seam ({@link BanLookup}) and
@@ -92,10 +115,29 @@ public final class EntryProtectionAdapter {
         }
     }
 
-    /** Push-out transport. Production teleports on the event thread. */
+    /**
+     * Push-out transport. Production hands the landing to the player's Folia
+     * thread for a later tick and travels over {@code teleportAsync} there
+     * (sync {@code Entity#teleport} is broken on Folia).
+     *
+     * <p>The contract exists because an inline teleport from a deny handler is
+     * silently undone: Paper fires {@code PlayerMoveEvent} inside
+     * {@code ServerGamePacketListenerImpl#handleMovePlayer} and, once the event
+     * comes back cancelled, immediately restores the pre-move position with
+     * {@code internalTeleport(from)}. On the player's own region thread
+     * {@code teleportAsync} resolves inline, so an ejection applied from the
+     * handler is overwritten in the same call — the player never moves and
+     * nothing throws.
+     */
     @FunctionalInterface
     public interface PushOutSink {
-        void teleport(Player player, Location target);
+        /**
+         * @return {@code true} when the transport took the landing for delivery,
+         *         {@code false} when the platform refused it (retired thread,
+         *         thrown call). Failures the platform only reports later, on the
+         *         teleport's completion, are the transport's own to record.
+         */
+        boolean teleport(Player player, Location target);
     }
 
     /**
@@ -115,6 +157,9 @@ public final class EntryProtectionAdapter {
     private final EntryAllowedCheck entryCheck;
     private final PushOutSink sink;
     private final ConcurrentMap<UUID, Instant> lastPushOut = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Location> pushOutPasses = new ConcurrentHashMap<>();
+
+    private static final Logger LOG = Logger.getLogger(EntryProtectionAdapter.class.getName());
 
     /**
      * @param clock            time source; tests advance a fake clock instead
@@ -228,10 +273,10 @@ public final class EntryProtectionAdapter {
 
     /**
      * Picks the push-out target without loading anything: the pre-entry
-     * position when its chunk is loaded and ENTRY allows the player there,
-     * else the world spawn under the same two checks, else empty (deny stands
-     * as cancel-only). A denied or unverifiable candidate is skipped, never
-     * teleported into.
+     * position when its chunk is loaded, ENTRY allows the player there, and
+     * the player is not banned there, else the world spawn under the same
+     * three checks, else empty (deny stands as cancel-only). A denied,
+     * banning, or unverifiable candidate is skipped, never teleported into.
      */
     public Optional<Location> pushOutTarget(Player player, Location from) {
         if (player == null) {
@@ -247,8 +292,7 @@ public final class EntryProtectionAdapter {
             return Optional.empty();
         }
         try {
-            if (from != null && from.getWorld() != null
-                    && chunkLoaded(from) && entryAllowed(playerId, from)) {
+            if (from != null && from.getWorld() != null && usableTarget(playerId, from)) {
                 return Optional.of(from);
             }
             World world = player.getWorld();
@@ -264,8 +308,7 @@ public final class EntryProtectionAdapter {
             } catch (RuntimeException ex) {
                 return Optional.empty();
             }
-            if (spawn == null || spawn.getWorld() == null
-                    || !chunkLoaded(spawn) || !entryAllowed(playerId, spawn)) {
+            if (!usableTarget(playerId, spawn)) {
                 return Optional.empty();
             }
             return Optional.of(spawn);
@@ -275,19 +318,22 @@ public final class EntryProtectionAdapter {
     }
 
     /**
-     * Full deny path: resolve a loaded target, spend the throttle slot, and
-     * transport. Every failure (no loaded target, throttled, transport threw)
-     * yields {@code false} and leaves the cancel in place; nothing here
-     * throws for enforcement-path failures.
+     * Full deny path: spend the throttle slot first, then resolve a usable
+     * target and hand it to the transport. The throttle runs before
+     * target resolution on purpose: a wedged player hammering the border
+     * costs one teleport <em>and</em> one observable record per window,
+     * never one log line per move event. Every failure (throttled, no
+     * usable target, refused or throwing transport) yields {@code false},
+     * leaves the cancel in place, and drops the pass that landing can no
+     * longer claim; nothing here throws for enforcement-path failures.
+     * A no-candidate occurrence also spends the window, so a still-stuck
+     * player is recorded once per window until a usable target appears.
      *
-     * @return {@code true} when the player was actually pushed out
+     * @return {@code true} when the transport took the landing for delivery,
+     *         {@code false} when the player stays put
      */
     public boolean pushOut(Player player, Location from) {
         if (player == null) {
-            return false;
-        }
-        Optional<Location> target = pushOutTarget(player, from);
-        if (target.isEmpty()) {
             return false;
         }
         UUID playerId;
@@ -306,12 +352,140 @@ public final class EntryProtectionAdapter {
         } catch (RuntimeException ex) {
             return false;
         }
+        Optional<Location> target = pushOutTarget(player, from);
+        if (target.isEmpty()) {
+            LOG.warning("ChunkLand push-out found no push-out target for a denied move: "
+                    + "no candidate chunk is loaded, ENTRY-allowed, and ban-free, "
+                    + "so the deny stands as cancel-only");
+            return false;
+        }
+        Location landing = target.get();
+        pushOutPasses.put(playerId, landing);
+        boolean accepted;
         try {
-            sink.teleport(player, target.get());
-            return true;
+            accepted = sink.teleport(player, landing);
+        } catch (RuntimeException ex) {
+            accepted = false;
+        }
+        if (!accepted) {
+            // The landing never left this thread, so no arrival can claim the
+            // pass; leaving it would waive the origin ban stop for an unrelated
+            // teleport later.
+            discardPass(playerId, landing);
+            LOG.warning("ChunkLand push-out transport refused the landing for a denied move: "
+                    + "the platform rejected the ejection, so the deny stands as cancel-only");
+        }
+        return accepted;
+    }
+
+    /** Drops the pass registered for {@code landing} unless a newer one replaced it. */
+    private void discardPass(UUID playerId, Location landing) {
+        pushOutPasses.computeIfPresent(playerId,
+                (id, registered) -> registered == landing ? null : registered);
+    }
+
+    /**
+     * Claims the single-use pass for a push-out landing. The teleport
+     * listener claims this for every arrival <em>before</em> applying the
+     * banned-inside origin stop: a rescue teleport departs from the denying
+     * area by definition, so only its own validated landing may skip that
+     * stop, exactly once. Claiming up front (instead of only inside the ban
+     * branch) also spends the pass on ENTRY-deny rescues, whose landing is
+     * not banned and would otherwise leave the pass behind. Anything else
+     * (unknown player, unrelated destination, replayed arrival) answers
+     * {@code false} and stays fully enforced; the destination ENTRY check
+     * always runs regardless.
+     *
+     * @return {@code true} when this arrival is the registered rescue
+     *         teleport for the player and the pass is now spent
+     */
+    boolean consumePushOutPass(UUID playerId, Location to) {
+        if (playerId == null || to == null) {
+            return false;
+        }
+        Location registered;
+        try {
+            registered = pushOutPasses.get(playerId);
         } catch (RuntimeException ex) {
             return false;
         }
+        if (!sameLanding(registered, to)) {
+            return false;
+        }
+        return pushOutPasses.remove(playerId, registered);
+    }
+
+    /**
+     * Drops a pending pass without spending it, for player quit: a pass is
+     * only ever meaningful for a teleport that is already in flight, so a
+     * disconnecting player starts clean on rejoin. At most one pass exists
+     * per player (each push-out overwrites the previous one), so the residue
+     * of a teleport that never arrived — cancelled upstream, rewritten by
+     * another plugin, lost with the connection — is bounded to one stale
+     * entry per online player, and even that entry only ever waives the
+     * origin ban stop for its validated landing while the destination ENTRY
+     * check still runs.
+     */
+    void discardPushOutPass(UUID playerId) {
+        if (playerId == null) {
+            return;
+        }
+        try {
+            pushOutPasses.remove(playerId);
+        } catch (RuntimeException ex) {
+            // Memory-only map: nothing to recover, never fail the caller.
+        }
+    }
+
+    /**
+     * Whether two positions are the same validated landing: same world and
+     * same block. Yaw, pitch, and sub-block precision never distinguish a
+     * rescue arrival from its registration.
+     */
+    private static boolean sameLanding(Location registered, Location arrival) {
+        if (registered == null || arrival == null) {
+            return false;
+        }
+        try {
+            World expected = registered.getWorld();
+            World actual = arrival.getWorld();
+            if (expected == null || actual == null
+                    || !expected.getUID().equals(actual.getUID())) {
+                return false;
+            }
+            return registered.getBlockX() == arrival.getBlockX()
+                    && registered.getBlockY() == arrival.getBlockY()
+                    && registered.getBlockZ() == arrival.getBlockZ();
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a push-out candidate is usable without loading anything: its
+     * chunk is already loaded, ENTRY allows the player there, and the player
+     * is not banned there. Anything unverifiable answers {@code false}
+     * (fail-closed, cancel-only). A {@code null} ban source skips the inside
+     * check, matching {@link #isBannedInside}.
+     *
+     * <p>Ban-snapshot interaction, kept fail-closed on purpose: when the ban
+     * source answers unknown for a known land — the snapshot has not loaded
+     * yet, or a reload failed — every candidate on a known land is excluded,
+     * including the world spawn when it sits on one. The deny then stands as
+     * cancel-only and the player cannot move until the snapshot is
+     * available. That freeze is the same posture as movement enforcement
+     * itself (an unverifiable ban state must not grant movement, and must
+     * not eject the player into it either); it lifts as soon as the first
+     * durable load publishes, which normally happens at startup before
+     * players can move.
+     */
+    private boolean usableTarget(UUID playerId, Location candidate) {
+        if (candidate == null || candidate.getWorld() == null) {
+            return false;
+        }
+        return chunkLoaded(candidate)
+                && entryAllowed(playerId, candidate)
+                && !isBannedInside(playerId, candidate);
     }
 
     private boolean chunkLoaded(Location location) {

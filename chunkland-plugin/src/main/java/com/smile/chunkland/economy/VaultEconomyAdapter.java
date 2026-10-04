@@ -25,10 +25,15 @@ import java.util.function.Function;
  *   <li>Convert {@link Money} ↔ Vault {@code double} exclusively via
  *       {@link VaultMoneyConverter} at the boundary.</li>
  *   <li>Carry {@code operationId} through every charge and refund call and
- *       provide an idempotency seam: concurrent calls with the same
+ *       coalesce concurrent in-process callers: calls sharing the same
  *       {@code operationId} observe a single bridge invocation and share the
  *       same outcome, so retry storms and concurrent claim submissions cannot
- *       double-charge or double-credit.</li>
+ *       double-charge or double-credit within one process lifetime. This
+ *       cache is process-local and is never a cross-restart guarantee:
+ *       exactly-once across restarts rests solely on the ledger ordering
+ *       (park the execution intent before depositing, never resend a parked
+ *       row), because the bridge discards the idempotency key and the
+ *       provider cannot dedup.</li>
  *   <li>Scope the idempotency key handed to the bridge by operation kind
  *       ({@code charge:<uuid>} for withdraw, {@code refund:<uuid>} for
  *       deposit) so a charge and a refund sharing the same underlying UUID
@@ -38,15 +43,18 @@ import java.util.function.Function;
  *       {@link RefundOutcome#UNKNOWN} without calling deposit, so callers can
  *       drive reconciliation instead of delegating funds to a different
  *       economy plugin.</li>
- *   <li>Refund retry lifecycle: keep successful {@link RefundOutcome#REFUNDED}
- *       outcomes cached so retries never double-deposit, but evict
- *       non-success outcomes ({@link RefundOutcome#UNKNOWN},
- *       {@link RefundOutcome#FAILED}) atomically on completion. A transient
- *       bridge failure or temporary provider mismatch must not permanently
- *       block retries: once the underlying condition clears the next call
- *       re-runs the provider/bridge check and may succeed. The atomic
- *       in-flight dedup invariant (one bridge call per concurrent window)
- *       is preserved across the eviction/re-entry boundary.</li>
+ *   <li>Refund retry lifecycle within one process: keep successful
+ *       {@link RefundOutcome#REFUNDED} outcomes cached so repeated calls
+ *       never double-deposit, but evict non-success outcomes
+ *       ({@link RefundOutcome#UNKNOWN}, {@link RefundOutcome#FAILED})
+ *       atomically on completion. A transient bridge failure or temporary
+ *       provider mismatch must not permanently block retries: once the
+ *       underlying condition clears the next call re-runs the
+ *       provider/bridge check and may succeed. The atomic in-flight dedup
+ *       invariant (one bridge call per concurrent window) is preserved
+ *       across the eviction/re-entry boundary. None of this survives a
+ *       restart; callers above (saga, recovery scanner) are responsible for
+ *       never calling twice for the same parked row.</li>
  *   <li>Never run inside a SQL transaction; the coordinator guarantees this
  *       ordering (Ledger → Economy → DomainCommit).</li>
  * </ul>
@@ -179,7 +187,7 @@ public final class VaultEconomyAdapter implements EconomyOperator {
     /**
      * Refund seam for {@link com.smile.chunkland.persistence.RecoveryHandlers}.
      *
-     * <p>Idempotency contract for the refund cache:
+     * <p>Result cache, process-local only:
      * <ul>
      *   <li>Concurrent calls sharing the same {@code operationId} observe
      *       at most one bridge deposit per in-flight window: a second caller
@@ -187,8 +195,12 @@ public final class VaultEconomyAdapter implements EconomyOperator {
      *       future, which is published before the provider work starts, so
      *       the map is never locked while bridge I/O is running.</li>
      *   <li>A successful {@link RefundOutcome#REFUNDED} is cached
-     *       permanently for the operationId, so repeated compensation
-     *       retries cannot double-deposit.</li>
+     *       for the operationId while this process lives, so repeated
+     *       compensation calls in the same process cannot double-deposit.
+     *       The cache does not survive a restart; cross-restart exactly-once
+     *       is the ledger's job (a parked row is never resent), because the
+     *       bridge discards the idempotency key and the provider cannot
+     *       dedup.</li>
      *   <li>A non-success outcome ({@link RefundOutcome#UNKNOWN},
      *       {@link RefundOutcome#FAILED}) is evicted from the cache via an
      *       atomic compare-and-remove as soon as the in-flight attempt

@@ -64,14 +64,13 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * SHRINK compensation and startup-recovery contract.
  *
- * <p>A failed deposit parks the SHRINK row through the shared refund
- * compensation path ({@code parkForRefundCompensation} /
- * {@code recordCompensationFailure}) without rolling back the committed
- * {@code CHUNK_REMOVE}; the startup scanner retries the same SHRINK payload
- * and settles it as compensated, with no second domain mutation and no
- * duplicate refund. The ledger payload always carries operation type
- * {@code SHRINK} with the refund derived from the durable per-chunk cost
- * bases times the shrink ratio.
+ * <p>An unconfirmed deposit quarantines the SHRINK row for operator
+ * reconciliation without rolling back the committed {@code CHUNK_REMOVE} and
+ * without resending: the deposit ran once behind a durably parked intent,
+ * and a resend could double-credit because the provider cannot dedup. The
+ * ledger payload always carries operation type {@code SHRINK} with the
+ * refund derived from the durable per-chunk cost bases times the shrink
+ * ratio.
  */
 class ShrinkCompensationRecoveryTest {
 
@@ -258,7 +257,7 @@ class ShrinkCompensationRecoveryTest {
     }
 
     @Test
-    void shrinkCompensationParksAndRecoverySettlesWithoutDuplicateRefund() throws Exception {
+    void shrinkFailureQuarantinesWithoutResendAndRecoveryNeverDuplicates() throws Exception {
         try (Harness h = new Harness(10, 100)) {
             UUID actor = UUID.randomUUID();
             UUID world = UUID.randomUUID();
@@ -271,9 +270,9 @@ class ShrinkCompensationRecoveryTest {
 
             SelectionSession session = h.selectDelta(actor, world, land, Set.of(chunk(world, 1, 0)));
             ShrinkOutcome outcome = h.run(h.requestFor(session, owner));
-            assertEquals(ShrinkOutcome.Status.COMPENSATION_PENDING, outcome.status());
+            assertEquals(ShrinkOutcome.Status.NEEDS_RECONCILIATION, outcome.status());
 
-            // The parked row walks the shared refund compensation contract.
+            // The quarantined row walks the shared no-resend contract.
             List<LedgerEntry> rows = h.ledgerRows();
             assertEquals(1, rows.size(), "exactly one SHRINK ledger row");
             LedgerEntry parked = rows.get(0);
@@ -284,11 +283,12 @@ class ShrinkCompensationRecoveryTest {
             assertEquals(expectedRefund, parked.priceMinorUnits(),
                     "ledger amount stays durable-basis x ratio");
             assertEquals(expectedRefund, outcome.refundMinorUnits());
-            assertEquals(LedgerState.COMPENSATION_PENDING.name(), parked.state());
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), parked.state());
             assertEquals("shrink:" + parked.operationId(), parked.economyTransactionRef(),
-                    "the parked row must carry the shrink idempotency reference");
-            assertEquals(1, parked.compensationAttempts(),
-                    "the saga records one compensation attempt through recordCompensationFailure");
+                    "the quarantined row must carry the shrink idempotency reference");
+            assertEquals(0, parked.compensationAttempts(),
+                    "no automatic retry is scheduled after a parked attempt");
+            assertEquals(1, h.economy.refunds.size(), "exactly one deposit attempt");
 
             // The payload contract survives the park: SHRINK type plus the ratio.
             OperationPayload payload = OperationPayload.fromJson(parked.payloadJson());
@@ -306,18 +306,16 @@ class ShrinkCompensationRecoveryTest {
             assertTrue(h.lands.findById(land).toCompletableFuture().get(10, TimeUnit.SECONDS)
                     .isPresent(), "compensation must never delete the land");
 
-            // Restart recovery retries the same row and settles it.
+            // Restart recovery never deposits again for the parked row, even
+            // when the provider would now succeed.
             h.economy.refundOutcome = RefundOutcome.REFUNDED;
             List<RecoveryResult> results = h.scan(3);
             assertEquals(1, results.size());
-            assertEquals(LedgerState.COMPENSATED.name(), results.get(0).resultingState());
-            assertEquals(LedgerState.RecoveryClassification.RETRY_COMPENSATION,
-                    results.get(0).classification());
-            assertEquals(LedgerState.COMPENSATED.name(), h.ledgerRows().get(0).state());
-            assertEquals(2, h.economy.refunds.size(),
-                    "exactly one saga attempt plus one recovery retry, no duplicate refund");
-            assertEquals(expectedRefund, h.economy.refunds.get(1).priceMinorUnits());
-            assertEquals(1, h.rebuildCalls.get(), "a settled shrink must republish the runtime");
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), results.get(0).resultingState());
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), h.ledgerRows().get(0).state());
+            assertEquals(1, h.economy.refunds.size(),
+                    "recovery must not resend a possibly-sent deposit");
+            assertEquals(0, h.rebuildCalls.get(), "a quarantined shrink rebuilds nothing");
 
             // Recovery never replays the domain: still one removal, one audit.
             assertEquals(1, h.chunks.factsByLand(land).toCompletableFuture()
@@ -330,7 +328,7 @@ class ShrinkCompensationRecoveryTest {
     }
 
     @Test
-    void exhaustedShrinkCompensationReachesReconciliationWithoutDeleting() throws Exception {
+    void failedShrinkIsAlreadyReconciledAndRecoveryLeavesItThere() throws Exception {
         try (Harness h = new Harness(10, 100)) {
             UUID actor = UUID.randomUUID();
             UUID world = UUID.randomUUID();
@@ -341,17 +339,22 @@ class ShrinkCompensationRecoveryTest {
             h.rebuild();
             h.economy.refundOutcome = RefundOutcome.FAILED;
 
+            // The saga quarantines immediately: no automatic retry is ever
+            // scheduled after a parked attempt.
             SelectionSession session = h.selectDelta(actor, world, land, Set.of(chunk(world, 1, 0)));
             ShrinkOutcome outcome = h.run(h.requestFor(session, owner));
-            assertEquals(ShrinkOutcome.Status.COMPENSATION_PENDING, outcome.status());
+            assertEquals(ShrinkOutcome.Status.NEEDS_RECONCILIATION, outcome.status());
+            assertEquals(1, h.economy.refunds.size(), "exactly one deposit attempt");
 
-            // A retry limit of one exhausts the shared compensation path on the
-            // next scan: the row is quarantined, never deleted, never refunded twice.
+            // A later scan keeps the row in reconciliation without touching
+            // Economy or the domain, however the provider behaves now.
+            h.economy.refundOutcome = RefundOutcome.REFUNDED;
             List<RecoveryResult> results = h.scan(1);
             assertEquals(1, results.size());
             assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), results.get(0).resultingState());
             assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), h.ledgerRows().get(0).state());
             assertEquals("SHRINK", h.ledgerRows().get(0).operationType());
+            assertEquals(1, h.economy.refunds.size(), "recovery must not resend");
             assertEquals(1, h.chunks.factsByLand(land).toCompletableFuture()
                     .get(10, TimeUnit.SECONDS).size());
             assertEquals(List.of("CHUNK_REMOVE"), h.auditActions(land));

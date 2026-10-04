@@ -6,24 +6,24 @@
 #
 # 鎖定依據（可查證）：
 #   - 倉庫：smile-minecraft/AceLib（GitHub）
-#   - 標籤：v1.2.0（annotated tag → 固定 commit，見下方 provenance sidecar）
-#   - 產物來源：GitHub Release v1.2.0 固定附件 AceLib-1.2.0.jar（不再由 source build 產生）
+#   - 標籤：v1.3.0（annotated tag → 固定 commit，見下方 provenance sidecar）
+#   - 產物來源：GitHub Release v1.3.0 固定附件 AceLib-1.3.0.jar（不再由 source build 產生）
 #   - 下載 URL：固定 HTTPS release asset URL（允許 GitHub redirect，不允許浮動 URL）
-#   - 產物：AceLib-1.2.0.jar（plugin JAR，供 Folia plugins/ 使用）
+#   - 產物：AceLib-1.3.0.jar（plugin JAR，供 Folia plugins/ 使用）
 #   - checksum：Release 提供的 SHA-256（固定 literal ACE_EXPECTED_SHA256，與本機驗證一致）
 #
 # 來源取得方式已由「clone + gradlew clean jar」改為「下載固定 release asset」；
 # ACE_REPO_URL / ACE_TAG / ACE_COMMIT 保留為 provenance sidecar（記錄上游來源），
 # 不再用於實際取得 JAR。
 
-ACE_RELEASE_URL="https://github.com/smile-minecraft/AceLib/releases/download/v1.2.0/AceLib-1.2.0.jar"
-ACE_ASSET_NAME="AceLib-1.2.0.jar"
+ACE_RELEASE_URL="https://github.com/smile-minecraft/AceLib/releases/download/v1.3.0/AceLib-1.3.0.jar"
+ACE_ASSET_NAME="AceLib-1.3.0.jar"
 
 ACE_REPO_URL_DEFAULT="https://github.com/smile-minecraft/AceLib.git"
-ACE_TAG="v1.2.0"
-ACE_COMMIT="55b27651f0156047e622354e2542e47f1f6bfffd"
-ACE_VERSION="1.2.0"
-ACE_EXPECTED_SHA256="da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278"
+ACE_TAG="v1.3.0"
+ACE_COMMIT="e9c110e9fe19727c56cb0652b17b32d324082c90"
+ACE_VERSION="1.3.0"
+ACE_EXPECTED_SHA256="363871a3f38081105603243e0996946bf4f7bd3181cdd47d66ae13fc3b097f8d"
 
 # 固定來源與完整性常數：不可由環境變數覆寫（防止空字串跳過 checksum 或浮動 URL）。
 ACE_RELEASE_URL_FIXED="$ACE_RELEASE_URL"
@@ -44,14 +44,14 @@ verify_acelib_jar() {
     return 1
   fi
   local ver yml
-  # 固定版本：本任務鎖定 AceLib v1.2.0。比較直接使用字面量，避免 sourced 檔案函式在
+  # 固定版本：本任務鎖定 AceLib v1.3.0。比較直接使用字面量，避免 sourced 檔案函式在
   # set -u 下看不到同檔案全域變數的 bash 怪異行為（local 指派亦不受影響）。
   # 先將 plugin.yml 內容讀入變數，再經 sed/tr/head 處理，避免 pipefail 下 unzip 因
   # head 提前關閉管線而收到 SIGPIPE（141）導致版本擷取失敗。
   yml="$(unzip -p "$jar" plugin.yml 2>/dev/null)"
   ver="$(printf '%s\n' "$yml" | sed -n 's/^version:[[:space:]]*//p' | tr -d "'\"" | head -1)"
-  if [[ "$ver" != "1.2.0" ]]; then
-    echo "verify: plugin.yml 版本不符 — 預期 1.2.0，實際 '${ver:-<none>}'" >&2
+  if [[ "$ver" != "1.3.0" ]]; then
+    echo "verify: plugin.yml 版本不符 — 預期 1.3.0，實際 '${ver:-<none>}'" >&2
     return 1
   fi
   local listing

@@ -68,6 +68,7 @@ class OccupiedPreviewRendererTest {
     private static final class FakeSink implements SelectionParticleSink {
         ViewerPose viewer = new ViewerPose(8.0, 70.0, 8.0);
         final List<double[]> emitted = new ArrayList<>();
+        final List<SelectionPreviewColor> colors = new ArrayList<>();
 
         @Override
         public Optional<ViewerPose> viewerOf(UUID playerId) {
@@ -78,6 +79,12 @@ class OccupiedPreviewRendererTest {
         public void emit(UUID playerId, double x, double y, double z) {
             emitted.add(new double[] {x, y, z});
         }
+
+        @Override
+        public void emit(UUID playerId, double x, double y, double z, SelectionPreviewColor color) {
+            colors.add(color);
+            emit(playerId, x, y, z);
+        }
     }
 
     private static final class Fixture {
@@ -85,6 +92,19 @@ class OccupiedPreviewRendererTest {
         final FakeSink sink = new FakeSink();
         final OccupiedPreviewRenderer renderer =
                 new OccupiedPreviewRenderer(ticks, sink, SelectionVisualizationBudget::defaults);
+    }
+
+    @Test
+    void previewKeepsOneSemanticColourForEveryEmission() {
+        Fixture fixture = new Fixture();
+        fixture.renderer.show(PLAYER, Set.of(new ChunkKey(WORLD, 0, 0)), 66.0,
+                SelectionPreviewColor.ACCESSIBLE);
+
+        fixture.ticks.latest().fire();
+
+        assertFalse(fixture.sink.colors.isEmpty());
+        assertTrue(fixture.sink.colors.stream()
+                .allMatch(color -> color == SelectionPreviewColor.ACCESSIBLE));
     }
 
     @Test

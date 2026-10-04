@@ -154,7 +154,7 @@ class LandAuthorisationFailClosedTest {
 
         EntryProtectionAdapter adapter = new EntryProtectionAdapter(
                 () -> Instant.EPOCH, Duration.ofSeconds(3), lookup,
-                (world, x, z) -> true, (player, target) -> {});
+                (world, x, z) -> true, (player, target) -> true);
         World world = worldProxy(WORLD);
         assertTrue(adapter.isBannedInside(STRANGER, new Location(world, 5, 64, 5)),
                 "empty ban answer must stop movement inside the land (fail-closed)");

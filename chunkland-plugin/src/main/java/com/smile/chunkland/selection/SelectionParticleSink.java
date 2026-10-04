@@ -25,4 +25,13 @@ public interface SelectionParticleSink {
 
     /** Send one particle to the operating player only. */
     void emit(UUID playerId, double x, double y, double z);
+
+    /**
+     * Send one occupied-preview particle with a semantic colour. The default
+     * keeps existing test and integration sinks source-compatible; production
+     * sinks map the semantic value to their particle colour.
+     */
+    default void emit(UUID playerId, double x, double y, double z, SelectionPreviewColor color) {
+        emit(playerId, x, y, z);
+    }
 }

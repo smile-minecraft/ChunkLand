@@ -16,11 +16,15 @@ import java.util.function.Supplier;
  * (one volatile read, no SQL, no Bukkit), so a config reload applies without
  * rebuilding the validator or the saga. Worlds absent from the config follow
  * the enabled default; only an explicit {@code claim-enabled: false} rejects.
+ * The strict overload ({@code denyUnlisted}) instead rejects absent worlds:
+ * it is used only while the conservative startup fallback is active, so a
+ * world the damaged config never listed cannot accept new claims.
  *
  * <p>Fail-closed: a {@code null} world id, an unresolvable or throwing
  * UUID-to-name mapping, or an unreadable snapshot rejects with
  * {@code world.unknown} instead of treating the unknown as enabled. A
- * disabled world rejects with {@code world.claim_disabled}.
+ * disabled world — or, under the strict overload, an unlisted one — rejects
+ * with {@code world.claim_disabled}.
  *
  * <p>The gate only answers whether a new claim may start; it never deletes,
  * hides or re-decides existing lands, and it never reaches the protection
@@ -52,7 +56,8 @@ public interface WorldClaimPolicy {
     }
 
     /**
-     * Production policy over the live config snapshot.
+     * Production policy over the live config snapshot. Worlds absent from the
+     * config follow the enabled default.
      *
      * @param configs live snapshot source (typically {@code ConfigService::current});
      *        a throwing or {@code null} snapshot fails closed
@@ -61,6 +66,24 @@ public interface WorldClaimPolicy {
      */
     static WorldClaimPolicy fromConfig(Supplier<ChunkLandConfig> configs,
             Function<UUID, Optional<String>> worldNames) {
+        return fromConfig(configs, worldNames, false);
+    }
+
+    /**
+     * Production policy over the live config snapshot, with an explicit
+     * choice for worlds absent from the config.
+     *
+     * @param configs live snapshot source (typically {@code ConfigService::current});
+     *        a throwing or {@code null} snapshot fails closed
+     * @param worldNames UUID-to-config-name mapping; an empty, {@code null} or
+     *        throwing result fails closed
+     * @param denyUnlisted when true, a world with no config entry rejects with
+     *        {@code world.claim_disabled} instead of following the enabled
+     *        default; used only while the conservative startup fallback is
+     *        active
+     */
+    static WorldClaimPolicy fromConfig(Supplier<ChunkLandConfig> configs,
+            Function<UUID, Optional<String>> worldNames, boolean denyUnlisted) {
         Objects.requireNonNull(configs, "configs");
         Objects.requireNonNull(worldNames, "worldNames");
         return worldId -> {
@@ -92,7 +115,13 @@ public interface WorldClaimPolicy {
                 throw new ClaimRejectedException("world.unknown");
             }
             WorldSettings settings = worlds == null ? null : worlds.get(name.get());
-            if (settings != null && !settings.claimEnabled()) {
+            if (settings == null) {
+                if (denyUnlisted) {
+                    throw new ClaimRejectedException("world.claim_disabled");
+                }
+                return;
+            }
+            if (!settings.claimEnabled()) {
                 throw new ClaimRejectedException("world.claim_disabled");
             }
         };

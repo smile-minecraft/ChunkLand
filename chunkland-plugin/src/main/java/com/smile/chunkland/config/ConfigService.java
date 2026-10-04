@@ -80,12 +80,17 @@ public final class ConfigService {
     }
 
     /**
-     * Construct a service that bypasses loading on construction; intended for
-     * tests that want to control the very first snapshot directly. The
-     * provided {@code loader} is still used by subsequent {@link #reload()}
-     * calls.
+     * Construct a service that starts from the given snapshot and uses
+     * {@code loader} for subsequent {@link #reload()} calls without loading
+     * at construction.
+     *
+     * <p>Production uses this after the startup resolver has already picked
+     * the initial snapshot (valid file, seeded first install, last-known-good
+     * or conservative fallback): the resolver owns classification, this
+     * service owns the volatile snapshot afterwards. Tests use it to control
+     * the very first snapshot directly.
      */
-    ConfigService(ConfigLoader loader, ChunkLandConfig initial) {
+    public ConfigService(ConfigLoader loader, ChunkLandConfig initial) {
         this.initialLoader = Objects.requireNonNull(loader, "loader");
         this.loader = loader;
         this.snapshot = Objects.requireNonNull(initial, "initial");

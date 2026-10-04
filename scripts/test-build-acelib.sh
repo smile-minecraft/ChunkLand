@@ -68,10 +68,10 @@ contains_forbidden() {
 # ---------------------------------------------------------------------------
 # 契約：來源固定與安全約束未被放寬（防止 verification 被全域關閉）
 # ---------------------------------------------------------------------------
-# 來源仍鎖定 v1.2.0 / commit / checksum
-grep -q 'ACE_TAG="v1.2.0"' "$COMMON" ; check "來源 tag 固定 v1.2.0" 0 $?
-grep -q 'ACE_COMMIT="55b27651f0156047e622354e2542e47f1f6bfffd"' "$COMMON" ; check "來源 commit 固定 55b2765" 0 $?
-grep -q 'ACE_EXPECTED_SHA256="da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278"' "$COMMON" ; check "產物 checksum 固定 da9f196" 0 $?
+# 來源仍鎖定 v1.3.0 / commit / checksum
+grep -q 'ACE_TAG="v1.3.0"' "$COMMON" ; check "來源 tag 固定 v1.3.0" 0 $?
+grep -q 'ACE_COMMIT="e9c110e9fe19727c56cb0652b17b32d324082c90"' "$COMMON" ; check "來源 commit 固定 e9c110e" 0 $?
+grep -q 'ACE_EXPECTED_SHA256="363871a3f38081105603243e0996946bf4f7bd3181cdd47d66ae13fc3b097f8d"' "$COMMON" ; check "產物 checksum 固定 363871a" 0 $?
 # 輸出名稱與驗證函式仍存在
 grep -q 'OUT_NAME="AceLib-${ACE_VERSION}.jar"' "$COMMON" ; check "OUT_NAME 固定" 0 $?
 grep -q 'verify_acelib_jar' "$BUILD" ; check "build-acelib 仍呼叫 verify_acelib_jar" 0 $?
@@ -115,19 +115,19 @@ if grep -q 'ACE_ASSET_NAME=' "$COMMON"; then check "common 有固定 ACE_ASSET_N
 if grep -q 'ACE_EXPECTED_SHA256_FIXED=' "$COMMON"; then check "common 有固定 ACE_EXPECTED_SHA256_FIXED" 0 0; else check "common 有固定 ACE_EXPECTED_SHA256_FIXED" 0 1; fi
 if grep -q 'ACE_EXPECTED_SHA256="\${ACE_EXPECTED_SHA256:-' "$COMMON"; then check "checksum 無環境 fallback" 1 0; else check "checksum 無環境 fallback" 0 0; fi
 # Exact contract：固定 URL、asset、版本、digest 皆為 literal（不可由環境覆寫）
-grep -q 'ACE_RELEASE_URL="https://github.com/smile-minecraft/AceLib/releases/download/v1.2.0/AceLib-1.2.0.jar"' "$COMMON" ; check "固定 Release URL exact literal" 0 $?
-grep -q 'ACE_ASSET_NAME="AceLib-1.2.0.jar"' "$COMMON" ; check "固定 asset name exact literal" 0 $?
-grep -q 'ACE_VERSION="1.2.0"' "$COMMON" ; check "固定版本 exact literal" 0 $?
-grep -q 'ACE_EXPECTED_SHA256="da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278"' "$COMMON" ; check "固定 digest exact literal" 0 $?
+grep -q 'ACE_RELEASE_URL="https://github.com/smile-minecraft/AceLib/releases/download/v1.3.0/AceLib-1.3.0.jar"' "$COMMON" ; check "固定 Release URL exact literal" 0 $?
+grep -q 'ACE_ASSET_NAME="AceLib-1.3.0.jar"' "$COMMON" ; check "固定 asset name exact literal" 0 $?
+grep -q 'ACE_VERSION="1.3.0"' "$COMMON" ; check "固定版本 exact literal" 0 $?
+grep -q 'ACE_EXPECTED_SHA256="363871a3f38081105603243e0996946bf4f7bd3181cdd47d66ae13fc3b097f8d"' "$COMMON" ; check "固定 digest exact literal" 0 $?
 # 環境覆寫被忽略：caller 設定 ACE_RELEASE_URL / ACE_EXPECTED_SHA256 不改變 fixed literal
 # （無網路 assertion：僅驗證 source 後 fixed 值仍為固定 HTTPS URL 與完整 digest）
 override_result="$(env ACE_RELEASE_URL='http://example.invalid/bad.jar' ACE_EXPECTED_SHA256='' bash -c 'source '"$COMMON"'; echo URL_FIXED="$ACE_RELEASE_URL_FIXED"; echo SHA_FIXED="$ACE_EXPECTED_SHA256_FIXED"')"
-if printf '%s\n' "$override_result" | grep -q 'URL_FIXED=https://github.com/smile-minecraft/AceLib/releases/download/v1.2.0/AceLib-1.2.0.jar'; then
+if printf '%s\n' "$override_result" | grep -q 'URL_FIXED=https://github.com/smile-minecraft/AceLib/releases/download/v1.3.0/AceLib-1.3.0.jar'; then
   check "env override URL 被忽略（仍為固定 HTTPS URL）" 0 0
 else
   check "env override URL 被忽略（仍為固定 HTTPS URL）" 0 1
 fi
-if printf '%s\n' "$override_result" | grep -q 'SHA_FIXED=da9f196b47c2b28c6db443d102236b27c1a1bbdf7dd3e7c22470170420935278'; then
+if printf '%s\n' "$override_result" | grep -q 'SHA_FIXED=363871a3f38081105603243e0996946bf4f7bd3181cdd47d66ae13fc3b097f8d'; then
   check "env override checksum 被忽略（仍為固定 digest）" 0 0
 else
   check "env override checksum 被忽略（仍為固定 digest）" 0 1
@@ -491,7 +491,7 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -f "$OUT/$OUT_NAME.meta" ]]; then
   meta_commit="$(grep '^commit=' "$OUT/$OUT_NAME.meta" | cut -d= -f2)"
-  if [[ "$meta_commit" == "55b27651f0156047e622354e2542e47f1f6bfffd" ]]; then
+  if [[ "$meta_commit" == "e9c110e9fe19727c56cb0652b17b32d324082c90" ]]; then
     check "sidecar provenance commit 正確" 0 0
   else
     check "sidecar provenance commit 正確" 0 1

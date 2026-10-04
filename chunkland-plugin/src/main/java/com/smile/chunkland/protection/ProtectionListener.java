@@ -1,17 +1,23 @@
 package com.smile.chunkland.protection;
 
+import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.api.land.SubLandSnapshot;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.PermissionDecision;
 import com.smile.chunkland.api.permission.DecisionSource;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.message.rejection.RejectionNotifier;
 import com.smile.chunkland.runtime.index.LandRegistry;
+import com.smile.chunkland.runtime.index.SubLandIndex;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.time.Instant;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -38,6 +44,7 @@ import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.entity.CreatureSpawnEvent;
@@ -57,6 +64,7 @@ import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.vehicle.VehicleDamageEvent;
 import org.bukkit.event.vehicle.VehicleEnterEvent;
@@ -64,6 +72,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.projectiles.BlockProjectileSource;
 import org.bukkit.projectiles.ProjectileSource;
+import org.bukkit.plugin.Plugin;
 
 /**
  * Native Bukkit enforcement skeleton for the protection engine.
@@ -75,11 +84,16 @@ import org.bukkit.projectiles.ProjectileSource;
  *
  * <p>Routing split: a player harming a player decides as
  * {@code PLAYER_DAMAGE_PLAYER} (rule path); a player harming anything else
- * decides as {@code ENTITY_DAMAGE} (subject path). Damage without a player
- * attacker stays vanilla here; later milestones own that path.
+ * decides as {@code ENTITY_DAMAGE} (subject path). A projectile counts as
+ * its shooting player, so an arrow, trident, snowball or similar shot by a
+ * player faces the same verdict as a melee hit. Damage with no player
+ * behind it stays vanilla here; later milestones own that path.
  *
  * <p>Right-click interaction on a block maps to one subject action by block
- * kind: storage blocks to {@code CONTAINER_OPEN}, crafting and processing
+ * kind: item-holding blocks (chests, barrels, hoppers, shulker boxes,
+ * dispensers, droppers, crafters, copper chests, chiseled bookshelves,
+ * jukeboxes, lecterns, decorated pots, composters, vaults) to
+ * {@code CONTAINER_OPEN}, crafting and processing
  * blocks to {@code WORKSTATION_USE}, doors, trapdoors, and fence gates to
  * {@code DOOR_USE}, buttons to {@code BUTTON_USE}, and levers to
  * {@code LEVER_USE}. Anything else stays vanilla. Stepping onto farmland
@@ -88,9 +102,12 @@ import org.bukkit.projectiles.ProjectileSource;
  * fluids, hoppers, explosions, fire) decide under a fixed
  * environmental actor, which can never match a land owner.
  *
- * <p>Movement into a land decides as {@code ENTRY} at the destination, but
- * only when the chunk changes: walking inside one chunk never consults the
- * engine. Teleports always check the destination, for every teleport cause.
+ * <p>Movement decides as {@code ENTRY} at the destination. Looking around
+ * inside one block never consults the engine, and walking inside one chunk
+ * without crossing a subland boundary does not either: the covering subland
+ * (or its absence) is compared at both ends on the same memory-only
+ * snapshot, so an unchanged covering carries the same verdict as the origin.
+ * Teleports always check the destination, for every teleport cause.
  * ENTRY denies and banned-inside stops delegate to
  * {@link EntryProtectionAdapter} for a throttled push-out that never loads a
  * chunk. Vehicles decide as
@@ -126,12 +143,34 @@ public final class ProtectionListener implements Listener {
      */
     static final UUID ENVIRONMENT_ACTOR = new UUID(0L, 0L);
 
+    /**
+     * Blocks whose right-click reaches stored items. Dispensers, droppers,
+     * and crafters open an inventory like any chest, so they guard the same
+     * action even though redstone can also drive them.
+     */
     private static final Set<Material> CONTAINER_TYPES = EnumSet.of(
             Material.CHEST,
             Material.TRAPPED_CHEST,
             Material.BARREL,
             Material.ENDER_CHEST,
-            Material.HOPPER);
+            Material.HOPPER,
+            Material.DISPENSER,
+            Material.DROPPER,
+            Material.CRAFTER,
+            Material.COPPER_CHEST,
+            Material.EXPOSED_COPPER_CHEST,
+            Material.WEATHERED_COPPER_CHEST,
+            Material.OXIDIZED_COPPER_CHEST,
+            Material.WAXED_COPPER_CHEST,
+            Material.WAXED_EXPOSED_COPPER_CHEST,
+            Material.WAXED_WEATHERED_COPPER_CHEST,
+            Material.WAXED_OXIDIZED_COPPER_CHEST,
+            Material.CHISELED_BOOKSHELF,
+            Material.JUKEBOX,
+            Material.LECTERN,
+            Material.DECORATED_POT,
+            Material.COMPOSTER,
+            Material.VAULT);
 
     private static final Set<Material> WORKSTATION_TYPES = EnumSet.of(
             Material.CRAFTING_TABLE,
@@ -267,12 +306,16 @@ public final class ProtectionListener implements Listener {
             Material.TRIPWIRE_HOOK,
             Material.TARGET);
 
+    private static final Logger LOG = Logger.getLogger(
+            EntryProtectionAdapter.class.getName());
+
     private final ProtectionEngine engine;
     private final RejectionNotifier rejectionNotifier;
     private final EntryProtectionAdapter entryAdapter;
+    private final EntryDenialParticleFeedback entryDenialParticles;
 
     public ProtectionListener(ProtectionEngine engine) {
-        this(engine, null, defaultEntryAdapter(engine));
+        this(engine, null, defaultEntryAdapter(engine, null), null);
     }
 
     /**
@@ -281,48 +324,104 @@ public final class ProtectionListener implements Listener {
      *         Ownerless mechanics never notify regardless of this seam.
      */
     public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier) {
-        this(engine, rejectionNotifier, defaultEntryAdapter(engine));
+        this(engine, rejectionNotifier, defaultEntryAdapter(engine, null), null);
     }
 
     /**
      * @param entryAdapter transit semantics for ENTRY denies (teleport
      *         coverage, throttled push-out, banned-inside stops); {@code null}
      *         selects the default adapter (Bukkit loaded-check, engine
-     *         ENTRY-validated targets, direct teleport, system clock) with no
-     *         ban source wired, so the inside check skips. Production wiring
-     *         uses {@link #ProtectionListener(ProtectionEngine,
-     *         RejectionNotifier, EntryProtectionAdapter.BanLookup)} with the
-     *         snapshot-backed query instead.
+     *         ENTRY-validated targets, an unwired ejection transport that refuses,
+     *         system clock) with no ban source wired, so the inside check skips.
+     *         Production wiring passes the adapter from
+     *         {@link #productionEntryAdapter} instead, which also carries the
+     *         live plugin the transport defers onto.
      */
     public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
                               EntryProtectionAdapter entryAdapter) {
+        this(engine, rejectionNotifier, entryAdapter, null);
+    }
+
+    public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
+                              EntryProtectionAdapter entryAdapter,
+                              EntryDenialParticleFeedback entryDenialParticles) {
         this.engine = Objects.requireNonNull(engine, "engine");
         this.rejectionNotifier = rejectionNotifier;
-        this.entryAdapter = entryAdapter == null ? defaultEntryAdapter(engine) : entryAdapter;
+        this.entryAdapter = entryAdapter == null ? defaultEntryAdapter(engine, null) : entryAdapter;
+        this.entryDenialParticles = entryDenialParticles;
     }
 
     /**
-     * Production listener: the default ENTRY-validated push-out path reading
+     * Production listener shape: the ENTRY-validated push-out path reading
      * banned-inside stops from the given ban source. A {@code null} ban
-     * source keeps the honest downgrade (inside check skips); production
-     * wiring passes the snapshot-backed query instead.
+     * source keeps the honest downgrade (inside check skips).
+     *
+     * <p>These overloads build the adapter without a plugin, so the ejection
+     * transport refuses and push-out stays cancel-only. Production wiring must
+     * go through {@link #productionEntryAdapter} so the transport can defer
+     * onto the player's region thread.
      *
      * @param bans ban read seam over the immutable runtime snapshot; memory
      *             reads only, never storage
      */
     public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
                               EntryProtectionAdapter.BanLookup bans) {
-        this(engine, rejectionNotifier, defaultEntryAdapter(engine, bans));
+        this(engine, rejectionNotifier, defaultEntryAdapter(engine, bans), null);
     }
 
-    private static EntryProtectionAdapter defaultEntryAdapter(ProtectionEngine engine) {
-        return defaultEntryAdapter(engine, null);
+    public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
+                              EntryProtectionAdapter.BanLookup bans,
+                              EntryDenialParticleFeedback entryDenialParticles) {
+        this(engine, rejectionNotifier, defaultEntryAdapter(engine, bans), entryDenialParticles);
     }
 
+    /**
+     * Ticks the ejection waits before travelling. One tick is enough and is
+     * the minimum the platform can honour: the restore that undoes an inline
+     * teleport happens in the same dispatch, so any deferral has to land on a
+     * later tick than the cancelled event.
+     */
+    private static final long PUSH_OUT_DELAY_TICKS = 1L;
+
+    /**
+     * Adapter for the constructors that take no plugin: same ENTRY-validated
+     * target selection, but the ejection transport refuses, so a push-out
+     * stays cancel-only instead of teleporting from a thread that cannot own
+     * the player. Production wiring goes through
+     * {@link #productionEntryAdapter}.
+     */
     private static EntryProtectionAdapter defaultEntryAdapter(ProtectionEngine engine,
             EntryProtectionAdapter.BanLookup bans) {
         Objects.requireNonNull(engine, "engine");
-        EntryProtectionAdapter.EntryAllowedCheck entryCheck = (playerId, at) -> {
+        return new EntryProtectionAdapter(Instant::now,
+                EntryProtectionAdapter.DEFAULT_PUSH_OUT_COOLDOWN, bans,
+                EntryProtectionAdapter.ChunkLoadedCheck.bukkit(),
+                entryCheckFor(engine), pushOutSink(null));
+    }
+
+    /**
+     * Production transit adapter: the ENTRY-validated push-out path reading
+     * banned-inside stops from the given ban source.
+     *
+     * @param bans   ban read seam over the immutable runtime snapshot; memory
+     *               reads only, never storage
+     * @param plugin the live plugin instance that owns the ejection transport.
+     *               A {@code null} leaves the transport refusing, so a push-out
+     *               fails closed with an observable record instead of
+     *               teleporting from a thread that cannot own the player.
+     */
+    public static EntryProtectionAdapter productionEntryAdapter(ProtectionEngine engine,
+            EntryProtectionAdapter.BanLookup bans, Plugin plugin) {
+        Objects.requireNonNull(engine, "engine");
+        return new EntryProtectionAdapter(Instant::now,
+                EntryProtectionAdapter.DEFAULT_PUSH_OUT_COOLDOWN, bans,
+                EntryProtectionAdapter.ChunkLoadedCheck.bukkit(),
+                entryCheckFor(engine), pushOutSink(plugin));
+    }
+
+    private static EntryProtectionAdapter.EntryAllowedCheck entryCheckFor(
+            ProtectionEngine engine) {
+        return (playerId, at) -> {
             try {
                 if (playerId == null || at == null || at.getWorld() == null) {
                     return false;
@@ -334,22 +433,64 @@ public final class ProtectionListener implements Listener {
                 return false;
             }
         };
-        return new EntryProtectionAdapter(Instant::now,
-                EntryProtectionAdapter.DEFAULT_PUSH_OUT_COOLDOWN, bans,
-                EntryProtectionAdapter.ChunkLoadedCheck.bukkit(), entryCheck,
-                (player, target) -> player.teleport(target));
     }
 
     /**
-     * Production transit adapter: the default ENTRY-validated push-out path
-     * above, reading banned-inside stops from the given ban source.
+     * Production ejection transport: hands the landing to the player's own
+     * Folia thread for a later tick, then travels over {@code teleportAsync}
+     * there.
      *
-     * @param bans ban read seam over the immutable runtime snapshot; memory
-     *             reads only, never storage
+     * <p>The deferral is load-bearing, not politeness. Paper fires
+     * {@code PlayerMoveEvent} from inside
+     * {@code ServerGamePacketListenerImpl#handleMovePlayer} and, once the
+     * event comes back cancelled, immediately restores the pre-move position
+     * with {@code internalTeleport(from)}. On the player's own region thread
+     * {@code teleportAsync} resolves inline through the same-region fast path,
+     * so an ejection issued from the handler is applied and then undone in the
+     * same call — the player stays exactly where they were, nothing throws,
+     * and the future still reports success. On the deferred tick the restore
+     * has already happened, so the ejection stands.
+     *
+     * <p>Sync {@code Entity#teleport} stays unused: it is broken on Folia. The
+     * rescue pass the adapter registered only ever waives the origin ban stop
+     * for the validated landing, never the destination ENTRY check. Failures
+     * are reported rather than dropped: a refused hop answers {@code false},
+     * and a refused or failed teleport is logged when the platform reports it
+     * on completion.
      */
-    public static EntryProtectionAdapter productionEntryAdapter(ProtectionEngine engine,
-            EntryProtectionAdapter.BanLookup bans) {
-        return defaultEntryAdapter(engine, bans);
+    static EntryProtectionAdapter.PushOutSink pushOutSink(Plugin plugin) {
+        if (plugin == null) {
+            return (player, target) -> false;
+        }
+        return (player, target) -> {
+            try {
+                ScheduledTask scheduled = player.getScheduler().runDelayed(plugin,
+                        started -> teleportOnPlayerThread(player, target), null,
+                        PUSH_OUT_DELAY_TICKS);
+                return scheduled != null;
+            } catch (RuntimeException ex) {
+                LOG.log(Level.WARNING, "ChunkLand push-out could not hand the landing to the "
+                        + "player's region thread: " + ex.getMessage(), ex);
+                return false;
+            }
+        };
+    }
+
+    private static void teleportOnPlayerThread(Player player, Location target) {
+        try {
+            player.teleportAsync(target).whenComplete((moved, error) -> {
+                if (error != null) {
+                    LOG.log(Level.WARNING, "ChunkLand push-out teleport failed for "
+                            + player.getUniqueId() + ": " + error.getMessage(), error);
+                } else if (!Boolean.TRUE.equals(moved)) {
+                    LOG.warning("ChunkLand push-out teleport was refused by the platform for "
+                            + player.getUniqueId() + "; the player stays where they are");
+                }
+            });
+        } catch (RuntimeException ex) {
+            LOG.log(Level.WARNING, "ChunkLand push-out teleport threw for "
+                    + player.getUniqueId() + ": " + ex.getMessage(), ex);
+        }
     }
 
     /**
@@ -414,7 +555,8 @@ public final class ProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onEntityDamage(EntityDamageByEntityEvent event) {
         try {
-            if (!(event.getDamager() instanceof Player damager)) {
+            Player damager = shootingPlayer(event.getDamager());
+            if (damager == null) {
                 return;
             }
             Entity victim = event.getEntity();
@@ -449,9 +591,33 @@ public final class ProtectionListener implements Listener {
         }
     }
 
+    /**
+     * Player behind a damage event: the damager itself, or the shooting player
+     * of a projectile. In-memory getters only, so no chunk loads or blocking
+     * I/O; a shooter lookup failure propagates to the caller's fail-closed
+     * catch. {@code null} when no player is behind the damage, which stays
+     * vanilla by design.
+     */
+    private static Player shootingPlayer(Entity damager) {
+        if (damager instanceof Player player) {
+            return player;
+        }
+        if (damager instanceof Projectile projectile
+                && projectile.getShooter() instanceof Player shooter) {
+            return shooter;
+        }
+        return null;
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBlockPlace(BlockPlaceEvent event) {
         try {
+            if (event instanceof BlockMultiPlaceEvent) {
+                // Owned by onBlockMultiPlace below: this Bukkit version gives
+                // the multi-place event no handler list of its own, so both
+                // handlers fire for one placement and this one must stay out.
+                return;
+            }
             Player player = event.getPlayer();
             Block placed = event.getBlockPlaced();
             if (player == null || placed == null || placed.getWorld() == null) {
@@ -463,6 +629,64 @@ public final class ProtectionListener implements Listener {
             if (placeDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
                 notifyRejection(player, ProtectionActionType.BLOCK_PLACE, placeDecision);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    /**
+     * One placement action affecting several blocks (beds, doors, and
+     * whatever else the server reports this way) denies when any affected
+     * part lands in denied space, primary block included.
+     *
+     * <p>Every part comes from the event itself ({@code getBlockPlaced} plus
+     * {@code getReplacedBlockStates}), so the check stays coordinate-only:
+     * no chunk is loaded and no I/O happens however many parts there are.
+     * Any missing block, world, or part list cancels (fail-closed).
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockMultiPlace(BlockMultiPlaceEvent event) {
+        try {
+            Player player = event.getPlayer();
+            Block placed = event.getBlockPlaced();
+            List<BlockState> replaced;
+            try {
+                replaced = event.getReplacedBlockStates();
+            } catch (RuntimeException ex) {
+                replaced = null;
+            }
+            if (player == null || placed == null || placed.getWorld() == null
+                    || replaced == null) {
+                event.setCancelled(true);
+                return;
+            }
+            // The primary block is checked on its own because some versions
+            // only list the secondary parts; a second lookup of the same
+            // coordinates answers from the decision cache.
+            var primaryDecision = decideAtBlock(player.getUniqueId(), placed,
+                    ProtectionActionType.BLOCK_PLACE);
+            if (primaryDecision.outcome() == PermissionState.DENY) {
+                event.setCancelled(true);
+                notifyRejection(player, ProtectionActionType.BLOCK_PLACE, primaryDecision);
+                return;
+            }
+            for (BlockState state : replaced) {
+                Block part = state == null ? null : state.getBlock();
+                if (part == null || part.getWorld() == null) {
+                    event.setCancelled(true);
+                    return;
+                }
+                var partDecision = decideAtBlock(player.getUniqueId(), part,
+                        ProtectionActionType.BLOCK_PLACE);
+                if (partDecision.outcome() == PermissionState.DENY) {
+                    event.setCancelled(true);
+                    notifyRejection(player, ProtectionActionType.BLOCK_PLACE, partDecision);
+                    return;
+                }
             }
         } catch (RuntimeException ex) {
             try {
@@ -818,24 +1042,110 @@ public final class ProtectionListener implements Listener {
                 return;
             }
             if (from != null && from.getWorld() != null
-                    && from.getWorld().getUID().equals(to.getWorld().getUID())
-                    && (from.getBlockX() >> 4) == (to.getBlockX() >> 4)
-                    && (from.getBlockZ() >> 4) == (to.getBlockZ() >> 4)) {
-                return;
+                    && from.getWorld().getUID().equals(to.getWorld().getUID())) {
+                if (sameBlock(from, to)) {
+                    return;
+                }
+                if (sameChunk(from, to)) {
+                    checkSameChunkEntry(player, from, to, event);
+                    return;
+                }
             }
             var entryDecision = decideAtLocation(player.getUniqueId(), to,
                     ProtectionActionType.ENTRY);
-            if (entryDecision.outcome() == PermissionState.DENY) {
-                event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.ENTRY, entryDecision);
-                entryAdapter.pushOut(player, from);
-            }
+            cancelOnEntryDeny(player, from, to, event, entryDecision);
         } catch (RuntimeException ex) {
             try {
                 event.setCancelled(true);
             } catch (RuntimeException ignored) {
             }
         }
+    }
+
+    /**
+     * ENTRY check for movement inside one X/Z chunk. The chunk alone cannot
+     * tell subland crossings apart (a precise subland can split one chunk
+     * horizontally, and stacked sublands split it vertically), so the
+     * covering subland at both ends is compared on one memory-only snapshot:
+     * an unchanged covering carries the same verdict as the origin and skips
+     * the decision, while a crossing (or any unreadable state) falls through
+     * to a destination ENTRY check. Snapshot reads only, so no chunk loads,
+     * no storage, and no blocking I/O happen here.
+     */
+    private void checkSameChunkEntry(Player player, Location from, Location to,
+            PlayerMoveEvent event) {
+        LandRegistry snapshot = currentSnapshot();
+        if (snapshot != null) {
+            try {
+                if (sameSubLandCovering(snapshot, from, to)) {
+                    return;
+                }
+            } catch (RuntimeException ex) {
+                snapshot = null;
+            }
+        }
+        PermissionDecision entryDecision = snapshot == null
+                ? decideAtLocation(player.getUniqueId(), to, ProtectionActionType.ENTRY)
+                : engine.decideAtBlockOnSnapshot(player.getUniqueId(), to.getWorld().getUID(),
+                        to.getBlockX(), to.getBlockY(), to.getBlockZ(),
+                        ProtectionActionType.ENTRY, snapshot);
+        cancelOnEntryDeny(player, from, to, event, entryDecision);
+    }
+
+    private void cancelOnEntryDeny(Player player, Location from, Location to,
+            PlayerMoveEvent event, PermissionDecision entryDecision) {
+        if (entryDecision.outcome() == PermissionState.DENY) {
+            event.setCancelled(true);
+            notifyRejection(player, ProtectionActionType.ENTRY, entryDecision);
+            entryAdapter.pushOut(player, from);
+            showEntryDenialParticle(player, to);
+        }
+    }
+
+    private LandRegistry currentSnapshot() {
+        try {
+            return engine.snapshot();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether both ends of an in-chunk move sit under the same covering
+     * subland (or outside every subland). The same chunk always means the
+     * same owning land, so only the subland covering can differ; wilderness
+     * has no ENTRY deny by construction and reads as unchanged. Memory-only
+     * index reads.
+     */
+    private boolean sameSubLandCovering(LandRegistry snapshot, Location from, Location to) {
+        LandId landId = snapshot.findLandId(to.getWorld().getUID(),
+                to.getBlockX() >> 4, to.getBlockZ() >> 4);
+        if (landId == null) {
+            return true;
+        }
+        SubLandIndex index = snapshot.subLandIndex(landId);
+        if (index == null) {
+            return true;
+        }
+        SubLandSnapshot fromCover = index.findAtBlock(
+                from.getBlockX(), from.getBlockY(), from.getBlockZ());
+        SubLandSnapshot toCover = index.findAtBlock(
+                to.getBlockX(), to.getBlockY(), to.getBlockZ());
+        if (fromCover == null || toCover == null) {
+            return fromCover == toCover;
+        }
+        return fromCover.id().equals(toCover.id());
+    }
+
+    private static boolean sameBlock(Location from, Location to) {
+        return from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ();
+    }
+
+    private static boolean sameChunk(Location from, Location to) {
+        return (from.getBlockX() >> 4) == (to.getBlockX() >> 4)
+                && (from.getBlockZ() >> 4) == (to.getBlockZ() >> 4);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -849,7 +1159,22 @@ public final class ProtectionListener implements Listener {
                 return;
             }
             Location current = from != null ? from : to;
-            if (entryAdapter.isBannedInside(player.getUniqueId(), current)) {
+            // A rescue teleport departs from the denying area by definition,
+            // so its own origin always reads as banned-inside. The adapter
+            // hands that teleport a single-use pass for its validated
+            // landing; only that arrival skips this stop, and the
+            // destination ENTRY check below still runs. The pass is claimed
+            // for every arrival up front: ENTRY-deny rescues land where the
+            // player is not banned, and gating the claim on the ban stop
+            // would leave their pass behind.
+            boolean rescued;
+            try {
+                rescued = entryAdapter.consumePushOutPass(player.getUniqueId(), to);
+            } catch (RuntimeException ex) {
+                rescued = false;
+            }
+            if (entryAdapter.isBannedInside(player.getUniqueId(), current)
+                    && !rescued) {
                 event.setCancelled(true);
                 notifyBannedInside(player);
                 entryAdapter.pushOut(player, null);
@@ -861,12 +1186,31 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 notifyRejection(player, ProtectionActionType.ENTRY, teleportDecision);
                 entryAdapter.pushOut(player, from);
+                showEntryDenialParticle(player, to);
             }
         } catch (RuntimeException ex) {
             try {
                 event.setCancelled(true);
             } catch (RuntimeException ignored) {
             }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        try {
+            if (event == null || event.getPlayer() == null) {
+                return;
+            }
+            try {
+                entryAdapter.discardPushOutPass(event.getPlayer().getUniqueId());
+            } catch (RuntimeException ignored) {
+            }
+            if (entryDenialParticles == null) {
+                return;
+            }
+            entryDenialParticles.forget(event.getPlayer().getUniqueId());
+        } catch (RuntimeException ignored) {
         }
     }
 
@@ -1326,6 +1670,18 @@ public final class ProtectionListener implements Listener {
         try {
             notifier.notifyDenied(player, action, decision);
         } catch (RuntimeException ignored) {
+        }
+    }
+
+    private void showEntryDenialParticle(Player player, Location destination) {
+        EntryDenialParticleFeedback feedback = this.entryDenialParticles;
+        if (feedback == null) {
+            return;
+        }
+        try {
+            feedback.show(player, destination);
+        } catch (RuntimeException ignored) {
+            // Particle feedback is best effort and cannot change enforcement.
         }
     }
 

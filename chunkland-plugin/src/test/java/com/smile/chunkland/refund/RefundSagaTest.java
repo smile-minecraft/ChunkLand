@@ -280,10 +280,12 @@ class RefundSagaTest {
             // (101 + 100) * 1 / 2 = 100.5 rounds half-up to 101, in integer minor units.
             assertEquals(101L, result.refundMinorUnits());
             assertEquals(List.of("validate", "deposit"), h.order);
-            // The durable boundary precedes Economy: the deposit ran while the row
-            // was DOMAIN_COMMITTED, with the chunks already released and the
-            // refund audit already durable.
-            assertEquals(List.of("DOMAIN_COMMITTED"), h.economy.depositLedgerStates);
+            // The durable boundary precedes Economy: the execution intent is
+            // parked (durably, in its own transaction) before the deposit
+            // runs, with the chunks already released and the refund audit
+            // already durable. The deposit therefore observes the parked
+            // COMPENSATION_PENDING row, never a pre-deposit state.
+            assertEquals(List.of("COMPENSATION_PENDING"), h.economy.depositLedgerStates);
             assertEquals(List.of(true), h.economy.chunksGoneAtDeposit);
             assertEquals(List.of(true), h.economy.auditPresentAtDeposit);
             for (String thread : h.economy.depositThreads) {
@@ -414,44 +416,51 @@ class RefundSagaTest {
     // ------------------------------------------------------------------
 
     @Test
-    void depositFailureParksForRetryThenCompensates() throws Exception {
+    void depositFailureQuarantinesWithoutResendAndRetryNeverDepositsAgain() throws Exception {
         try (Harness h = new Harness(3)) {
             ClaimedLand land = claimLand(h, null, UUID.randomUUID(), UUID.randomUUID(), "Home", 100L);
             UUID operationId = UUID.randomUUID();
             h.economy.next = RefundOutcome.FAILED;
 
-            RefundResult parked = h.run(refund(operationId, land, land.chunkKeys(), 1, 2));
+            RefundResult quarantined = h.run(refund(operationId, land, land.chunkKeys(), 1, 2));
 
-            assertEquals(RefundResult.Status.COMPENSATION_PENDING, parked.status());
-            assertEquals(50L, parked.refundMinorUnits());
+            // The deposit ran exactly once behind a durably parked intent; the
+            // unconfirmed outcome quarantines instead of resending, because a
+            // resend could double-credit and the provider cannot dedup.
+            assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, quarantined.status());
+            assertEquals("refund.reconciliation", quarantined.diagnosticKey());
+            assertEquals(50L, quarantined.refundMinorUnits());
             LedgerEntry row = singleRow(h);
-            assertEquals("COMPENSATION_PENDING", row.state());
-            assertEquals(1, row.compensationAttempts());
+            assertEquals("NEEDS_RECONCILIATION", row.state());
+            assertEquals(0, row.compensationAttempts(),
+                    "no automatic retry is scheduled after a parked attempt");
             assertEquals("refund:" + operationId, row.economyTransactionRef());
             assertEquals(0, chunkCount(h, land.landId()), "the domain is never rolled back");
             assertEquals(1, auditRefundCount(h));
+            assertEquals(1, h.economy.deposits.size(), "exactly one deposit attempt");
 
+            // A later retry replays the terminal quarantine without touching
+            // Economy, the domain, or the audit.
             h.economy.next = RefundOutcome.REFUNDED;
             RefundResult retried = h.saga.retry(operationId).toCompletableFuture().get(10, TimeUnit.SECONDS);
 
-            assertEquals(RefundResult.Status.SUCCESS, retried.status());
-            assertEquals(50L, retried.refundMinorUnits());
-            assertEquals("COMPENSATED", singleRow(h).state());
-            assertEquals(2, h.economy.deposits.size(), "exactly one deposit per attempt");
+            assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, retried.status());
+            assertEquals("NEEDS_RECONCILIATION", singleRow(h).state());
+            assertEquals(1, h.economy.deposits.size(), "a quarantined row never deposits again");
             assertEquals(1, auditRefundCount(h), "no second audit on retry");
             assertEquals(0, chunkCount(h, land.landId()), "no second domain commit on retry");
         }
     }
 
     @Test
-    void unconfirmedDepositsParkWithoutRollback() throws Exception {
+    void unconfirmedDepositsQuarantineWithoutRollback() throws Exception {
         // UNKNOWN outcome.
         try (Harness h = new Harness(3)) {
             ClaimedLand land = claimLand(h, null, UUID.randomUUID(), UUID.randomUUID(), "A", 100L);
             h.economy.next = RefundOutcome.UNKNOWN;
             RefundResult result = h.run(refund(UUID.randomUUID(), land, land.chunkKeys(), 1, 2));
-            assertEquals(RefundResult.Status.COMPENSATION_PENDING, result.status());
-            assertEquals("COMPENSATION_PENDING", singleRow(h).state());
+            assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, result.status());
+            assertEquals("NEEDS_RECONCILIATION", singleRow(h).state());
             assertEquals(0, chunkCount(h, land.landId()));
         }
         // Thrown exception.
@@ -459,7 +468,7 @@ class RefundSagaTest {
             ClaimedLand land = claimLand(h, null, UUID.randomUUID(), UUID.randomUUID(), "B", 100L);
             h.economy.throwOnDeposit = new RuntimeException("bridge down");
             RefundResult result = h.run(refund(UUID.randomUUID(), land, land.chunkKeys(), 1, 2));
-            assertEquals(RefundResult.Status.COMPENSATION_PENDING, result.status());
+            assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, result.status());
             assertEquals(0, chunkCount(h, land.landId()));
         }
         // Null stage.
@@ -467,7 +476,7 @@ class RefundSagaTest {
             ClaimedLand land = claimLand(h, null, UUID.randomUUID(), UUID.randomUUID(), "C", 100L);
             h.economy.returnNullStage = true;
             RefundResult result = h.run(refund(UUID.randomUUID(), land, land.chunkKeys(), 1, 2));
-            assertEquals(RefundResult.Status.COMPENSATION_PENDING, result.status());
+            assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, result.status());
             assertEquals(0, chunkCount(h, land.landId()));
         }
         // Null outcome.
@@ -475,22 +484,29 @@ class RefundSagaTest {
             ClaimedLand land = claimLand(h, null, UUID.randomUUID(), UUID.randomUUID(), "D", 100L);
             h.economy.returnNullOutcome = true;
             RefundResult result = h.run(refund(UUID.randomUUID(), land, land.chunkKeys(), 1, 2));
-            assertEquals(RefundResult.Status.COMPENSATION_PENDING, result.status());
+            assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, result.status());
             assertEquals(0, chunkCount(h, land.landId()));
         }
     }
 
     @Test
-    void retryLimitEscalatesToReconciliation() throws Exception {
+    void failedRefundQuarantinesImmediatelyAndNeverDepositsAgain() throws Exception {
         try (Harness h = new Harness(2)) {
             ClaimedLand land = claimLand(h, null, UUID.randomUUID(), UUID.randomUUID(), "Home", 100L);
             UUID operationId = UUID.randomUUID();
             h.economy.next = RefundOutcome.FAILED;
 
+            // The single permitted attempt runs and is not confirmed: the row
+            // quarantines at once instead of consuming a retry budget.
             RefundResult first = h.run(refund(operationId, land, land.chunkKeys(), 1, 2));
-            assertEquals(RefundResult.Status.COMPENSATION_PENDING, first.status());
-            assertEquals(1, singleRow(h).compensationAttempts());
+            assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, first.status());
+            assertEquals("refund.reconciliation", first.diagnosticKey());
+            assertEquals("NEEDS_RECONCILIATION", singleRow(h).state());
+            assertEquals(0, singleRow(h).compensationAttempts());
 
+            // Later retries replay the quarantine without another deposit,
+            // however the provider behaves now.
+            h.economy.next = RefundOutcome.REFUNDED;
             RefundResult second = h.saga.retry(operationId).toCompletableFuture().get(10, TimeUnit.SECONDS);
             assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, second.status());
             assertEquals("refund.reconciliation", second.diagnosticKey());
@@ -498,7 +514,7 @@ class RefundSagaTest {
 
             RefundResult third = h.saga.retry(operationId).toCompletableFuture().get(10, TimeUnit.SECONDS);
             assertEquals(RefundResult.Status.NEEDS_RECONCILIATION, third.status());
-            assertEquals(2, h.economy.deposits.size(), "a terminal row never deposits again");
+            assertEquals(1, h.economy.deposits.size(), "a quarantined row never deposits again");
         }
     }
 
@@ -782,7 +798,7 @@ class RefundSagaTest {
     @Test
     void refundAndClaimKeepIndependentOrderLogic() {
         assertHasMethod(RefundSaga.class, "depositThenPublish");
-        assertHasMethod(RefundSaga.class, "parkForCompensation");
+        assertHasMethod(RefundSaga.class, "parkThenDeposit");
         assertHasMethod(RefundSaga.class, "commitDomain");
         assertHasMethod(com.smile.chunkland.claim.ClaimSaga.class, "chargeStep");
         assertMissingMethod(RefundSaga.class, "chargeStep");

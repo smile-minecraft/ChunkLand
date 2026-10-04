@@ -174,11 +174,11 @@ class M0MessageProbeTest {
             "saveResource must use overwrite=false so player-edited lang files are preserved");
     }
 
-    // --- resource contract (AceLib v1.2.0): <value> placeholder + bedrock fallback keys ---
+    // --- resource contract (AceLib v1.3.0): <value> placeholder + bedrock fallback keys ---
 
     @Test
-    void langResourcesUseV120PlaceholderAndFallbackKeys() throws Exception {
-        // AceLib v1.2.0 parseMiniMessage uses <key> placeholders (not {var}); the Bedrock
+    void langResourcesUseAceLibPlaceholderAndFallbackKeys() throws Exception {
+        // AceLib v1.3.0 parseMiniMessage uses <key> placeholders (not {var}); the Bedrock
         // fallback prompts live at root-level dotted keys message.bedrock.fallback.* with a
         // <payload> placeholder. This guards both the chat value substitution and the
         // ACELIB-MSG-004 missing-key warning without needing a live Folia server.
@@ -198,7 +198,7 @@ class M0MessageProbeTest {
             assertTrue(smoke.contains("<value>"),
                 locale + ": smoke template must use <value> placeholder for parseMiniMessage");
             assertFalse(smoke.contains("{value}"),
-                locale + ": smoke template must not use {value} (AceLib v1.2.0 parseMiniMessage)");
+                locale + ": smoke template must not use {value} (AceLib v1.3.0 parseMiniMessage)");
             for (String key : fallbackKeys) {
                 String value = cfg.getString(key);
                 assertNotNull(value, locale + ": bedrock fallback key missing: " + key);

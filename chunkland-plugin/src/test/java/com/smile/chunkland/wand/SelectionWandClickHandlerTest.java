@@ -19,6 +19,8 @@ import com.smile.chunkland.selection.SelectionLifecycleListener;
 import com.smile.chunkland.selection.SelectionMode;
 import com.smile.chunkland.selection.SelectionNotification;
 import com.smile.chunkland.selection.SelectionPoint;
+import com.smile.chunkland.selection.SelectionPreviewColor;
+import com.smile.chunkland.selection.SelectionPreviewColorResolver;
 import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
@@ -108,6 +110,7 @@ class SelectionWandClickHandlerTest {
         final Map<LandId, Set<ChunkKey>> boundaries = new LinkedHashMap<>();
         final RecordingVisualization visualization = new RecordingVisualization();
         final RecordingPreview preview = new RecordingPreview();
+        volatile SelectionPreviewColorResolver previewColors = SelectionPreviewColorResolver.blocked();
         final List<Step> feedback = new ArrayList<>();
         final List<SelectionEndReason> endReasons = new ArrayList<>();
         volatile boolean registryReady = true;
@@ -184,7 +187,8 @@ class SelectionWandClickHandlerTest {
         SelectionWandClickHandler handler() {
             return new SelectionWandClickHandler(
                     manager, () -> edits, clock, (player, kind, vars) -> feedback.add(new Step(kind, vars)),
-                    lookup, boundaryLookup, preview);
+                    lookup, boundaryLookup, preview,
+                    (actor, land, target) -> previewColors.resolve(actor, land, target));
         }
 
         List<WandFeedback.Kind> feedbackKinds() {
@@ -197,7 +201,7 @@ class SelectionWandClickHandlerTest {
     }
 
     private static final class RecordingPreview implements OccupiedPreviewController {
-        record Call(UUID playerId, Set<ChunkKey> chunks, double planeY) {
+        record Call(UUID playerId, Set<ChunkKey> chunks, double planeY, SelectionPreviewColor color) {
         }
 
         final List<Call> shown = new ArrayList<>();
@@ -205,7 +209,12 @@ class SelectionWandClickHandlerTest {
 
         @Override
         public void show(UUID playerId, Set<ChunkKey> chunks, double planeY) {
-            shown.add(new Call(playerId, Set.copyOf(chunks), planeY));
+            show(playerId, chunks, planeY, SelectionPreviewColor.BLOCKED);
+        }
+
+        @Override
+        public void show(UUID playerId, Set<ChunkKey> chunks, double planeY, SelectionPreviewColor color) {
+            shown.add(new Call(playerId, Set.copyOf(chunks), planeY, color));
         }
 
         @Override
@@ -1183,12 +1192,35 @@ class SelectionWandClickHandlerTest {
         assertEquals(Set.of(a, new ChunkKey(WORLD_ID, 2, 1)), harness.preview.shown.get(0).chunks(),
                 "the preview must outline the land's real chunk set");
         assertEquals(65.0, harness.preview.shown.get(0).planeY());
+        assertEquals(SelectionPreviewColor.BLOCKED, harness.preview.shown.get(0).color());
 
         // A repeated blocked first click stays silent and does not restart the preview.
         handler.onWandUse(new WandClickHandler.Context(
                 player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
         assertEquals(List.of(WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
         assertEquals(1, harness.preview.shown.size());
+    }
+
+    @Test
+    void sameLandReclickRestartsOnlyWhenEffectiveColourChanges() {
+        Harness harness = new Harness();
+        Player player = playerWith(wandStack());
+        otherLandChunks(harness, OTHER_LAND, 1L, Set.of(new ChunkKey(WORLD_ID, 0, 0)));
+        harness.previewColors = (actor, land, target) -> SelectionPreviewColor.ACCESSIBLE;
+        var handler = harness.handler();
+
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(1, harness.preview.shown.size(), "same land and colour must not restart");
+
+        harness.previewColors = (actor, land, target) -> SelectionPreviewColor.BLOCKED;
+        handler.onWandUse(new WandClickHandler.Context(
+                player, blockAt(fakeWorld(), 0, 64, 0), BlockFace.NORTH, false));
+        assertEquals(2, harness.preview.shown.size(), "changed colour must restart the preview");
+        assertEquals(SelectionPreviewColor.ACCESSIBLE, harness.preview.shown.get(0).color());
+        assertEquals(SelectionPreviewColor.BLOCKED, harness.preview.shown.get(1).color());
     }
 
     @Test
@@ -1279,6 +1311,7 @@ class SelectionWandClickHandlerTest {
         assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET), harness.feedbackKinds());
         assertEquals(1, harness.preview.shown.size(), "the existing range is shown as the baseline");
         assertEquals(Set.of(new ChunkKey(WORLD_ID, 0, 0)), harness.preview.shown.get(0).chunks());
+        assertEquals(SelectionPreviewColor.OWN, harness.preview.shown.get(0).color());
     }
 
     @Test
@@ -1318,6 +1351,7 @@ class SelectionWandClickHandlerTest {
         assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET, WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
         assertEquals(1, harness.preview.shown.size(), "the blocking land's boundary is previewed");
         assertEquals(Set.of(new ChunkKey(WORLD_ID, 2, 0)), harness.preview.shown.get(0).chunks());
+        assertEquals(SelectionPreviewColor.BLOCKED, harness.preview.shown.get(0).color());
     }
 
     @Test

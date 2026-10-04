@@ -76,13 +76,13 @@ import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.ConfigStartupResolver;
 import com.smile.chunkland.config.MessageSettings;
 import com.smile.chunkland.config.ConfigReloadListener;
 import com.smile.chunkland.config.ChunkLandConfig;
 import com.smile.chunkland.config.LimitSettings;
 import com.smile.chunkland.config.VerticalMode;
 import com.smile.chunkland.config.WorldSettings;
-import com.smile.chunkland.config.YamlFileConfigLoader;
 import com.smile.chunkland.economy.UnavailableVaultBridge;
 import com.smile.chunkland.economy.VaultBridge;
 import com.smile.chunkland.economy.VaultServiceDiscovery;
@@ -137,6 +137,7 @@ import com.smile.chunkland.persistence.DepthExtendStore;
 import com.smile.chunkland.persistence.PermissionProfileRepository;
 import com.smile.chunkland.persistence.SubjectGroupRepository;
 import com.smile.chunkland.protection.EntryBanLookup;
+import com.smile.chunkland.protection.EntryDenialParticleFeedback;
 import com.smile.chunkland.protection.DirectTrustWhitelist;
 import com.smile.chunkland.protection.ManagementPermissionGate;
 import com.smile.chunkland.protection.PermissionExplain;
@@ -150,6 +151,7 @@ import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.PermissionDefaultsCache;
 import com.smile.chunkland.protection.PermissionDecisionCache;
 import com.smile.chunkland.protection.PermissionDecisionEpochSource;
+import com.smile.chunkland.protection.ProtectionActionRegistry;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
 import com.smile.chunkland.protection.SubjectPermissionLookup;
 import com.smile.chunkland.runtime.api.LandRuleLookup;
@@ -181,6 +183,8 @@ import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
 import com.smile.chunkland.selection.OccupiedPreviewController;
 import com.smile.chunkland.selection.OccupiedPreviewRenderer;
+import com.smile.chunkland.selection.PermissionSelectionPreviewColorResolver;
+import com.smile.chunkland.selection.SelectionPreviewColorResolver;
 import com.smile.chunkland.selection.SelectionVisualizationRenderer;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
 import com.smile.chunkland.subland.DepthExtensionPort;
@@ -215,6 +219,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CompletionStage;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bukkit.Location;
@@ -319,6 +324,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private Set<UUID> managementConfirmPending;
     private BedrockFormNavigator bedrockFormNavigator;
     private Optional<ConfigService> configService = Optional.empty();
+    /**
+     * True while the active config snapshot is the conservative startup
+     * fallback (damaged or vanished file, no last-known-good copy). Only the
+     * startup wirings read it — to pick the fail-closed unknown-world depth
+     * and the strict claim gate — never the protection hot path, which only
+     * sees the immutable snapshot.
+     */
+    private boolean conservativeConfigMode;
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
     private PlayerPreferredLocaleService playerLocaleService;
     private PlayerSettingsRepository playerSettingsRepository;
@@ -361,7 +374,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ConfigReloadListener decisionCacheBudgetSync;
     private SnapshotProtectionDepthLookup protectionDepthLookup;
     private ProtectionListener protectionListener;
-    private ClaimStartupBootstrap claimStartup;
+    /**
+     * Volatile because region threads read it through the protection
+     * readiness gate on every decision; without this, a region thread could
+     * keep observing the pre-startup {@code null} and deny forever.
+     */
+    private volatile ClaimStartupBootstrap claimStartup;
     private OrphanWorldGuard orphanWorldGuard;
     private OrphanWorldCatalogListener orphanCatalogListener;
     private GuiClickListener guiClickListener;
@@ -1354,23 +1372,31 @@ public final class ChunkLandPlugin extends JavaPlugin {
         if (!ready) {
             return;
         }
-        // Config-system wiring: bootstrap the config service from data-folder/config.yml.
-        // On a missing or invalid file we keep the plugin alive with defaults
-        // and log a warning — the admin can fix the file and call reload() later.
-        try {
-            YamlFileConfigLoader loader = new YamlFileConfigLoader(
-                    getDataFolder().toPath().resolve("config.yml"));
-            this.configService = Optional.of(new ConfigService(loader));
-        } catch (RuntimeException ex) {
-            getLogger().warning(
-                    "ChunkLand config bootstrap failed; starting with defaults. "
-                            + "Reason: " + ex.getMessage());
-            // Fall back to a service backed by the embedded default YAML so
-            // downstream readers always see a valid snapshot.
-            this.configService = Optional.of(new ConfigService(
-                    new com.smile.chunkland.config.ResourceConfigLoader(
-                            getClass(), "/config.yml")));
-        }
+        // Config startup policy: one explicit source (valid file, first
+        // install, missing-after-use, corrupt) plus the snapshot that goes
+        // with it. A damaged file falls back to the last-known-good copy (or
+        // conservative in-memory defaults), never to the shipped resource,
+        // and the operator's file is only read here. Recovery is "fix the
+        // file and restart"; no reload command exists, so the reload loader
+        // stays on the operator's file.
+        //
+        // This decision runs BEFORE the persistence bootstrap below opens or
+        // creates the database, which is what keeps a first install
+        // distinguishable from a deleted config.
+        ConfigStartupResolver.StartupResolution startupResolution =
+                ConfigStartupResolver.resolve(
+                        getDataFolder().toPath().resolve("config.yml"),
+                        getDataFolder().toPath().resolve(
+                                ConfigStartupResolver.LAST_KNOWN_GOOD_FILE_NAME),
+                        getDataFolder().toPath().resolve(ClaimStartupBootstrap.DATABASE_FILE_NAME),
+                        getDataFolder().toPath(),
+                        serverWorldNames(),
+                        this::readShippedDefaultConfig,
+                        ConfigStartupResolver.StartupWriters.defaults(),
+                        getLogger());
+        this.conservativeConfigMode = startupResolution.conservative();
+        this.configService = Optional.of(new ConfigService(
+                startupResolution.reloadLoader(), startupResolution.snapshot()));
         ConfigService activeConfig = this.configService.orElseThrow(
                 () -> new IllegalStateException("ChunkLand config service is unavailable"));
         // The registry store is created before the selection manager so the
@@ -1434,11 +1460,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // when AceLib is not ready; the sink is fail-closed with no fallback output.
         Locale defaultLocale = configService.map(s -> s.current().messages().defaultLocale()).orElse(Locale.US);
         this.landMessagePipeline = ChunkLandMessagePipeline.tryBuild(this, bridge.getApi(), defaultLocale);
-        // Protection engine skeleton: validated at construction (incomplete
-        // registry throws and lands in the fail-closed path below); the store
-        // starts empty so every position is wilderness (vanilla) until later
-        // milestones publish real snapshots and a real context provider.
-        // Built before the land command so the management gate resolver reads
+        // Protection engine: validated at construction (incomplete
+        // registry throws and lands in the fail-closed path below). The store
+        // starts empty, and the engine additionally withholds every decision
+        // until startup hydration confirms the index is complete, so an
+        // unconfirmed index can never read as wilderness (vanilla). Built
+        // before the land command so the management gate resolver reads
         // the same live snapshots the engine enforces.
         this.readApiLifecycle = new ReadApiLifecycle();
         // Config permission defaults: world names resolve to UUIDs once here
@@ -1470,7 +1497,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
         };
         this.configService.ifPresent(service -> service.addListener(this.decisionCacheBudgetSync));
         this.protectionEngine = buildProtectionEngine(
-                this.protectionStore, atomicContexts, this.decisionCache, atomicContexts);
+                this.protectionStore, atomicContexts, this.decisionCache, atomicContexts,
+                this::isRegistryHydrated);
         // Formal per-world vertical-mode read path: the lookup resolves the
         // effective depth from the live config snapshot plus the
         // startup-injected name/minimum tables, so the hot path performs only
@@ -1478,11 +1506,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // Stored depths are never rewritten by a mode switch; worlds or
         // minima missing from the snapshot fall back explicitly.
         this.protectionDepthLookup = buildProtectionDepthLookup(
-                activeConfig::current, snapshotWorldNames(), snapshotWorldMinimums());
+                activeConfig::current, snapshotWorldNames(), snapshotWorldMinimums(),
+                this.conservativeConfigMode);
         // Startup claim recovery: open persistence, rebuild durable domain
         // commits into the shared protection store, and scan without blocking.
-        // A failed bootstrap keeps the empty fail-closed runtime; the scan
-        // itself never refunds and never marks rows active on rebuild failure.
+        // A failed bootstrap keeps the empty runtime, and the engine gate
+        // above keeps denying on it until hydration confirms completeness;
+        // the scan itself never refunds and never marks rows active on
+        // rebuild failure.
         // The bridge is resolved explicitly so recovery refunds through a real
         // provider when one is available; without one it stays fail-safe.
         try {
@@ -1887,17 +1918,20 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 wandOccupancyLookup(this.protectionStore, registryReadiness),
                 wandBoundaryLookup(this.protectionStore, registryReadiness),
                 occupiedPreview,
-                this.selectionLifecycleListener);
+                this.selectionLifecycleListener,
+                new PermissionSelectionPreviewColorResolver(this.protectionEngine));
         // ENTRY enforcement reads banned-inside stops from the immutable ban
         // snapshot through a memory-only lookup: no SQL, Bukkit, chunk load
         // or network on the event thread. Unknown or failing answers fail
         // closed inside the adapter.
         EntryBanLookup banLookup = new EntryBanLookup(
                 this.protectionStore::snapshot, this.landAuthorisationCache::snapshot);
+        var protectionScheduler = buildPlayerScheduler(this);
         this.protectionListener = new ProtectionListener(this.protectionEngine,
                 buildRejectionNotifier(this.landMessagePipeline.orElse(null),
-                        buildPlayerScheduler(this), rejectionCooldownSeconds(activeConfig)),
-                banLookup);
+                        protectionScheduler, rejectionCooldownSeconds(activeConfig)),
+                ProtectionListener.productionEntryAdapter(this.protectionEngine, banLookup, this),
+                buildEntryDenialParticleFeedback(protectionScheduler));
         try {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
@@ -3193,6 +3227,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 new PipelineRejectionRenderer(pipeline), cooldown);
     }
 
+    public static EntryDenialParticleFeedback buildEntryDenialParticleFeedback(
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
+        return new EntryDenialParticleFeedback(Instant::now,
+                EntryDenialParticleFeedback.DEFAULT_COOLDOWN, scheduler,
+                (player, location) -> player.spawnParticle(
+                        EntryDenialParticleFeedback.PARTICLE,
+                        location.getX(), location.getY(), location.getZ(),
+                        EntryDenialParticleFeedback.PARTICLE_COUNT,
+                        EntryDenialParticleFeedback.PARTICLE_SPREAD,
+                        EntryDenialParticleFeedback.PARTICLE_SPREAD,
+                        EntryDenialParticleFeedback.PARTICLE_SPREAD,
+                        new org.bukkit.Particle.DustOptions(
+                                EntryDenialParticleFeedback.DUST_COLOR,
+                                EntryDenialParticleFeedback.DUST_SIZE)));
+    }
+
     /**
      * Builds the caller-owned hop back to a player's Folia thread for async
      * command continuations. The returned seam only bridges through
@@ -4201,10 +4251,23 @@ public final class ChunkLandPlugin extends JavaPlugin {
      */
     static WorldClaimPolicy buildWorldClaimPolicy(ConfigService config,
             Function<UUID, Optional<String>> worldNames) {
+        return buildWorldClaimPolicy(config, worldNames, false);
+    }
+
+    /**
+     * Production per-world claim gate with an explicit choice for worlds
+     * absent from the config.
+     *
+     * @param denyUnlisted true while the conservative startup fallback is
+     *        active: unlisted worlds reject instead of following the enabled
+     *        default; the normal path always passes false
+     */
+    static WorldClaimPolicy buildWorldClaimPolicy(ConfigService config,
+            Function<UUID, Optional<String>> worldNames, boolean denyUnlisted) {
         if (config == null || worldNames == null) {
             return WorldClaimPolicy.denyAll("world.unknown");
         }
-        return WorldClaimPolicy.fromConfig(config::current, worldNames);
+        return WorldClaimPolicy.fromConfig(config::current, worldNames, denyUnlisted);
     }
 
     /**
@@ -4232,34 +4295,58 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Supplier<ChunkLandConfig> configs,
             Map<UUID, String> uuidToNameSnapshot,
             Map<UUID, Integer> worldMinSnapshot) {
+        return buildProtectionDepthLookup(configs, uuidToNameSnapshot, worldMinSnapshot, false);
+    }
+
+    /**
+     * Formal production depth lookup with an explicit choice for worlds the
+     * snapshot never listed.
+     *
+     * @param conservative true only while the conservative startup fallback
+     *        is active: unlisted worlds resolve to the world minimum
+     *        (full-height protection) instead of stored depths; the normal
+     *        path always passes false so its existing behaviour is untouched
+     */
+    static SnapshotProtectionDepthLookup buildProtectionDepthLookup(
+            Supplier<ChunkLandConfig> configs,
+            Map<UUID, String> uuidToNameSnapshot,
+            Map<UUID, Integer> worldMinSnapshot,
+            boolean conservative) {
         Map<UUID, String> names = uuidToNameSnapshot == null ? Map.of() : uuidToNameSnapshot;
         Map<UUID, Integer> mins = worldMinSnapshot == null ? Map.of() : worldMinSnapshot;
         return new SnapshotProtectionDepthLookup(
-                worldId -> modeForWorld(configs, names, worldId),
-                worldId -> minForWorld(mins, worldId));
+                worldId -> modeForWorld(configs, names, worldId, conservative),
+                worldId -> minForWorld(mins, worldId),
+                conservative ? VerticalMode.FULL_HEIGHT : VerticalMode.defaultMode());
     }
 
     private static VerticalMode modeForWorld(Supplier<ChunkLandConfig> configs,
             Map<UUID, String> names, UUID worldId) {
+        return modeForWorld(configs, names, worldId, false);
+    }
+
+    private static VerticalMode modeForWorld(Supplier<ChunkLandConfig> configs,
+            Map<UUID, String> names, UUID worldId, boolean conservative) {
+        VerticalMode fallback = conservative ? VerticalMode.FULL_HEIGHT : VerticalMode.defaultMode();
         try {
             if (configs == null || worldId == null) {
-                return VerticalMode.defaultMode();
+                return fallback;
             }
             ChunkLandConfig config = configs.get();
             if (config == null) {
-                return VerticalMode.defaultMode();
+                return fallback;
             }
             String name = names.get(worldId);
             if (name == null) {
-                return VerticalMode.defaultMode();
+                return fallback;
             }
             WorldSettings settings = config.worlds().get(name);
             if (settings == null || settings.verticalMode() == null) {
-                return VerticalMode.defaultMode();
+                return fallback;
             }
             return settings.verticalMode();
         } catch (RuntimeException failure) {
-            return VerticalMode.defaultMode();
+            return fallback;
         }
     }
 
@@ -4291,6 +4378,48 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return new PermissionDefaultsCache(configs,
                 name -> Optional.ofNullable(name == null ? null : table.get(name)),
                 warnings);
+    }
+
+    /**
+     * Server world names at enable, for the conservative config fallback map.
+     * Read once, before the persistence bootstrap runs. An unreadable world
+     * list degrades to empty: the conservative map then covers nothing, but
+     * the unknown-world wirings still fail closed.
+     */
+    private List<String> serverWorldNames() {
+        try {
+            List<String> names = new java.util.ArrayList<>();
+            for (org.bukkit.World world : getServer().getWorlds()) {
+                if (world == null) {
+                    continue;
+                }
+                try {
+                    String name = world.getName();
+                    if (name != null && !name.isBlank()) {
+                        names.add(name);
+                    }
+                } catch (RuntimeException ignored) {
+                    // One unreadable world must not poison the rest of the table.
+                }
+            }
+            return List.copyOf(names);
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    /**
+     * Raw text of the shipped {@code /config.yml} resource: the first-install
+     * seed. Read only when the startup resolver proves a first install, never
+     * as a runtime fallback.
+     */
+    private String readShippedDefaultConfig() throws java.io.IOException {
+        try (java.io.InputStream in = getResource("/config.yml")) {
+            if (in == null) {
+                throw new java.io.IOException("shipped resource not found: /config.yml");
+            }
+            return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
     }
 
     /**
@@ -4413,7 +4542,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
-                                    .map(org.bukkit.World::getName)),
+                                    .map(org.bukkit.World::getName),
+                            this.conservativeConfigMode),
                     this.publicEvents);
             return this.claimSaga::claim;
         } catch (RuntimeException failure) {
@@ -4463,7 +4593,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     this.selectionStructureRevisions,
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
-                                    .map(org.bukkit.World::getName)),
+                                    .map(org.bukkit.World::getName),
+                            this.conservativeConfigMode),
                     this.publicEvents);
             return this.expandSaga::expand;
         } catch (RuntimeException failure) {
@@ -4916,6 +5047,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Whether startup hydration has confirmed the runtime land registry
+     * complete. Late-bound on purpose: the protection engine captures this
+     * before the bootstrap exists, and each decision re-reads it. A missing
+     * bootstrap (failed start) reads as unready, so protection denies until
+     * a restart hydrates successfully. Memory-only: one volatile field read
+     * plus one volatile flag read, safe on region threads.
+     */
+    private boolean isRegistryHydrated() {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        return bootstrap != null && bootstrap.readiness().isReady();
+    }
+
+    /**
      * Builds the protection engine with explicit authorisation sources. Rule
      * lookups stay behind the {@link LandRuleLookup} interface so the rule
      * implementation can be supplied later without touching this wiring.
@@ -4951,10 +5095,28 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                                   PermissionContextProvider provider,
                                                   PermissionDecisionCache cache,
                                                   PermissionDecisionEpochSource epochs) {
+        return buildProtectionEngine(store, provider, cache, epochs, () -> true);
+    }
+
+    /**
+     * Builds the protection engine with decision-cache reuse behind the
+     * startup hydration gate. The gate is evaluated per decision and costs
+     * one volatile read: while it reports unready, every decision denies
+     * instead of reading the unconfirmed index as wilderness. A missing
+     * bootstrap (failed start) reads as unready, matching the selection
+     * guards' treatment of a {@code null} readiness.
+     */
+    static ProtectionEngine buildProtectionEngine(LandRegistryStore store,
+                                                  PermissionContextProvider provider,
+                                                  PermissionDecisionCache cache,
+                                                  PermissionDecisionEpochSource epochs,
+                                                  BooleanSupplier readiness) {
         LandRegistryStore active = store == null ? new LandRegistryStore() : store;
         PermissionContextProvider activeProvider = provider == null
                 ? ProtectionEngine.inheritOnlyProvider() : provider;
-        return new ProtectionEngine(active::snapshot, activeProvider, cache, epochs);
+        return new ProtectionEngine(active::snapshot, activeProvider,
+                ProtectionActionRegistry.defaults(), cache, epochs,
+                Objects.requireNonNull(readiness, "readiness"));
     }
 
     void registerWandListener(WandSafetyListener listener) {
@@ -5040,8 +5202,25 @@ public final class ChunkLandPlugin extends JavaPlugin {
             SelectionLandBoundaryLookup boundaryLookup,
             OccupiedPreviewController occupiedPreview,
             SelectionLifecycleListener lifecycleListener) {
+        return buildWandSafetyListener(manager, editServices, clock, feedback, landLookup,
+                boundaryLookup, occupiedPreview, lifecycleListener,
+                SelectionPreviewColorResolver.blocked());
+    }
+
+    /** Full assembly with the effective-permission preview colour resolver. */
+    public static WandSafetyListener buildWandSafetyListener(
+            SelectionSessionManager manager,
+            java.util.function.Supplier<SelectionEditService> editServices,
+            SelectionClock clock,
+            WandFeedback feedback,
+            SelectionLandLookup landLookup,
+            SelectionLandBoundaryLookup boundaryLookup,
+            OccupiedPreviewController occupiedPreview,
+            SelectionLifecycleListener lifecycleListener,
+            SelectionPreviewColorResolver previewColors) {
         SelectionWandClickHandler clickHandler = new SelectionWandClickHandler(
-                manager, editServices, clock, feedback, landLookup, boundaryLookup, occupiedPreview);
+                manager, editServices, clock, feedback, landLookup, boundaryLookup, occupiedPreview,
+                previewColors);
         if (lifecycleListener != null) {
             lifecycleListener.bindWandStateReset(clickHandler::onSelectionCleared);
         }
@@ -5611,6 +5790,15 @@ public final class ChunkLandPlugin extends JavaPlugin {
 
     LandRegistryStore getProtectionStore() {
         return protectionStore;
+    }
+
+    /**
+     * @return the protection engine owned by this plugin, or null before
+     *         enable / after disable. Its {@code isRegistryReady} reports
+     *         whether startup hydration has confirmed the index complete.
+     */
+    ProtectionEngine getProtectionEngine() {
+        return protectionEngine;
     }
 
     /**

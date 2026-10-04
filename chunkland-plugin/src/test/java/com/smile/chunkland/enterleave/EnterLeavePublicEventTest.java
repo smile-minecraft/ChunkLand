@@ -167,6 +167,29 @@ class EnterLeavePublicEventTest {
     }
 
     @Test
+    void inChunkSubLandCrossingEmitsSubEnterThenSubLeave() {
+        Player player = playerProxy(UUID.randomUUID());
+        listener.onPlayerMove(move(player, 900, 900, 950, 900));
+        listener.onPlayerMove(move3d(player, 950, 300, 900, 5, 300, 5));
+        fired.clear();
+        // Same X/Z chunk (0,0): y=300 sits above Storage, y=64 inside it.
+        listener.onPlayerMove(move3d(player, 5, 300, 5, 5, 64, 5));
+        assertEquals(1, fired.size());
+        assertTrue(fired.get(0) instanceof SubLandEnterEvent);
+        assertEquals(SUB_A, ((SubLandEnterEvent) fired.get(0)).subLandId());
+        listener.onPlayerMove(move3d(player, 5, 64, 5, 5, 300, 5));
+        assertEquals(2, fired.size());
+        assertTrue(fired.get(1) instanceof SubLandLeaveEvent);
+        SubLandLeaveEvent leave = (SubLandLeaveEvent) fired.get(1);
+        assertEquals(LAND_A, leave.landId());
+        assertEquals(SUB_A, leave.subLandId());
+        // The baseline already caught up: leaving the chunk afterwards emits
+        // exactly the land-level leave, with no delayed SubLand echo.
+        listener.onPlayerMove(move3d(player, 5, 300, 5, 20, 300, 5));
+        assertEquals(2, fired.size());
+    }
+
+    @Test
     void throwingListenerNeverBreaksMovement() {
         bus.register(Object.class, event -> {
             throw new IllegalStateException("broken listener");
@@ -217,6 +240,13 @@ class EnterLeavePublicEventTest {
         return new PlayerMoveEvent(player,
                 new Location(world, fromX, 300, fromZ),
                 new Location(world, toX, 300, toZ));
+    }
+
+    private PlayerMoveEvent move3d(Player player,
+            int fromX, int fromY, int fromZ, int toX, int toY, int toZ) {
+        return new PlayerMoveEvent(player,
+                new Location(world, fromX, fromY, fromZ),
+                new Location(world, toX, toY, toZ));
     }
 
     private PlayerTeleportEvent teleport(Player player,

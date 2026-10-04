@@ -13,9 +13,15 @@ import java.util.concurrent.CompletionStage;
  * <p>The saga carries the ledger operation id as the idempotency key; the
  * entry's {@code priceMinorUnits} is the refund amount computed from the
  * durable cost basis, so implementations can deposit exactly that value.
- * {@link RefundOutcome#REFUNDED} settles the row as compensated, any other
+ * {@link RefundOutcome#REFUNDED} settles the row as compensated; any other
  * outcome (including {@code null}, a thrown exception, or a failed future)
- * parks it for compensated retry without rolling back the domain.
+ * quarantines it for operator reconciliation without resending, because the
+ * attempt itself may have moved money and the provider cannot dedup.
+ *
+ * <p>Cross-restart exactly-once rests solely on the ledger ordering (the
+ * execution intent is parked before the deposit runs, and a parked row is
+ * never resent), never on retries at this seam: calling deposit twice for
+ * the same parked row can double-credit.
  *
  * <p>Production wires the shared Vault refund adapter, whose provider gate,
  * idempotency cache, and outcome contract are reused unchanged; only the saga

@@ -400,7 +400,7 @@ class ProtectionP0RemainingListenerTest {
     }
 
     @Test
-    void entryMoveInsideSameChunkNeverConsultsEngine() {
+    void entryMoveInsideSameCoveringSkipsEngineDecision() {
         Fixture fx = fixture();
         AtomicInteger lookups = new AtomicInteger();
         ProtectionListener listener = new ProtectionListener(
@@ -410,8 +410,10 @@ class ProtectionP0RemainingListenerTest {
                 new Location(fx.world(), 5, 64, 5),
                 new Location(fx.world(), 6, 64, 6));
         listener.onPlayerMove(event);
-        assertFalse(event.isCancelled(), "same-chunk movement must follow vanilla");
-        assertEquals(0, lookups.get(), "same-chunk movement must not consult the engine");
+        assertFalse(event.isCancelled(),
+                "movement under one unchanged covering must follow vanilla");
+        assertEquals(0, lookups.get(),
+                "movement under one unchanged covering must skip the ENTRY decision");
     }
 
     @Test

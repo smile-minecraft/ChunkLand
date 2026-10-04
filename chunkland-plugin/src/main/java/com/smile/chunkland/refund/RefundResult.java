@@ -7,9 +7,12 @@ import java.util.Objects;
  * Immutable outcome of a refund saga execution.
  *
  * <p>{@code diagnosticKey} is a stable message key, never rendered text.
- * {@code COMPENSATION_PENDING} means the domain commit is durable but the
- * deposit is unconfirmed: the domain is never rolled back and the row is
- * retried through the shared compensation contract. {@code DEGRADED} means
+ * {@code NEEDS_RECONCILIATION} means the deposit ran once behind a durably
+ * parked execution intent but was not confirmed: the domain is never rolled
+ * back and the row is never resent, because a resend could double-credit.
+ * {@code COMPENSATION_PENDING} is retained for the command/display mapping
+ * but the saga no longer produces it for unconfirmed deposits. {@code DEGRADED}
+ * means
  * the money moved and the ledger is {@code COMPENSATED}, but the runtime
  * publish or the final marking did not complete.
  */

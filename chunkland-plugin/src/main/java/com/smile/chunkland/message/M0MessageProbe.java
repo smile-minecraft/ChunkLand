@@ -16,7 +16,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Temporary M0-08 message smoke probe. It wires and observes the AceLib v1.2.0
+ * Temporary M0-08 message smoke probe. It wires and observes the AceLib v1.3.0
  * Component + Bedrock-fallback pipeline for the M0 gate only; it is NOT a permanent
  * domain message abstraction (no {@code /land} UI, no custom gateway, no custom Bedrock
  * fallback renderer). Per {@code docs/decisions/D001-message-pipeline.md}, it calls the

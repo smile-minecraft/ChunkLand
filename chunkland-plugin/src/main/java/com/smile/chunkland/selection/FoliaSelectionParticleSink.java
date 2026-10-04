@@ -36,10 +36,11 @@ public final class FoliaSelectionParticleSink implements SelectionParticleSink {
     public static final int PARTICLE_COUNT = 1;
     /** Warm gold chosen for contrast on grass, dirt, and stone. */
     public static final Color DUST_COLOR = Color.fromRGB(255, 180, 0);
-    /**
-     * Occupied-land preview colour: a clearly different red-orange so a land
-     * boundary can never be mistaken for the active selection outline.
-     */
+    /** Own-land preview colour. */
+    public static final Color OWN_DUST_COLOR = Color.fromRGB(0, 255, 0);
+    /** Effective-access preview colour. */
+    public static final Color ACCESSIBLE_DUST_COLOR = Color.fromRGB(0, 120, 255);
+    /** Blocked or unknown occupied-land preview colour. */
     public static final Color OCCUPIED_DUST_COLOR = Color.fromRGB(255, 70, 0);
     /** Larger than the default mote so the boundary stays readable at a distance. */
     public static final float DUST_SIZE = 1.5F;
@@ -79,11 +80,28 @@ public final class FoliaSelectionParticleSink implements SelectionParticleSink {
 
     @Override
     public void emit(UUID playerId, double x, double y, double z) {
+        emit(playerId, x, y, z, dustColor);
+    }
+
+    @Override
+    public void emit(UUID playerId, double x, double y, double z, SelectionPreviewColor color) {
+        emit(playerId, x, y, z, colorFor(color));
+    }
+
+    private void emit(UUID playerId, double x, double y, double z, Color color) {
         Objects.requireNonNull(playerId, "playerId");
         Player player = playerLookup.apply(playerId);
         if (player == null) {
             return;
         }
-        player.spawnParticle(PARTICLE, x, y, z, PARTICLE_COUNT, new Particle.DustOptions(dustColor, dustSize));
+        player.spawnParticle(PARTICLE, x, y, z, PARTICLE_COUNT, new Particle.DustOptions(color, dustSize));
+    }
+
+    private static Color colorFor(SelectionPreviewColor color) {
+        return switch (color) {
+            case OWN -> OWN_DUST_COLOR;
+            case ACCESSIBLE -> ACCESSIBLE_DUST_COLOR;
+            case BLOCKED -> OCCUPIED_DUST_COLOR;
+        };
     }
 }

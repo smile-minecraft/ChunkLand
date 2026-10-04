@@ -148,12 +148,16 @@ class RefundRecoveryRuntimePublishTest {
             List<RecoveryResult> results = new CrashRecoveryScanner(ledger, handlers, CLOCK, 3)
                     .scan().toCompletableFuture().get(10, TimeUnit.SECONDS);
 
-            assertEquals("COMPENSATION_PENDING", results.get(0).resultingState());
-            assertEquals("COMPENSATION_PENDING",
+            // The single permitted attempt ran and was not confirmed: the row
+            // quarantines instead of scheduling another automatic deposit.
+            assertEquals("NEEDS_RECONCILIATION", results.get(0).resultingState());
+            assertEquals("NEEDS_RECONCILIATION",
                     ledger.find(operationId).toCompletableFuture().join().state());
             assertEquals(0, rebuildCalls.get(), "failed compensation must not publish runtime");
 
-            // Unknown outcome keeps the same pending contract.
+            // An already-parked row is possibly sent, so it quarantines
+            // without an Economy call even though the provider reports
+            // UNKNOWN for the current window.
             outcome.set(RefundOutcome.UNKNOWN);
             UUID secondId = UUID.randomUUID();
             UUID secondWorld = UUID.randomUUID();
@@ -167,10 +171,11 @@ class RefundRecoveryRuntimePublishTest {
 
             List<RecoveryResult> retry = new CrashRecoveryScanner(ledger, handlers, CLOCK, 3)
                     .scan().toCompletableFuture().get(10, TimeUnit.SECONDS);
-            // The scan processes both rows in order; the second row stays pending.
+            // The scan processes both rows in order; the parked row
+            // quarantines without resending.
             RecoveryResult secondResult = retry.stream()
                     .filter(r -> r.operationId().equals(secondId)).findFirst().orElseThrow();
-            assertEquals("COMPENSATION_PENDING", secondResult.resultingState());
+            assertEquals("NEEDS_RECONCILIATION", secondResult.resultingState());
             assertEquals(0, rebuildCalls.get(), "unknown outcome must not publish runtime");
         }
     }

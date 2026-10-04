@@ -1071,10 +1071,25 @@ class MutationCoordinatorTest {
 
         assertTrue(ledgerEntered.await(2, TimeUnit.SECONDS), "ledger must have started");
 
-        long closeStart = System.nanoTime();
-        coordinator.close();
-        long closeMs = (System.nanoTime() - closeStart) / 1_000_000;
-        assertTrue(closeMs < 800, "close() must return promptly, was " + closeMs + "ms");
+        // close() must return while the never-completing ledger future is
+        // still pending. That ordering — observed via the uncompleted
+        // future, not a wall-clock budget — is the deterministic proof that
+        // close does not wait on the collaborator. The join timeout is only
+        // a deadlock detector for a future product regression; it never
+        // bounds healthy close latency.
+        ExecutorService closer = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "test-close");
+            t.setDaemon(true);
+            return t;
+        });
+        CompletableFuture<Void> closeDone = CompletableFuture.runAsync(coordinator::close, closer);
+        try {
+            closeDone.get(10, TimeUnit.SECONDS);
+        } finally {
+            closer.shutdownNow();
+        }
+        assertFalse(never.isDone(),
+                "close must return while the never-completing ledger future is still pending");
 
         MutationResult r = f.get(2, TimeUnit.SECONDS);
         assertEquals(MutationOutcome.FAILED, r.outcome(), "never-completing plus close must be FAILED");
@@ -1154,26 +1169,72 @@ class MutationCoordinatorTest {
     void synchronouslyBlockingEconomyDoesNotBlockClose() throws Exception {
         CountDownLatch supplierEntered = new CountDownLatch(1);
         CountDownLatch releaseSupplier = new CountDownLatch(1);
+        AtomicBoolean supplierSawInterrupt = new AtomicBoolean(false);
+        // The supplier waits until explicitly released and ignores the
+        // interrupt close() sends via shutdownNow(). That models the harshest
+        // synchronously blocking collaborator, and it removes the
+        // close-vs-interrupt race that used to decide the terminal diagnostic
+        // key: the pipeline thread stays parked, so close() always wins and
+        // the FAILED / coordinator.rejected outcome below is deterministic.
+        // The local deadline only guards against a test hang and never fires
+        // on a healthy run.
         EconomyOperator blockingEco = (req, op) -> {
             supplierEntered.countDown();
-            awaitRelease(releaseSupplier, "synchronous economy release");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            while (releaseSupplier.getCount() > 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    throw new AssertionError("synchronous economy release timed out");
+                }
+                try {
+                    long slice = Math.min(remaining, TimeUnit.SECONDS.toNanos(1));
+                    if (releaseSupplier.await(slice, TimeUnit.NANOSECONDS)) {
+                        break;
+                    }
+                } catch (InterruptedException interrupted) {
+                    // Keep waiting: close() interrupts the pipeline thread, and
+                    // a synchronously blocking supplier must not turn that
+                    // into blocking close().
+                    supplierSawInterrupt.set(true);
+                }
+            }
+            if (supplierSawInterrupt.get()) {
+                Thread.currentThread().interrupt();
+            }
             return CompletableFuture.completedFuture(EconomyOperator.EconomyResult.ok());
         };
         fresh(null, null, null, blockingEco, null, null);
         UUID world = UUID.randomUUID();
         CompletableFuture<MutationResult> f = coordinator.submit(claim(world, 84, 84, "SB")).toCompletableFuture();
-        assertTrue(supplierEntered.await(2, TimeUnit.SECONDS), "economy supplier must be entered");
+        assertTrue(supplierEntered.await(10, TimeUnit.SECONDS), "economy supplier must be entered");
 
-        long start = System.nanoTime();
-        coordinator.close();
-        long ms = (System.nanoTime() - start) / 1_000_000;
-        assertTrue(ms < 500, "close must not block on synchronously blocking supplier, was " + ms + "ms");
+        // close() must return while the supplier is still parked. That
+        // ordering — observed via the unreleased latch, not a wall-clock
+        // budget — is the deterministic proof that close does not wait on the
+        // supplier. The join timeout is only a deadlock detector for a future
+        // product regression; it never bounds healthy close latency.
+        ExecutorService closer = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "test-close");
+            t.setDaemon(true);
+            return t;
+        });
+        CompletableFuture<Void> closeDone = CompletableFuture.runAsync(coordinator::close, closer);
+        try {
+            closeDone.get(10, TimeUnit.SECONDS);
+        } finally {
+            closer.shutdownNow();
+        }
+        assertEquals(1, releaseSupplier.getCount(),
+                "close must return while the synchronously blocking supplier is still parked");
 
-        releaseSupplier.countDown();
-        MutationResult r = f.get(2, TimeUnit.SECONDS);
-        assertEquals(MutationOutcome.FAILED, r.outcome(), "blocked supplier plus close must be FAILED");
-        assertEquals("coordinator.rejected", r.diagnosticKey());
-        assertEquals(0, coordinator.reservations().size(), "reservation must be cleaned after close");
+        try {
+            MutationResult r = f.get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.FAILED, r.outcome(), "blocked supplier plus close must be FAILED");
+            assertEquals("coordinator.rejected", r.diagnosticKey());
+            assertEquals(0, coordinator.reservations().size(), "reservation must be cleaned after close");
+        } finally {
+            releaseSupplier.countDown();
+        }
     }
 
     @Test

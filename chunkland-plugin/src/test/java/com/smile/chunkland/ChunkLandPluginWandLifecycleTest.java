@@ -40,7 +40,7 @@ class ChunkLandPluginWandLifecycleTest {
 
     private static com.smile.acelib.AceLibApi readyApi() {
         return com.smile.acelib.AceLibApi.ready(
-                "1.2.0",
+                "1.3.0",
                 com.smile.acelib.platform.Platform.PAPER,
                 () -> true,
                 () -> {});

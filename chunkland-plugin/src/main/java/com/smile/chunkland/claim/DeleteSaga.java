@@ -51,11 +51,19 @@ import java.util.concurrent.Executor;
  *
  * <p>Once the domain commit succeeds it is never rolled back. A publish
  * failure reports {@code DEGRADED} without touching Economy: the refund waits
- * for startup recovery, which rebuilds the runtime and retries the deposit
- * through the shared compensation path. A failed or unconfirmed deposit parks
- * the row in {@code COMPENSATION_PENDING} and a confirmed deposit settles it
- * as {@code COMPENSATED}; the retry limit moves it to {@code
- * NEEDS_RECONCILIATION}. Server Land moves no money and never calls Economy.
+ * for startup recovery, which rebuilds the runtime and attempts the deposit
+ * once through the shared compensation path. The deposit itself is always
+ * preceded by a durably parked execution intent ({@code DOMAIN_COMMITTED} to
+ * {@code COMPENSATION_PENDING} in its own transaction): only a row that is
+ * provably never sent may be deposited, a confirmed deposit settles it as
+ * {@code COMPENSATED}, and any other outcome quarantines it as {@code
+ * NEEDS_RECONCILIATION} for operator reconciliation instead of resending.
+ * Server Land moves no money and never calls Economy.
+ *
+ * <p>The provider cannot dedup deposits (Vault Legacy drops the idempotency
+ * key at the bridge), so cross-restart exactly-once rests solely on this
+ * ledger ordering: never resend a parked row. See the execution-intent note
+ * on the deposit step.
  *
  * <p>Threading: validation runs synchronously on the caller thread so
  * reservation contention stays deterministic; every continuation runs on the
@@ -90,6 +98,12 @@ public final class DeleteSaga {
     private final SelectionSessionManager selections;
     private final Clock clock;
     private final Executor asyncExecutor;
+    /**
+     * Kept for construction compatibility with the shared saga wiring. Refund
+     * rows are single-attempt by ledger state (a parked row is never
+     * resent), so this limit no longer gates the delete compensation path.
+     */
+    @SuppressWarnings("unused")
     private final int compensationRetryLimit;
     private final PublicEvents events;
 
@@ -361,6 +375,15 @@ public final class DeleteSaga {
     }
 
     // ---- Step 6: Economy deposit outside any SQL transaction. ----
+    //
+    // Execution-intent ordering: the deposit runs only after the row has been
+    // durably parked from DOMAIN_COMMITTED to COMPENSATION_PENDING in its own
+    // transaction, and it runs at most once per row. DOMAIN_COMMITTED is the
+    // only state that proves the provider was never contacted. A parked row
+    // may already have moved money (the process can crash between the deposit
+    // and the settle), and the provider cannot dedup, so a parked row is
+    // never resent: any outcome other than a confirmed deposit quarantines
+    // for operator reconciliation.
 
     private CompletionStage<DeleteOutcome> depositAfterPublish(UUID operationId, long refundAmount,
             com.smile.chunkland.api.land.LandId landId) {
@@ -383,40 +406,84 @@ public final class DeleteSaga {
             } catch (RuntimeException malformed) {
                 return completed(DeleteOutcome.failed("delete.invalid_payload"));
             }
-            if (committed != LedgerState.DOMAIN_COMMITTED
-                    && committed != LedgerState.COMPENSATION_PENDING) {
-                return completed(DeleteOutcome.failed("delete.unexpected_state"));
-            }
             if (refundAmount == 0L) {
+                if (committed != LedgerState.DOMAIN_COMMITTED
+                        && committed != LedgerState.COMPENSATION_PENDING) {
+                    return completed(DeleteOutcome.failed("delete.unexpected_state"));
+                }
                 return settleCompensated(entry, committed, ZERO_VALUE_TRANSACTION_REF);
             }
-            CompletionStage<RefundOutcome> deposit;
-            try {
-                deposit = economy.refund(entry);
-            } catch (Throwable thrown) {
-                return depositUnconfirmed(entry, committed);
+            if (committed == LedgerState.COMPENSATION_PENDING) {
+                return quarantineForReconciliation(entry);
             }
-            if (deposit == null) {
-                return depositUnconfirmed(entry, committed);
+            if (committed != LedgerState.DOMAIN_COMMITTED) {
+                return completed(DeleteOutcome.failed("delete.unexpected_state"));
             }
-            return deposit.thenComposeAsync(outcome -> {
-                if (outcome == RefundOutcome.REFUNDED) {
-                    return settleCompensated(entry, committed, "delete:" + operationId);
-                }
-                return depositUnconfirmed(entry, committed);
-            }, asyncExecutor).exceptionally(failure -> depositUnconfirmedSync(entry));
+            return parkThenDeposit(entry);
         }, asyncExecutor).exceptionally(failure -> DeleteOutcome.failed("delete.ledger_failed"));
     }
 
-    private CompletionStage<DeleteOutcome> depositUnconfirmed(LedgerEntry entry, LedgerState committed) {
-        if (committed == LedgerState.COMPENSATION_PENDING) {
-            return recordCompensationAttempt(entry);
+    /**
+     * Persist the execution intent before touching the provider, then deposit
+     * exactly once. A park failure leaves the row provably unsent, so it
+     * fails without calling Economy and stays retryable by recovery; after
+     * the park, only a confirmed deposit settles, and every other outcome
+     * quarantines without resending.
+     */
+    private CompletionStage<DeleteOutcome> parkThenDeposit(LedgerEntry entry) {
+        CompletionStage<Void> parked;
+        try {
+            parked = ledger.parkForRefundCompensation(
+                    entry.operationId(), "delete:" + entry.operationId(), clock.instant());
+        } catch (RuntimeException failure) {
+            return completed(DeleteOutcome.failed("delete.ledger_failed"));
         }
-        return parkForCompensation(entry);
+        if (parked == null) {
+            return completed(DeleteOutcome.failed("delete.ledger_failed"));
+        }
+        return parked.thenComposeAsync(ignored -> depositOnce(entry), asyncExecutor)
+                .exceptionallyCompose(failure -> quarantineForReconciliation(entry));
     }
 
-    private DeleteOutcome depositUnconfirmedSync(LedgerEntry entry) {
-        return DeleteOutcome.compensationPending(entry.targetLandId(), amountOf(entry));
+    private CompletionStage<DeleteOutcome> depositOnce(LedgerEntry entry) {
+        CompletionStage<RefundOutcome> deposit;
+        try {
+            deposit = economy.refund(entry);
+        } catch (Throwable thrown) {
+            return quarantineForReconciliation(entry);
+        }
+        if (deposit == null) {
+            return quarantineForReconciliation(entry);
+        }
+        return deposit.thenComposeAsync(outcome -> {
+            if (outcome == RefundOutcome.REFUNDED) {
+                return settleCompensated(
+                        entry, LedgerState.COMPENSATION_PENDING, "delete:" + entry.operationId());
+            }
+            return quarantineForReconciliation(entry);
+        }, asyncExecutor).exceptionallyCompose(failure -> quarantineForReconciliation(entry));
+    }
+
+    /**
+     * Fail closed to operator reconciliation: the row carries a parked
+     * execution intent, so the deposit may already have moved money and must
+     * not be resent.
+     */
+    private CompletionStage<DeleteOutcome> quarantineForReconciliation(LedgerEntry entry) {
+        CompletionStage<Void> quarantined;
+        try {
+            quarantined = ledger.quarantine(
+                    entry.operationId(), LedgerState.COMPENSATION_PENDING, clock.instant());
+        } catch (RuntimeException failure) {
+            return completed(DeleteOutcome.failed("delete.ledger_failed"));
+        }
+        if (quarantined == null) {
+            return completed(DeleteOutcome.failed("delete.ledger_failed"));
+        }
+        return quarantined.thenApplyAsync(ignored ->
+                DeleteOutcome.needsReconciliation(entry.targetLandId(), amountOf(entry)),
+                asyncExecutor)
+                .exceptionally(failure -> DeleteOutcome.failed("delete.ledger_failed"));
     }
 
     private CompletionStage<DeleteOutcome> settleCompensated(LedgerEntry entry, LedgerState committed,
@@ -437,40 +504,6 @@ public final class DeleteSaga {
                 DeleteOutcome.success(entry.targetLandId(), amountOf(entry)), asyncExecutor)
                 .exceptionally(failure -> DeleteOutcome.degraded(
                         entry.targetLandId(), amountOf(entry), "delete.finalize_failed"));
-    }
-
-    private CompletionStage<DeleteOutcome> parkForCompensation(LedgerEntry entry) {
-        CompletionStage<Void> parked;
-        try {
-            parked = ledger.parkForRefundCompensation(
-                    entry.operationId(), "delete:" + entry.operationId(), clock.instant());
-        } catch (RuntimeException failure) {
-            return completed(DeleteOutcome.failed("delete.ledger_failed"));
-        }
-        if (parked == null) {
-            return completed(DeleteOutcome.failed("delete.ledger_failed"));
-        }
-        return parked.thenComposeAsync(ignored -> recordCompensationAttempt(entry), asyncExecutor)
-                .exceptionally(failure -> DeleteOutcome.failed("delete.ledger_failed"));
-    }
-
-    private CompletionStage<DeleteOutcome> recordCompensationAttempt(LedgerEntry entry) {
-        CompletionStage<OperationLedger.CompensationDecision> recorded;
-        try {
-            recorded = ledger.recordCompensationFailure(
-                    entry.operationId(), compensationRetryLimit, clock.instant());
-        } catch (RuntimeException failure) {
-            return completed(DeleteOutcome.failed("delete.ledger_failed"));
-        }
-        if (recorded == null) {
-            return completed(DeleteOutcome.failed("delete.ledger_failed"));
-        }
-        return recorded.thenApplyAsync(decision -> {
-            if (decision.resultingState() == LedgerState.NEEDS_RECONCILIATION) {
-                return DeleteOutcome.needsReconciliation(entry.targetLandId(), amountOf(entry));
-            }
-            return DeleteOutcome.compensationPending(entry.targetLandId(), amountOf(entry));
-        }, asyncExecutor).exceptionally(failure -> DeleteOutcome.failed("delete.ledger_failed"));
     }
 
     // ---- Builders. ----

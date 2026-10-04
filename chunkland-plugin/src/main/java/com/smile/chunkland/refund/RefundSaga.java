@@ -31,15 +31,19 @@ import java.util.concurrent.Executor;
  * request against durable storage, take logical reservations, record the
  * {@code CREATED} refund ledger row in its own transaction, commit the domain
  * (release chunks, write the refund audit, advance to {@code DOMAIN_COMMITTED})
- * in one atomic transaction, deposit through Economy with the operation id as
- * the idempotency key strictly outside any SQL transaction, publish a fresh
- * runtime snapshot from the authoritative database, and finalize the row.
+ * in one atomic transaction, durably park the execution intent and deposit
+ * through Economy with the operation id as the idempotency key strictly
+ * outside any SQL transaction, publish a fresh runtime snapshot from the
+ * authoritative database, and finalize the row.
  *
  * <p>The order is deliberately the reverse of the claim path: once the domain
- * commit succeeds it is never rolled back. A failed or unconfirmed deposit
- * parks the row in {@code COMPENSATION_PENDING} (the shared recovery retry
- * contract) and a confirmed deposit settles it as {@code COMPENSATED}; the
- * retry limit moves it to {@code NEEDS_RECONCILIATION}. No step of this saga
+ * commit succeeds it is never rolled back. Only a row that is provably never
+ * sent ({@code DOMAIN_COMMITTED}) may be deposited, and only after the
+ * execution intent is parked ({@code COMPENSATION_PENDING} in its own
+ * transaction). A confirmed deposit settles the row as {@code COMPENSATED};
+ * any other outcome quarantines it as {@code NEEDS_RECONCILIATION} for
+ * operator reconciliation instead of resending, because the attempt itself
+ * may have moved money and the provider cannot dedup. No step of this saga
  * calls into the claim ordering, and the refund amount always comes from the
  * durable per-chunk cost basis times the requested ratio, never from the
  * current pricing table.
@@ -67,6 +71,12 @@ public final class RefundSaga {
     private final RuntimeRegistryRebuilder rebuilder;
     private final Clock clock;
     private final Executor asyncExecutor;
+    /**
+     * Kept for construction compatibility with the shared saga wiring. Refund
+     * rows are single-attempt by ledger state (a parked row is never
+     * resent), so this limit no longer gates the refund compensation path.
+     */
+    @SuppressWarnings("unused")
     private final int compensationRetryLimit;
     private final ConcurrentHashMap<UUID, InFlight> inFlight = new ConcurrentHashMap<>();
 
@@ -132,10 +142,12 @@ public final class RefundSaga {
      * Resume or retry a refund by operation id.
      *
      * <p>Terminal rows replay their outcome without touching the domain or
-     * Economy; {@code CREATED} rows re-commit the domain, {@code
-     * DOMAIN_COMMITTED} and {@code COMPENSATION_PENDING} rows retry the
-     * deposit. This is the seam a later caller (for example an online-player
-     * retry) uses without revalidating the original request.
+     * Economy; {@code CREATED} rows re-commit the domain, and {@code
+     * DOMAIN_COMMITTED} rows park the execution intent and attempt the
+     * deposit once. A {@code COMPENSATION_PENDING} row may already have moved
+     * money, so it quarantines for operator reconciliation instead of
+     * depositing again. This is the seam a later caller (for example an
+     * online-player retry) uses without revalidating the original request.
      */
     public CompletionStage<RefundResult> retry(UUID operationId) {
         Objects.requireNonNull(operationId, "operationId");
@@ -549,7 +561,7 @@ public final class RefundSaga {
             complete(slot, RefundResult.failed("refund.invalid_payload"));
             return;
         }
-        quarantine(entry.operationId(), state, slot);
+        quarantine(entry, state, slot);
     }
 
     private void resumeExisting(LedgerEntry entry, CompletableFuture<RefundResult> slot) {
@@ -575,8 +587,14 @@ public final class RefundSaga {
                     RefundResult.needsReconciliation(entry.targetLandId(), entry.priceMinorUnits()));
             case FAILED -> complete(slot, RefundResult.failed("refund.failed"));
             case CREATED -> resumeCreated(entry, slot);
-            case DOMAIN_COMMITTED, COMPENSATION_PENDING -> depositThenPublish(
+            case DOMAIN_COMMITTED -> depositThenPublish(
                     entry.operationId(), amountOf(entry), entry.targetLandId(), slot);
+            // A parked row may already have moved money (the execution
+            // intent is durable but the deposit outcome is unknown), and the
+            // provider cannot dedup: quarantine for operator reconciliation
+            // instead of depositing again.
+            case COMPENSATION_PENDING -> quarantine(
+                    entry, LedgerState.COMPENSATION_PENDING, slot);
             default -> complete(slot, RefundResult.failed("refund.unexpected_state"));
         }
     }
@@ -590,12 +608,12 @@ public final class RefundSaga {
         try {
             plan = validatedFromPayload(entry);
         } catch (RefundRejectedException rejected) {
-            quarantine(entry.operationId(), LedgerState.CREATED, slot);
+            quarantine(entry, LedgerState.CREATED, slot);
             return;
         } catch (RuntimeException failure) {
             // Unparseable JSON carries no trustworthy plan: quarantine the
             // non-terminal row instead of failing open into a domain commit.
-            quarantine(entry.operationId(), LedgerState.CREATED, slot);
+            quarantine(entry, LedgerState.CREATED, slot);
             return;
         }
         if (plan == null) {
@@ -642,7 +660,14 @@ public final class RefundSaga {
                 payload.refundNumerator(), payload.refundDenominator());
     }
 
-    private void quarantine(UUID operationId, LedgerState expected, CompletableFuture<RefundResult> slot) {
+    /**
+     * Fail closed to operator reconciliation. The quarantined row keeps its
+     * parked execution intent, so the deposit may already have moved money
+     * and must not be resent; the returned outcome carries the land and
+     * amount so an operator can reconcile it without reopening the ledger.
+     */
+    private void quarantine(LedgerEntry entry, LedgerState expected, CompletableFuture<RefundResult> slot) {
+        UUID operationId = entry.operationId();
         CompletionStage<Void> quarantined;
         try {
             quarantined = ledger.quarantine(operationId, expected, clock.instant());
@@ -661,7 +686,7 @@ public final class RefundSaga {
                 complete(slot, RefundResult.failed("refund.ledger_failed"));
                 return;
             }
-            complete(slot, RefundResult.needsReconciliation(null, null));
+            complete(slot, RefundResult.needsReconciliation(entry.targetLandId(), amountOf(entry)));
         }, asyncExecutor);
     }
 
@@ -794,6 +819,15 @@ public final class RefundSaga {
     }
 
     // ---- Step 5: Economy deposit outside any SQL transaction. ----
+    //
+    // Execution-intent ordering: the deposit runs only after the row has been
+    // durably parked from DOMAIN_COMMITTED to COMPENSATION_PENDING in its own
+    // transaction, and it runs at most once per row. DOMAIN_COMMITTED is the
+    // only state that proves the provider was never contacted. A parked row
+    // may already have moved money (the process can crash between the deposit
+    // and the settle), and the provider cannot dedup, so a parked row is
+    // never resent: any outcome other than a confirmed deposit quarantines
+    // for operator reconciliation.
 
     private void depositThenPublish(UUID operationId, long amount, com.smile.chunkland.api.land.LandId landId,
             CompletableFuture<RefundResult> slot) {
@@ -835,84 +869,31 @@ public final class RefundSaga {
                     throw new IllegalArgumentException("refund payload does not match ledger row");
                 }
             } catch (RuntimeException malformed) {
-                quarantine(entry.operationId(), committed, slot);
+                quarantine(entry, committed, slot);
                 return;
             }
             if (amount == 0L) {
                 settleCompensated(entry, committed, ZERO_VALUE_TRANSACTION_REF, slot);
                 return;
             }
-            CompletionStage<RefundOutcome> deposit;
-            try {
-                deposit = economy.deposit(entry);
-            } catch (Throwable thrown) {
-                depositUnconfirmed(entry, committed, slot);
+            if (committed == LedgerState.COMPENSATION_PENDING) {
+                // The execution intent is already parked: a deposit may have
+                // moved money, so never resend.
+                quarantine(entry, committed, slot);
                 return;
             }
-            if (deposit == null) {
-                depositUnconfirmed(entry, committed, slot);
-                return;
-            }
-            deposit.whenCompleteAsync((outcome, depositFailure) -> {
-                if (depositFailure != null || outcome == null) {
-                    depositUnconfirmed(entry, committed, slot);
-                    return;
-                }
-                if (outcome == RefundOutcome.REFUNDED) {
-                    settleCompensated(entry, committed, "refund:" + operationId, slot);
-                    return;
-                }
-                depositUnconfirmed(entry, committed, slot);
-            }, asyncExecutor);
+            parkThenDeposit(entry, slot);
         }, asyncExecutor);
     }
 
     /**
-     * Route an unconfirmed deposit: a first failure parks the row for
-     * compensation, while a row that is already parked only advances its
-     * durable retry count. Neither path rolls back the domain.
+     * Persist the execution intent before touching the provider, then deposit
+     * exactly once. A park failure leaves the row provably unsent, so it
+     * fails without calling Economy and stays retryable by recovery; after
+     * the park, only a confirmed deposit settles, and every other outcome
+     * quarantines without resending.
      */
-    private void depositUnconfirmed(LedgerEntry entry, LedgerState committed,
-            CompletableFuture<RefundResult> slot) {
-        if (committed == LedgerState.COMPENSATION_PENDING) {
-            recordCompensationAttempt(entry, slot);
-            return;
-        }
-        parkForCompensation(entry, slot);
-    }
-
-    private void settleCompensated(LedgerEntry entry, LedgerState committed, String transactionRef,
-            CompletableFuture<RefundResult> slot) {
-        CompletionStage<Void> settled;
-        try {
-            settled = ledger.settleRefundCompensated(
-                    entry.operationId(), committed, transactionRef, clock.instant());
-        } catch (RuntimeException failure) {
-            // Money may have moved but the marking failed: degrade so recovery
-            // (which parks refund rows from DOMAIN_COMMITTED and retries
-            // through the idempotent deposit) can settle the row.
-            complete(slot, RefundResult.degraded(
-                    entry.targetLandId(), amountOf(entry), "refund.finalize_failed"));
-            return;
-        }
-        if (settled == null) {
-            complete(slot, RefundResult.degraded(
-                    entry.targetLandId(), amountOf(entry), "refund.finalize_failed"));
-            return;
-        }
-        settled.whenCompleteAsync((ignored, failure) -> {
-            if (failure != null) {
-                complete(slot, RefundResult.degraded(
-                        entry.targetLandId(), amountOf(entry), "refund.finalize_failed"));
-                return;
-            }
-            publishAndSucceed(entry, slot);
-        }, asyncExecutor);
-    }
-
-    // ---- Deposit unconfirmed: park for compensation, never roll back. ----
-
-    private void parkForCompensation(LedgerEntry entry, CompletableFuture<RefundResult> slot) {
+    private void parkThenDeposit(LedgerEntry entry, CompletableFuture<RefundResult> slot) {
         CompletionStage<Void> parked;
         try {
             parked = ledger.parkForRefundCompensation(
@@ -930,33 +911,64 @@ public final class RefundSaga {
                 complete(slot, RefundResult.failed("refund.ledger_failed"));
                 return;
             }
-            recordCompensationAttempt(entry, slot);
+            depositOnce(entry, slot);
         }, asyncExecutor);
     }
 
-    private void recordCompensationAttempt(LedgerEntry entry, CompletableFuture<RefundResult> slot) {
-        CompletionStage<OperationLedger.CompensationDecision> recorded;
+    private void depositOnce(LedgerEntry entry, CompletableFuture<RefundResult> slot) {
+        CompletionStage<RefundOutcome> deposit;
         try {
-            recorded = ledger.recordCompensationFailure(
-                    entry.operationId(), compensationRetryLimit, clock.instant());
+            deposit = economy.deposit(entry);
+        } catch (Throwable thrown) {
+            quarantine(entry, LedgerState.COMPENSATION_PENDING, slot);
+            return;
+        }
+        if (deposit == null) {
+            quarantine(entry, LedgerState.COMPENSATION_PENDING, slot);
+            return;
+        }
+        deposit.whenCompleteAsync((outcome, depositFailure) -> {
+            if (depositFailure != null || outcome == null) {
+                quarantine(entry, LedgerState.COMPENSATION_PENDING, slot);
+                return;
+            }
+            if (outcome == RefundOutcome.REFUNDED) {
+                settleCompensated(entry, LedgerState.COMPENSATION_PENDING,
+                        "refund:" + entry.operationId(), slot);
+                return;
+            }
+            quarantine(entry, LedgerState.COMPENSATION_PENDING, slot);
+        }, asyncExecutor);
+    }
+
+    // ---- Settle a confirmed deposit, then publish. Never rolls back. ----
+
+    private void settleCompensated(LedgerEntry entry, LedgerState committed, String transactionRef,
+            CompletableFuture<RefundResult> slot) {
+        CompletionStage<Void> settled;
+        try {
+            settled = ledger.settleRefundCompensated(
+                    entry.operationId(), committed, transactionRef, clock.instant());
         } catch (RuntimeException failure) {
-            complete(slot, RefundResult.failed("refund.ledger_failed"));
+            // Money may have moved but the marking failed: degrade so the
+            // next startup recovery quarantines the parked row for operator
+            // reconciliation instead of depositing again.
+            complete(slot, RefundResult.degraded(
+                    entry.targetLandId(), amountOf(entry), "refund.finalize_failed"));
             return;
         }
-        if (recorded == null) {
-            complete(slot, RefundResult.failed("refund.ledger_failed"));
+        if (settled == null) {
+            complete(slot, RefundResult.degraded(
+                    entry.targetLandId(), amountOf(entry), "refund.finalize_failed"));
             return;
         }
-        recorded.whenCompleteAsync((decision, failure) -> {
-            if (failure != null || decision == null) {
-                complete(slot, RefundResult.failed("refund.ledger_failed"));
+        settled.whenCompleteAsync((ignored, failure) -> {
+            if (failure != null) {
+                complete(slot, RefundResult.degraded(
+                        entry.targetLandId(), amountOf(entry), "refund.finalize_failed"));
                 return;
             }
-            if (decision.resultingState() == LedgerState.NEEDS_RECONCILIATION) {
-                complete(slot, RefundResult.needsReconciliation(entry.targetLandId(), amountOf(entry)));
-                return;
-            }
-            complete(slot, RefundResult.compensationPending(entry.targetLandId(), amountOf(entry)));
+            publishAndSucceed(entry, slot);
         }, asyncExecutor);
     }
 

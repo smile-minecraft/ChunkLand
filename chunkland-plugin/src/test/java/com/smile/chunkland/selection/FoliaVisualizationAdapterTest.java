@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
+import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.entity.Player;
@@ -255,6 +256,28 @@ class FoliaVisualizationAdapterTest {
         Particle.DustOptions dust = (Particle.DustOptions) spawn.data;
         assertEquals(FoliaSelectionParticleSink.DUST_COLOR, dust.getColor());
         assertEquals(FoliaSelectionParticleSink.DUST_SIZE, dust.getSize());
+    }
+
+    @Test
+    void semanticPreviewColorsMapToTheFixedRgbValues() {
+        ProxyPlayer proxy = new ProxyPlayer();
+        FoliaSelectionParticleSink sink =
+                new FoliaSelectionParticleSink(playerId -> PLAYER_ID.equals(playerId) ? proxy.player : null);
+
+        sink.emit(PLAYER_ID, 1.0, 65.0, 2.0, SelectionPreviewColor.OWN);
+        sink.emit(PLAYER_ID, 2.0, 65.0, 2.0, SelectionPreviewColor.ACCESSIBLE);
+        sink.emit(PLAYER_ID, 3.0, 65.0, 2.0, SelectionPreviewColor.BLOCKED);
+        sink.emit(PLAYER_ID, 4.0, 65.0, 2.0);
+
+        assertEquals(4, proxy.spawns.size());
+        assertEquals(List.of(
+                        Color.fromRGB(0, 255, 0),
+                        Color.fromRGB(0, 120, 255),
+                        Color.fromRGB(255, 70, 0),
+                        Color.fromRGB(255, 180, 0)),
+                proxy.spawns.stream()
+                        .map(call -> ((Particle.DustOptions) call.data).getColor())
+                        .toList());
     }
 
     @Test

@@ -31,6 +31,14 @@ import org.bukkit.entity.Player;
  * 派送到玩家 region 執行；過期、重複、未知的回應由導航靜默丟棄，不重複提交。
  * 變更一律轉交既有 handler 槽位並使用與聊天同形的參數，沒有 EVERYONE 入口；
  * 槽位缺失、模型遺失、送出失敗一律 fail-closed。
+ *
+ * <p>送出時的授權與聊天指令對等：每個轉交在呼叫 handler 之前，先檢查該槽位
+ * 的 Bukkit 節點，再用該操作自己的 gate 動作（trust／untrust／ban／unban 走
+ * {@code MANAGE_MEMBER}，delete 走 {@code DELETE_LAND}，inspect／explain 走
+ * {@code MANAGE_PERMISSION}）對開表單時固定的領地重新裁決。重新裁決讀的是
+ * 送出當下的快照與旁路旗標，但領地一律用固定的那個；玩家在開表單後走到別的
+ * 領地，送出直接拒絕，絕不改判到新位置。檢查與轉交同一段 region 任務內連續
+ * 執行，所以檢查通過的領地就是 handler 隨後解析到的領地。
  */
 public final class BedrockManageFormHandler {
 
@@ -162,31 +170,25 @@ public final class BedrockManageFormHandler {
     }
 
     private ManagementGateResolver.Request resolve(Player player, String[] args, ReplySink sink) {
-        final Optional<ManagementGateResolver.Request> resolved;
-        try {
-            resolved = gateResolver.resolve(
-                    player, ProtectionActionType.MANAGE_PERMISSION, args);
-        } catch (RuntimeException unresolved) {
-            replyDenied(sink);
-            return null;
-        }
-        if (resolved == null || resolved.isEmpty() || resolved.get() == null) {
-            replyDenied(sink);
-            return null;
-        }
-        return resolved.get();
+        return resolveGate(player, ProtectionActionType.MANAGE_PERMISSION, args, sink);
     }
 
     private static boolean gateAllows(ManagementGateResolver.Request request) {
+        return gateAllows(request.actor(), request.landId(),
+                ProtectionActionType.MANAGE_PERMISSION, request);
+    }
+
+    private static boolean gateAllows(UUID actor, LandId landId,
+            ProtectionActionType action, ManagementGateResolver.Request inputs) {
         try {
             return ManagementPermissionGate.check(
-                    request.actor(),
-                    request.landId(),
-                    ProtectionActionType.MANAGE_PERMISSION,
-                    request.snapshot(),
-                    request.adminBypass(),
-                    request.serverLandSteward(),
-                    request.provider()).outcome() == PermissionState.ALLOW;
+                    actor,
+                    landId,
+                    action,
+                    inputs.snapshot(),
+                    inputs.adminBypass(),
+                    inputs.serverLandSteward(),
+                    inputs.provider()).outcome() == PermissionState.ALLOW;
         } catch (RuntimeException denied) {
             return false;
         }
@@ -227,7 +229,7 @@ public final class BedrockManageFormHandler {
         try {
             switch (route.capability()) {
                 case BASIC_PERMISSION, EXPLAIN -> pushDetail(player, sink, request);
-                case INSPECT -> delegate(player, sink, "inspect", new String[] {"inspect"});
+                case INSPECT -> delegate(player, sink, request, "inspect", new String[] {"inspect"});
                 case DELETE -> pushDeleteModal(player, sink, request);
                 case TRUST_UNTRUST -> pushModeMenu(player, sink, request,
                         BedrockManageForms.trustModeMenu(), "trust", "untrust");
@@ -284,7 +286,7 @@ public final class BedrockManageFormHandler {
                 return;
             }
             String action = model.rows().get(index).action().name();
-            delegate(player, sink, "explain", new String[] {"explain", action});
+            delegate(player, sink, request, "explain", new String[] {"explain", action});
         } catch (RuntimeException failure) {
             replyDenied(sink);
         }
@@ -326,7 +328,7 @@ public final class BedrockManageFormHandler {
                 return;
             }
             if (button.get() == 0) {
-                delegate(player, sink, "delete", new String[] {"delete"});
+                delegate(player, sink, request, "delete", new String[] {"delete"});
                 return;
             }
             backQuietly(request.actor());
@@ -425,17 +427,52 @@ public final class BedrockManageFormHandler {
                 replyDenied(sink);
                 return;
             }
-            delegate(player, sink, slot, new String[] {slot, names.get(index)});
+            delegate(player, sink, request, slot, new String[] {slot, names.get(index)});
         } catch (RuntimeException failure) {
             replyDenied(sink);
         }
     }
 
     /**
-     * 轉交既有 handler 槽位：mutation 與回報一律走原本的路，
-     * 槽位缺失或拋出都 fail-closed，絕不假裝成功。
+     * 轉交既有 handler 槽位：先做與聊天派遣對等的授權，再走原本的路。
+     *
+     * <p>授權保證與 {@link LandCommand} 的聊天派遣站在同一個 gate 上：槽位
+     * 的 Bukkit 節點、送出當下重解的 gate 輸入、固定領地上的操作 gate，三者
+     * 全過才呼叫 handler。mutation 與回報一律走原本的路，槽位缺失或拋出都
+     * fail-closed，絕不假裝成功。
+     *
+     * <p>授權邊界：成員有沒有資格動一塊玩家領地，由這個送出時點的 gate 裁決
+     * 保證；持久化執行緒看不見旁路記憶、 steward 旗標與設定預設值，所以它只
+     * 保證命名空間不變條件（玩家命名空間的寫入永不碰 Server 領地、擁有者與
+     * Server 領地永不被 ban），由
+     * {@code ServerLandAuthorisationIsolationTest} 釘住。兩層缺一不可。
      */
-    private void delegate(Player player, ReplySink sink, String slot, String[] args) {
+    private void delegate(Player player, ReplySink sink,
+            ManagementGateResolver.Request pinned, String slot, String[] args) {
+        ProtectionActionType action;
+        try {
+            action = ManagementPermissionGate.actionForSubcommand(slot).orElse(null);
+        } catch (RuntimeException mappingFailure) {
+            replyDenied(sink);
+            return;
+        }
+        if (action == null || !nodeAllows(player, slot)) {
+            replyDenied(sink);
+            return;
+        }
+        ManagementGateResolver.Request fresh = resolveGate(player, action, args, sink);
+        if (fresh == null) {
+            return;
+        }
+        if (!fresh.actor().equals(pinned.actor())
+                || !fresh.landId().equals(pinned.landId())) {
+            replyDenied(sink);
+            return;
+        }
+        if (!gateAllows(fresh.actor(), pinned.landId(), action, fresh)) {
+            replyDenied(sink);
+            return;
+        }
         final LandCommand.Handler target;
         try {
             target = handlers.get(slot);
@@ -451,6 +488,39 @@ public final class BedrockManageFormHandler {
             target.handle(player, args, sink);
         } catch (RuntimeException handlerFailure) {
             replyDenied(sink);
+        }
+    }
+
+    private ManagementGateResolver.Request resolveGate(Player player,
+            ProtectionActionType action, String[] args, ReplySink sink) {
+        final Optional<ManagementGateResolver.Request> resolved;
+        try {
+            resolved = gateResolver.resolve(player, action, args);
+        } catch (RuntimeException unresolved) {
+            replyDenied(sink);
+            return null;
+        }
+        if (resolved == null || resolved.isEmpty() || resolved.get() == null) {
+            replyDenied(sink);
+            return null;
+        }
+        return resolved.get();
+    }
+
+    private static boolean nodeAllows(Player player, String slot) {
+        final String node;
+        try {
+            node = LandPermissions.forSubcommand(slot);
+        } catch (RuntimeException lookupFailure) {
+            return false;
+        }
+        if (node == null || node.isBlank()) {
+            return false;
+        }
+        try {
+            return player.hasPermission(node);
+        } catch (RuntimeException denied) {
+            return false;
         }
     }
 

@@ -109,7 +109,8 @@ public final class ProtectionCoverage {
         put(table, ProtectionActionType.HOPPER_TRANSFER, Tier.P0_ENFORCED,
                 "onHopperTransfer at source and destination inventories");
         put(table, ProtectionActionType.ENTRY, Tier.P0_ENFORCED,
-                "onPlayerMove cross-chunk plus onPlayerTeleport destination");
+                "onPlayerMove at the destination (cross-chunk moves, plus in-chunk moves "
+                        + "that cross a subland covering) plus onPlayerTeleport destination");
         put(table, ProtectionActionType.VEHICLE_USE, Tier.P0_ENFORCED,
                 "onVehicleEnter plus onVehicleDamage by player");
         put(table, ProtectionActionType.ITEM_FRAME, Tier.P0_ENFORCED,

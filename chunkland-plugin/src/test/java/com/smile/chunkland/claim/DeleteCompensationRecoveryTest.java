@@ -58,13 +58,14 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * DELETE compensation and startup-recovery contract.
  *
- * <p>A failed deposit parks the DELETE row through the shared refund
- * compensation path without rolling back the committed {@code LAND_DELETE};
- * the startup scanner retries the same DELETE payload and settles it as
- * compensated, with no second domain mutation and no duplicate refund. A
+ * <p>An unconfirmed deposit quarantines the DELETE row for operator
+ * reconciliation without rolling back the committed {@code LAND_DELETE} and
+ * without resending: the deposit ran once behind a durably parked intent,
+ * and a resend could double-credit because the provider cannot dedup. A
  * {@code DOMAIN_COMMITTED} row left behind by a publish failure is recovered
- * the same way: the runtime is rebuilt from the authoritative database (the
- * land stays gone) before the refund is retried.
+ * the same way it is attempted live — the runtime is rebuilt from the
+ * authoritative database (the land stays gone) before the single permitted
+ * deposit — while a parked row is never deposited again.
  */
 class DeleteCompensationRecoveryTest {
 
@@ -214,7 +215,7 @@ class DeleteCompensationRecoveryTest {
     }
 
     @Test
-    void deleteCompensationParksAndRecoverySettlesWithoutDuplicateRefund() throws Exception {
+    void deleteFailureQuarantinesWithoutResendAndRecoveryNeverDuplicates() throws Exception {
         try (Harness h = new Harness(10, 100)) {
             UUID actor = UUID.randomUUID();
             UUID world = UUID.randomUUID();
@@ -226,9 +227,9 @@ class DeleteCompensationRecoveryTest {
             h.economy.refundOutcome = RefundOutcome.FAILED;
 
             DeleteOutcome outcome = h.run(new DeleteRequest(owner, actor, world, land, 0L));
-            assertEquals(DeleteOutcome.Status.COMPENSATION_PENDING, outcome.status());
+            assertEquals(DeleteOutcome.Status.NEEDS_RECONCILIATION, outcome.status());
 
-            // The parked row walks the shared refund compensation contract.
+            // The quarantined row walks the shared no-resend contract.
             List<LedgerEntry> rows = h.ledgerRows();
             assertEquals(1, rows.size(), "exactly one DELETE ledger row");
             LedgerEntry parked = rows.get(0);
@@ -236,11 +237,12 @@ class DeleteCompensationRecoveryTest {
             assertEquals(2000L, parked.priceMinorUnits(),
                     "ledger amount stays the full durable basis");
             assertEquals(2000L, outcome.refundMinorUnits());
-            assertEquals(LedgerState.COMPENSATION_PENDING.name(), parked.state());
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), parked.state());
             assertEquals("delete:" + parked.operationId(), parked.economyTransactionRef(),
-                    "the parked row must carry the delete idempotency reference");
-            assertEquals(1, parked.compensationAttempts(),
-                    "the saga records one compensation attempt through recordCompensationFailure");
+                    "the quarantined row must carry the delete idempotency reference");
+            assertEquals(0, parked.compensationAttempts(),
+                    "no automatic retry is scheduled after a parked attempt");
+            assertEquals(1, h.economy.refunds.size(), "exactly one deposit attempt");
 
             // The payload contract survives the park: DELETE type, full amount.
             OperationPayload payload = OperationPayload.fromJson(parked.payloadJson());
@@ -253,18 +255,16 @@ class DeleteCompensationRecoveryTest {
             assertTrue(h.registryStore.snapshot().findLandId(world, 0, 0) == null,
                     "deleted chunks stay wilderness through compensation");
 
-            // Restart recovery retries the same row and settles it.
+            // Restart recovery never deposits again for the parked row, even
+            // when the provider would now succeed.
             h.economy.refundOutcome = RefundOutcome.REFUNDED;
             List<RecoveryResult> results = h.scan(3);
             assertEquals(1, results.size());
-            assertEquals(LedgerState.COMPENSATED.name(), results.get(0).resultingState());
-            assertEquals(LedgerState.RecoveryClassification.RETRY_COMPENSATION,
-                    results.get(0).classification());
-            assertEquals(LedgerState.COMPENSATED.name(), h.ledgerRows().get(0).state());
-            assertEquals(2, h.economy.refunds.size(),
-                    "exactly one saga attempt plus one recovery retry, no duplicate refund");
-            assertEquals(2000L, h.economy.refunds.get(1).priceMinorUnits());
-            assertEquals(1, h.rebuildCalls.get(), "a settled delete must republish the runtime");
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), results.get(0).resultingState());
+            assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), h.ledgerRows().get(0).state());
+            assertEquals(1, h.economy.refunds.size(),
+                    "recovery must not resend a possibly-sent deposit");
+            assertEquals(0, h.rebuildCalls.get(), "a quarantined delete rebuilds nothing");
 
             // Recovery never replays the domain: still one land gone, one audit, one row.
             assertTrue(h.lands.findById(land).toCompletableFuture().get(10, TimeUnit.SECONDS)
@@ -324,7 +324,7 @@ class DeleteCompensationRecoveryTest {
     }
 
     @Test
-    void exhaustedDeleteCompensationReachesReconciliationWithoutResurrecting() throws Exception {
+    void failedDeleteIsAlreadyReconciledAndRecoveryLeavesItThere() throws Exception {
         try (Harness h = new Harness(10, 100)) {
             UUID actor = UUID.randomUUID();
             UUID world = UUID.randomUUID();
@@ -334,16 +334,21 @@ class DeleteCompensationRecoveryTest {
             h.rebuild();
             h.economy.refundOutcome = RefundOutcome.FAILED;
 
+            // The saga quarantines immediately: no automatic retry is ever
+            // scheduled after a parked attempt.
             DeleteOutcome outcome = h.run(new DeleteRequest(owner, actor, world, land, 0L));
-            assertEquals(DeleteOutcome.Status.COMPENSATION_PENDING, outcome.status());
+            assertEquals(DeleteOutcome.Status.NEEDS_RECONCILIATION, outcome.status());
+            assertEquals(1, h.economy.refunds.size(), "exactly one deposit attempt");
 
-            // A retry limit of one exhausts the shared compensation path on the
-            // next scan: the row is quarantined, never resurrected, never refunded twice.
+            // A later scan keeps the row in reconciliation without touching
+            // Economy or the domain, however the provider behaves now.
+            h.economy.refundOutcome = RefundOutcome.REFUNDED;
             List<RecoveryResult> results = h.scan(1);
             assertEquals(1, results.size());
             assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), results.get(0).resultingState());
             assertEquals(LedgerState.NEEDS_RECONCILIATION.name(), h.ledgerRows().get(0).state());
             assertEquals("DELETE", h.ledgerRows().get(0).operationType());
+            assertEquals(1, h.economy.refunds.size(), "recovery must not resend");
             assertTrue(h.lands.findById(land).toCompletableFuture().get(10, TimeUnit.SECONDS)
                     .isEmpty(), "reconciliation must never resurrect the land");
         }

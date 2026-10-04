@@ -137,6 +137,7 @@ class EntryProtectionAdapterTest {
                 (player, target) -> {
                     pushOuts.incrementAndGet();
                     teleportedTo.set(target);
+                    return true;
                 });
     }
 
@@ -304,11 +305,11 @@ class EntryProtectionAdapterTest {
     void missingBanAnswerFailsClosed() {
         EntryProtectionAdapter emptyAnswer = new EntryProtectionAdapter(() -> T0,
                 Duration.ofSeconds(3), (playerId, wid, cx, cz) -> Optional.empty(),
-                (world, x, z) -> true, (player, target) -> {});
+                (world, x, z) -> true, (player, target) -> true);
         EntryProtectionAdapter throwingAnswer = new EntryProtectionAdapter(() -> T0,
                 Duration.ofSeconds(3), (playerId, wid, cx, cz) -> {
                     throw new RuntimeException("ban store boom");
-                }, (world, x, z) -> true, (player, target) -> {});
+                }, (world, x, z) -> true, (player, target) -> true);
 
         UUID worldId = UUID.randomUUID();
         World world = worldProxy(worldId, Set.of(), null);
@@ -324,7 +325,7 @@ class EntryProtectionAdapterTest {
     void unwiredBanLookupSkipsInsideCheck() {
         EntryProtectionAdapter adapter = new EntryProtectionAdapter(() -> T0,
                 Duration.ofSeconds(3), null,
-                (world, x, z) -> true, (player, target) -> {});
+                (world, x, z) -> true, (player, target) -> true);
         UUID worldId = UUID.randomUUID();
         World world = worldProxy(worldId, Set.of(), null);
         assertFalse(adapter.isBannedInside(UUID.randomUUID(), new Location(world, 5, 64, 5)),
@@ -384,7 +385,7 @@ class EntryProtectionAdapterTest {
     void pushOutThrottleAdmitsExactlyOneRacingDeny() throws Exception {
         EntryProtectionAdapter adapter = new EntryProtectionAdapter(() -> T0,
                 Duration.ofSeconds(3), null,
-                (w, x, z) -> true, (playerId, at) -> true, (player, target) -> {});
+                (w, x, z) -> true, (playerId, at) -> true, (player, target) -> true);
         UUID playerId = UUID.randomUUID();
         int racers = 16;
         ExecutorService pool = Executors.newFixedThreadPool(racers);
