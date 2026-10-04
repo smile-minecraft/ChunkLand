@@ -7,7 +7,7 @@ ChunkLand 的公開文件依讀者正在做的事拆分。新增內容前，先�
 | 專案介紹、需求基線、安裝、第一個指令、兩件開服前要注意的預設值 | 根目錄 `README.md`／`README.zh-TW.md`／`README.zh-CN.md` |
 | 圈地、成員與封鎖、子領地、管理介面、被拒絕時的行為 | `docs/<lang>/user-guide.md` |
 | 安裝部署、設定檔、後備來源、備份、審計與孤兒資料 | `docs/<lang>/server-guide.md` |
-| 從原始碼建置、依賴本機 jar、讀取 API、事件匯流排、Folia 執行緒 | `docs/<lang>/developer-guide.md` |
+| 從原始碼建置、依賴已發布座標或本機 jar、讀取 API、事件匯流排、Folia 執行緒 | `docs/<lang>/developer-guide.md` |
 | `/land` 與 `/chunkland` 完整語法、玩家名稱解析順序 | `docs/<lang>/reference/commands.md` |
 | `config.yml` 每個鍵的預設值、範圍與注意事項 | `docs/<lang>/reference/configuration.md` |
 | 29 個權限節點與各自動到什麼 | `docs/<lang>/reference/permissions.md` |
@@ -42,7 +42,7 @@ ChunkLand 的公開文件依讀者正在做的事拆分。新增內容前，先�
 3. `chunkland-api` 的公開介面與列舉 — 方法簽名、動作清單、規則清單。
 4. `LIMITATIONS.md` — 已確認的行為與限制。
 
-以下不得出現在公開文件：內部追蹤編號、里程碑或任務編號、企劃書章節引用、代理流程、驗收紀錄、一次性測試數量、本機絕對路徑、`/reload` 之類不存在的能力、尚未發布的下載位置或外部套件座標。
+以下不得出現在公開文件：內部追蹤編號、里程碑或任務編號、企劃書章節引用、代理流程、驗收紀錄、一次性測試數量、本機絕對路徑、`/reload` 之類不存在的能力、不存在或已失效的下載位置與外部套件座標。
 
 素材沒有提供的細節不要補。要嘛回到來源核對，要嘛標示為尚未驗證。
 
@@ -50,10 +50,13 @@ ChunkLand 的公開文件依讀者正在做的事拆分。新增內容前，先�
 
 `plugin.yml` 的 `api-version: '26.1.2'` 與編譯用的 paper-api 26.1.2 是技術標記，不是支援宣稱。受支援的執行環境只有 Folia 26.2。公開文件提到版本時要分清楚這兩者。
 
-尚未發布任何版本，因此「取得方式」一律寫成從 checkout 建置，不要寫下載連結、外部座標或 Release asset。
+`0.1.0` 已於 2026-10-04（UTC）發布，因此「取得方式」要寫成已發布的事實：外掛 jar 走 [GitHub Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0)，API 走 JitPack **根座標** `com.github.smile-minecraft:ChunkLand:v0.1.0`（連同 `https://jitpack.io` 與 `compileOnly` 一起寫）。從 checkout 建置保留為開發者替代方案，但不是唯一入口。下載位置與座標都要照實際發布狀態更新，版本一改就同步。
+
+JitPack 構件**只有 API**，沒有 `ChunkLandPlugin`，也沒有 Bukkit。`getReadApi()` 與 `publicEventBus()` 宣告在外掛 jar 裡的 `com.smile.chunkland.ChunkLandPlugin` 上，所以任何寫出這個型別的範例（import、cast、區域變數宣告）只掛 JitPack 座標會編譯不過，還要再 `compileOnly` 一份 Release 的 `chunkland-plugin-0.1.0.jar`；外掛 jar 內建 API 模組，所以它也能單獨取代 JitPack 那條。`Bukkit` 則來自讀者自己的 paper-api。文件只要出現引用具體外掛類別的範例，就要把這條寫在相依區塊旁邊，而且要用真的編譯過的相依組合驗證過。
 
 ## 已知的文件陷阱
 
+- JitPack 構件是純 API，沒有 `ChunkLandPlugin`。範例一旦寫到這個類別，相依說明就要多一條 `compileOnly` 的外掛 jar，否則讀者照抄編譯不過（詳見上一節）。
 - `chunkland-api` 的 `can()` 固定回 `false`、`getRule()` 固定回空，原因是 `getReadApi()` 注入的是 stub。文件必須明寫，不能讓讀者以為可以用。
 - `plugin.publicEventBus()` 只在首次啟用前是 `null`；停用不會把它清成 `null`，舊 bus 仍會被回傳，但從此不再收到任何事件（不報錯、只是沒反應）。`getReadApi()` 則永不為 null、停用後讀到空，快取的舊持有者也不會在下次啟用時復活。兩者生命週期不同，文件要分開寫。
 - `shrink` 與 `unclaim` 共用 `chunkland.command.land.shrink` 節點，容易漏掉。

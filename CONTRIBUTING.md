@@ -116,9 +116,17 @@ House rules for anything published here:
   not from memory.
 - No internal tracking identifiers, milestone numbers, task identifiers, agent
   process, test counts, or absolute local paths in published files.
-- Do not publish a release that does not exist. Until there is a tagged release
-  with a downloadable artifact, the way to obtain ChunkLand is to build it from a
-  checkout.
+- Do not document a release or coordinate that does not exist. The obtain-ChunkLand
+  path currently is the `0.1.0` GitHub Release
+  (<https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0>) for the plugin
+  jar and the JitPack (`https://jitpack.io`) root coordinate
+  `com.github.smile-minecraft:ChunkLand:v0.1.0` for the API; building from a
+  checkout stays a documented alternative, not the only way in.
+- An integration sample has to compile with the dependencies it tells the reader
+  to add. The JitPack coordinate carries the API module only, so a sample that
+  names `com.smile.chunkland.ChunkLandPlugin` — the class declaring `getReadApi()`
+  and `publicEventBus()` — also needs the plugin jar as a second `compileOnly`
+  entry. Verify by compiling the sample, not by reading the sample.
 
 ## Reporting a problem
 

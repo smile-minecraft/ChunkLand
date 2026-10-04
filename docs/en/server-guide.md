@@ -12,7 +12,13 @@ requires **AceLib 1.3.0** on the server (`depend: [AceLib]`, so the server
 refuses to enable ChunkLand without it) and optionally a Vault-ecosystem
 economy plugin, LuckPerms, or CoreProtect.
 
-There is no published release. Build the jar from a checkout:
+Download `chunkland-plugin-0.1.0.jar` from the
+[v0.1.0 release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0)
+and copy that one file into `plugins/`. It is self-contained: `chunkland-api`,
+SQLite and SnakeYAML are inside it, so no companion jars are needed.
+`SHA256SUMS` in the same release lists the expected digest of every attachment.
+
+To build from a checkout instead:
 
 ```bash
 ./scripts/build-acelib.sh
@@ -24,9 +30,7 @@ into a cache directory outside the working tree and verifies it against a pinned
 SHA-256; Gradle then resolves AceLib from there as a `flatDir` dependency. It
 never embeds AceLib in the ChunkLand jar.
 
-The output is `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`. It is
-self-contained: `chunkland-api`, SQLite and SnakeYAML are inside it. Copy that
-one file into `plugins/`.
+The build output is `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`.
 
 ## First start
 

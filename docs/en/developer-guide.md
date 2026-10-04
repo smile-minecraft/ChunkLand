@@ -2,9 +2,9 @@ English · [繁體中文](../zh-TW/developer-guide.md) · [简体中文](../zh-C
 
 # Developer guide
 
-For plugins that want to read ChunkLand state or react to its events. There is
-no published artifact to depend on, so this guide starts with how to get the
-jar onto your compile classpath at all.
+For plugins that want to read ChunkLand state or react to its events. The API is
+published on JitPack, so this guide starts with how to put it on your compile
+classpath.
 
 ## Building ChunkLand locally
 
@@ -26,23 +26,37 @@ build, the guard fails first — that is the rule working, not a bug.
 
 ## Depending on it
 
-There is no Maven publication, no JitPack coordinate, and no Gradle plugin
-portal entry. The plugin also does **not** register itself in Bukkit's
-`ServicesManager`, so `getRegistration(...)` will never find it.
-
-Point at the local jars instead:
+The published coordinate is the **root** coordinate
+`com.github.smile-minecraft:ChunkLand`, not a module one:
 
 ```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
 dependencies {
-    compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi, ChunkLandEventBus, domain types
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
 }
 ```
 
-The plugin jar already embeds `chunkland-api`, so this one entry is enough for
-compilation. If you would rather depend on the API module alone, add
-`chunkland-api/build/libs/chunkland-api-0.1.0.jar` as well — you will still need
-the plugin jar at compile time because `getReadApi()` and `publicEventBus()` are
-declared on `ChunkLandPlugin`.
+That artifact is the API jar alone: domain types, `ChunkLandApi` and the event
+bus interface, with no Bukkit, SQL or AceLib. There is no Gradle plugin portal
+entry, and the plugin does **not** register itself in Bukkit's
+`ServicesManager`, so `getRegistration(...)` will never find it.
+
+The second entry is not optional for the samples on this page. Both entry points
+are declared on `com.smile.chunkland.ChunkLandPlugin`, which lives in the plugin
+jar, not in the API jar — so any code that imports or casts that class needs the
+plugin jar on its compile classpath. Download
+[`chunkland-plugin-0.1.0.jar`](https://github.com/smile-minecraft/ChunkLand/releases/download/v0.1.0/chunkland-plugin-0.1.0.jar)
+from the v0.1.0 release into `libs/`. The plugin jar embeds the API module, so
+if you already use it you can drop the JitPack line. Code that only passes
+`ChunkLandApi` and domain values around — no `ChunkLandPlugin` type named — needs
+the JitPack coordinate on its own.
+
+`Bukkit` comes from the paper-api compile dependency you already declare for any
+Paper plugin; neither jar ships Bukkit.
 
 Declare the dependency so ChunkLand loads first:
 

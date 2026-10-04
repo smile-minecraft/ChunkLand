@@ -6,7 +6,7 @@
 
 ChunkLand 是专为 **Folia 26.2** 多线程服务器设计的区块领地保护插件。玩家只要拿起魔杖圈出范围，无论是破坏、放置、开箱、红石互动还是 PVP 战斗，每一次动作都会在发生的当下即时判定，兼顾领地安全与多线程服务器的高性能。
 
-项目目前处于 **0.1.0** 开发阶段，尚未发布预编译好的 Release 文件；若要在服务器上试用，请直接从源码构建 jar 包（步骤见下方[安装步骤](#安装步骤)）。
+当前正式版是 **0.1.0**，可从 [GitHub Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 直接下载（步骤见下方[安装步骤](#安装步骤)）。
 
 ## 保护涵盖范围
 
@@ -46,14 +46,16 @@ ChunkLand 的核心逻辑非常纯粹：**在特定的位置，某位玩家（�
 ## 安装步骤
 
 1. 将 AceLib 1.3.0 放入服务器的 `plugins/` 目录。ChunkLand 声明了 `depend: [AceLib]`，缺少前置时服务器会拒绝加载。
-2. 构建插件 jar 并复制至 `plugins/`：
+2. 从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载 `chunkland-plugin-0.1.0.jar`，复制至 `plugins/`。单这一个 jar 就已内置核心依赖（API 模块、SQLite 驱动、SnakeYAML），不需要额外在 `plugins/` 补充运行库；同一 Release 内的 `SHA256SUMS` 列出各附件的预期摘要值。
+
+   若要改从源码构建：
 
    ```bash
    ./scripts/build-acelib.sh          # 下载并校验编译所需的 AceLib 1.3.0
    ./gradlew build --no-daemon --console=plain
    ```
 
-   编译产物位于 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。此 jar 已内置核心依赖（API 模块、SQLite 驱动、SnakeYAML），不需要额外在 `plugins/` 补充运行库。
+   编译产物位于 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。
 3. 启动服务器。初次加载会自动生成 `plugins/ChunkLand/` 目录，内含默认 `config.yml`、语言文件（`lang/en_US.yml`、`lang/zh_TW.yml`）以及 SQLite 数据库 `chunkland.db`。
 4. 根据服务器需求微调 `config.yml` 后重启服务器。**Folia 环境下不提供 reload 命令**，任何配置变更皆需重启服务器生效。
 
@@ -107,15 +109,24 @@ ChunkLand 的核心逻辑非常纯粹：**在特定的位置，某位玩家（�
 
 ## 外部插件开发者集成
 
-目前尚未发布公开 Maven/Gradle 坐标，亦未向 Bukkit `ServicesManager` 注册。若要在自己的插件中调用，请直接引入本地编译生成的 jar 包：
+API 已发布在 JitPack，坐标是根坐标 `com.github.smile-minecraft:ChunkLand`，不是模块坐标：
 
 ```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
 dependencies {
-    compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi、事件总线接口、领域类型
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
 }
 ```
 
-在代码中获取实例：
+JitPack 构件只有 API：领域类型、`ChunkLandApi` 与事件总线接口，不含 Bukkit、SQL 或 AceLib，也没有插件类。第二条就是下面示例要用的：`getReadApi()` 与 `publicEventBus()` 声明在 `com.smile.chunkland.ChunkLandPlugin` 上，而这个类随插件 jar 发布，需要把 `chunkland-plugin-0.1.0.jar` 从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载到 `libs/`。如果代码只是把 `ChunkLandApi` 和领域值传来传去、不会写出 `ChunkLandPlugin` 这个类型，单靠 JitPack 坐标就够了。`Bukkit` 来自你本来就声明的 paper-api 编译期依赖，这两个 jar 都不含 Bukkit。
+
+在自己的 `plugin.yml` 声明 `depend: [ChunkLand]` 让 ChunkLand 先加载，两条依赖都保持 `compileOnly`——服务器已经提供这些类型，打包进去只会让同一组类型出现两份。
+
+ChunkLand 没有向 Bukkit `ServicesManager` 注册，`getRegistration(...)` 永远找不到它。请改从插件实例获取：
 
 ```java
 ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand");

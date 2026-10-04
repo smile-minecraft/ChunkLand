@@ -6,7 +6,7 @@
 
 歡迎閱讀 ChunkLand 官方文檔！ChunkLand 是專為 **Folia 26.2** 多執行緒伺服器量身打造的區塊領地保護外掛。無論是方塊破壞、容器開關、紅石交互還是 PVP 戰鬥，系統皆在動作發生的當下即時判定，兼顧領地安全與多執行緒伺服器的高效能。
 
-本文件庫對應原始碼版本 **0.1.0**。專案目前處於開源開發階段，若要在伺服器上安裝試用，請直接參考[伺服器管理指南](server-guide.md)由原始碼建置。
+目前正式版是 **0.1.0**，可從 [GitHub Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下載插件 jar。若要在伺服器上安裝，請見[伺服器管理指南](server-guide.md)。
 
 ## 依你的需求開始閱讀
 

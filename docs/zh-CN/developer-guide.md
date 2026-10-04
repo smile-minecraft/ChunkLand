@@ -55,15 +55,26 @@ JavaDoc 带 doclint 生成：
 
 归档构建关掉了文件时间戳、定了条目顺序，所以同一份源码在两台机器上构建出的 jar 逐字节相同。要守住这个性质，跑两次 `clean build` 比对 SHA-256 就行；加了写出非确定性内容的任务就会破。
 
-## 依赖 ChunkLand：目前只能挂本地 jar
+## 依赖 ChunkLand：走 JitPack 根坐标
 
-没有发布构件，没有 Maven 坐标，也没有注册到 `ServicesManager`，所以 Gradle 里只能指本地文件：
+发布的坐标是**根坐标** `com.github.smile-minecraft:ChunkLand`，不是模块坐标。该构件就是 API jar 本身：领域类型、`ChunkLandApi` 与事件总线接口，不含 Bukkit、SQL 或 AceLib。插件也没有注册到 `ServicesManager`，`getRegistration(...)` 找不到它。
 
 ```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
 dependencies {
-    compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi、事件总线接口、领域类型
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
 }
 ```
+
+在自己的 `plugin.yml` 里声明 `depend: [ChunkLand]` 让 ChunkLand 先加载；两条依赖都保持 `compileOnly`——服务器已经提供这些类型，打包进去只会让同一组类型出现两份，classloader 随机挑其中一份。
+
+下面这个例子需要第二条依赖：`getReadApi()` 与 `publicEventBus()` 声明在 `com.smile.chunkland.ChunkLandPlugin` 上，那个类在**插件 jar** 里，JitPack 构件没有它。从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/download/v0.1.0/chunkland-plugin-0.1.0.jar) 下载后放进 `libs/`。`Bukkit` 来自你自己的 paper-api 编译期依赖。
+
+要从本地档案编译，就用上面`## 产物`列出的 `chunkland-plugin-0.1.0.jar`（自带 API 模块，一个条目就够），不必再挂 JitPack。
 
 ```java
 ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand");

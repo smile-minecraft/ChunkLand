@@ -4,15 +4,26 @@ All notable changes to ChunkLand are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-Nothing has been published yet. `0.1.0` below describes the state of the source
-tree, not a released artifact.
-
 ## [Unreleased]
 
-### 0.1.0
+## [0.1.0] - 2026-10-04
 
 First public shape of the plugin: chunk-based land claims, per-action protection
 decisions, and a read-only API for other plugins.
+
+Published as a GitHub Release: the plugin jar
+(`chunkland-plugin-0.1.0.jar`, self-contained with the API module, SQLite and
+SnakeYAML) plus `SHA256SUMS`, and the API artifact on JitPack
+(`https://jitpack.io`) under the root coordinate
+`com.github.smile-minecraft:ChunkLand:v0.1.0`. Building from a checkout remains
+a developer alternative.
+
+The JitPack artifact is the API module alone — it does not contain
+`com.smile.chunkland.ChunkLandPlugin`, the class that declares both entry
+points. A consumer that names that class compiles against the plugin jar from the
+same release as well (it embeds the API module, so it can stand in for the
+JitPack coordinate), and `Bukkit` comes from the consumer's own paper-api. Every
+one of those stays `compileOnly`.
 
 #### Land and selection
 
@@ -107,3 +118,4 @@ change them, entry allows strangers by default, `/tp` is not intercepted, and
 there is no reload command.
 
 [Unreleased]: https://github.com/smile-minecraft/ChunkLand/commits/main
+[0.1.0]: https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0

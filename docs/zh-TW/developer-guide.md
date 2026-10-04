@@ -4,7 +4,7 @@
 
 # 開發者指南
 
-這份指南為有意參與 ChunkLand 核心開發或撰寫測試的開發者而寫，深入介紹專案的架構分層、相依邊界防護與 Folia 多執行緒設計原則。如果你僅需要在**自製外掛中呼叫** ChunkLand，請直接查閱[API 參考](reference/api.md)。
+這份指南為有意參與 ChunkLand 核心開發或撰寫測試的開發者而寫，深入介紹專案的架構分層、相依邊界防護與 Folia 多執行緒設計原則。如果你僅需要在**自製外掛中呼叫** ChunkLand，請直接查閱[API 參考](reference/api.md)，其中也記錄了編譯期相依要怎麼掛：領域 API 走 JitPack 根座標，而 `ChunkLandPlugin` 只在外掛 jar 裡，兩者都要掛。
 
 ## 倉庫模組劃分
 

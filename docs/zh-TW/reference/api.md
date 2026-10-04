@@ -8,7 +8,32 @@
 
 ## 現階段整合說明
 
-專案目前處於 `0.1.0` 開發階段，尚未發布公開 Maven 或 JitPack 座標，亦未向 Bukkit `ServicesManager` 註冊。若要在自有專案中進行整合，請直接引入由原始碼編譯產出的本機 jar 檔：
+API 已發布在 JitPack，座標是**根座標** `com.github.smile-minecraft:ChunkLand`，不是模組座標。該構件就是 API jar 本身：純領域介面與快照型別、`ChunkLandApi` 與事件匯流排介面，不含 Bukkit、SQL 或 AceLib。
+
+ChunkLand 未向 Bukkit `ServicesManager` 註冊，`getRegistration(ChunkLandApi.class)` 一律回傳 `null`，實例只能從外掛實例取得。
+
+```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
+dependencies {
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi、事件匯流排介面、領域型別
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
+}
+```
+
+在你自己的 `plugin.yml` 宣告 `depend: [ChunkLand]` 讓 ChunkLand 先載入，兩條相依都維持 `compileOnly`——伺服器已經提供這些類型，打包進去只會讓同一組型別出現兩份。
+
+### 為什麼要掛兩個
+
+[取得實例](#取得-api-實例)之後的兩個取用點都宣告在 `com.smile.chunkland.ChunkLandPlugin` 上，那個類別在**外掛 jar** 裡，不在 JitPack 構件裡。所以只要你的程式碼寫出 `ChunkLandPlugin` 這個型別——不論是 import、cast 還是區域變數宣告——就必須再掛一份外掛 jar，否則編譯期會找不到這個類別。從 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下載 `chunkland-plugin-0.1.0.jar` 放進 `libs/` 即可；`SHA256SUMS` 有它的預期摘要值。
+
+`Bukkit` 不在這兩個 jar 的任何一個裡，它來自你自己的 paper-api 編譯期相依。
+
+外掛 jar 已內建 API 模組，所以已經在用它的人可以拿掉 JitPack 那條。反過來，只把 `ChunkLandApi` 與領域值傳來傳去、沒有用到 `ChunkLandPlugin` 的程式碼，單靠 JitPack 座標就編譯得過。
+
+若要改用本機 jar 編譯，先從原始碼建置：
 
 ```bash
 ./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.3.0
@@ -23,13 +48,7 @@
 | API 模組 jar | `chunkland-api/build/libs/chunkland-api-0.1.0.jar` | 純領域介面與快照型別，供第三方外掛編譯期依賴 |
 | API 原始碼 jar | `chunkland-api/build/libs/chunkland-api-0.1.0-sources.jar` | 包含 JavaDoc 與原始碼 |
 
-在你的 Gradle 專案中引入本機 jar：
-
-```kotlin
-dependencies {
-    compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))
-}
-```
+指向 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar` 即可，它已內建 API 模組：`compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))`。
 
 ## 取得 API 實例
 

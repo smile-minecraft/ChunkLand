@@ -30,7 +30,7 @@ ChunkLand 是给 **Folia 26.2** 用的领地保护插件。玩家用选区魔杖
 
 插件描述文件里的 `api-version: '26.1.2'` 与编译用的 paper-api 26.1.2 都是编译标记，不是兼容性声明。
 
-源码版本是 **0.1.0**，还没有发布任何构件，也没有 Maven 坐标。拿到 jar 的唯一办法是从源码构建，步骤写在[服务器管理指南](server-guide.md#装起来)里。
+当前正式版是 **0.1.0**：插件 jar 可从 [GitHub Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载，API 构件发在 JitPack（`https://jitpack.io`）的根坐标 `com.github.smile-minecraft:ChunkLand:v0.1.0`。拿 jar 的步骤写在[服务器管理指南](server-guide.md#装起来)里，引入 API 的写法在 [API 参考](reference/api.md)。
 
 ## 文档约定
 

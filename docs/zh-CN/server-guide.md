@@ -7,14 +7,16 @@
 ## 装起来
 
 1. 把 AceLib 1.3.0 放进服务器的 `plugins/` 目录。ChunkLand 在 `plugin.yml` 里声明了 `depend: [AceLib]`，缺了它服务器不会加载 ChunkLand。
-2. 构建插件 jar，复制到 `plugins/`：
+2. 从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载 `chunkland-plugin-0.1.0.jar`，复制到 `plugins/`。这个 jar 自带依赖，API 模块、SQLite、SnakeYAML 都在里面，`plugins/` 里不用再放别的 jar；同一个 Release 里的 `SHA256SUMS` 列出各附件的预期摘要值。
+
+   要改从源码构建的话：
 
    ```bash
    ./scripts/build-acelib.sh          # 取得编译用的 AceLib 1.3.0
    ./gradlew build --no-daemon --console=plain
    ```
 
-   产物是 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。这个 jar 自带依赖，API 模块、SQLite、SnakeYAML 都在里面，`plugins/` 里不用再放别的 jar。
+   产物是 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。
 3. 重启服务器。首次启动会创建 `plugins/ChunkLand/`。
 4. 按需修改 `config.yml`，再重启一次。
 

@@ -3,12 +3,16 @@ English · [繁體中文](../../zh-TW/reference/api.md) · [简体中文](../../
 # API reference
 
 For plugins that read ChunkLand state or subscribe to its events. See the
-[developer guide](../developer-guide.md) for how to get the jar onto your compile
-classpath — there is no Maven coordinate and no `ServicesManager` registration.
+[developer guide](../developer-guide.md) for how to get the API onto your compile
+classpath — the published artifact is on JitPack, and there is no
+`ServicesManager` registration.
 
 ## Entry points
 
-Both are public methods on `com.smile.chunkland.ChunkLandPlugin`.
+Both are public methods on `com.smile.chunkland.ChunkLandPlugin`. That class is
+in the plugin jar, not in the JitPack API artifact — the samples below also need
+`compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))` alongside the API
+dependency, see the [developer guide](../developer-guide.md#depending-on-it).
 
 | Accessor | Returns | Nullability |
 | --- | --- | --- |
@@ -212,7 +216,6 @@ and the persistence layer live in `chunkland-plugin`.
   claim.
 - No service registration. `getRegistration(ChunkLandApi.class)` and friends
   return `null` by design.
-- No published artifact to depend on.
 
 ## Related pages
 

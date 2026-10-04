@@ -6,7 +6,7 @@
 
 ChunkLand 是專為 **Folia 26.2** 多執行緒伺服器設計的區塊領地保護外掛。玩家只要拿起魔杖圈出範圍，無論是破壞、放置、開箱、紅石互動還是 PVP 戰鬥，每一次動作都會在發生的當下即時判定，兼顧領地安全與多執行緒效能。
 
-專案目前處於 **0.1.0** 開發階段，尚未發布預編譯好的 Release 檔案；想在伺服器上試用，請直接從原始碼建置 jar 檔（步驟見下方[安裝說明](#安裝)）。
+目前正式版是 **0.1.0**，可從 [GitHub Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 直接下載（步驟見下方[安裝說明](#安裝)）。
 
 ## 保護涵蓋範圍
 
@@ -46,14 +46,16 @@ ChunkLand 的核心邏輯很純粹：**在特定的位置，某位玩家（或�
 ## 安裝
 
 1. 將 AceLib 1.3.0 放入伺服器的 `plugins/` 目錄。ChunkLand 宣告了 `depend: [AceLib]`，缺少前置時伺服器會拒絕載入。
-2. 建置外掛 jar 檔並複製至 `plugins/`：
+2. 從 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0)下載 `chunkland-plugin-0.1.0.jar`，複製至 `plugins/`。單一這個 jar 檔就已內建相依（API 模組、SQLite、SnakeYAML），不需要額外在 `plugins/` 補放其他執行庫；同一個 Release 內的 `SHA256SUMS` 列出各附件的預期雜湊值。
+
+   若要改從原始碼建置：
 
    ```bash
    ./scripts/build-acelib.sh          # 下載並驗證編譯所需的 AceLib 1.3.0
    ./gradlew build --no-daemon --console=plain
    ```
 
-   編譯產物位於 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。此 jar 檔已內建相依（API 模組、SQLite、SnakeYAML），不需要額外在 `plugins/` 補放其他執行庫。
+   編譯產物位於 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。
 3. 啟動伺服器。首次載入會自動生成 `plugins/ChunkLand/` 目錄，內含預設 `config.yml`、語系檔（`lang/en_US.yml`、`lang/zh_TW.yml`）以及 SQLite 資料庫 `chunkland.db`。
 4. 依伺服器需求微調 `config.yml` 後重啟伺服器。**Folia 環境下不提供 reload 指令**，任何設定變更皆需重啟伺服器生效。
 
@@ -107,15 +109,24 @@ ChunkLand 的核心邏輯很純粹：**在特定的位置，某位玩家（或�
 
 ## 外掛開發者整合
 
-目前尚未發布公開 Maven/Gradle 座標，亦未向 Bukkit `ServicesManager` 註冊。若要在自己的外掛中取用，請直接引文本機編譯產出的 jar 檔：
+API 已發布在 JitPack，座標是根座標 `com.github.smile-minecraft:ChunkLand`，不是模組座標：
 
 ```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
 dependencies {
-    compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi、事件匯流排介面、領域型別
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
 }
 ```
 
-在程式碼中取得實例：
+JitPack 構件只有 API：領域型別、`ChunkLandApi` 與事件匯流排介面，不含 Bukkit、SQL 或 AceLib，也沒有外掛類別。第二條就是下面範例要用的：`getReadApi()` 與 `publicEventBus()` 宣告在 `com.smile.chunkland.ChunkLandPlugin` 上，而那個類別隨外掛 jar 發布，要把 `chunkland-plugin-0.1.0.jar` 從 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下載到 `libs/`。若程式只把 `ChunkLandApi` 與領域值傳來傳去、不會寫到 `ChunkLandPlugin` 這個型別，單靠 JitPack 座標就夠了。`Bukkit` 來自你自己本來就宣告的 paper-api 編譯期相依，這兩個 jar 都不含 Bukkit。
+
+在自己的 `plugin.yml` 宣告 `depend: [ChunkLand]` 讓 ChunkLand 先載入，兩條相依都維持 `compileOnly`——伺服器已經提供這些類型，打包進去只會讓同一組型別出現兩份。
+
+ChunkLand 沒有向 Bukkit `ServicesManager` 註冊，`getRegistration(...)` 永遠找不到它。請改從外掛實例取得：
 
 ```java
 ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand");

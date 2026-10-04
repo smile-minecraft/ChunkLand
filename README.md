@@ -9,8 +9,8 @@ with a selection wand, and from then on every attempt to break, place, open,
 use, fight inside, or enter that claim is decided individually rather than by a
 one-time check when the chunk happens to load.
 
-The source version in this checkout is **0.1.0**. No release has been published
-yet, so build the jar from a checkout — see
+The current release is **0.1.0** — [download it from the GitHub
+Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0). See
 [Install](#install) below.
 
 ## What it decides
@@ -62,7 +62,14 @@ are compile markers, not a compatibility claim.
 
 1. Put AceLib 1.3.0 in the server's `plugins/` directory. ChunkLand declares
    `depend: [AceLib]`, so the server will refuse to start ChunkLand without it.
-2. Build the plugin jar and copy it into `plugins/`:
+2. Download `chunkland-plugin-0.1.0.jar` from the
+   [v0.1.0 release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0)
+   and copy it into `plugins/`. That single jar is self-contained: the API
+   module, SQLite and SnakeYAML are inside it, so no companion jars are needed
+   in `plugins/`. `SHA256SUMS` in the same release lists the expected digest of
+   every attachment.
+
+   To build it from source instead:
 
    ```bash
    ./scripts/build-acelib.sh          # fetches AceLib 1.3.0 for compilation
@@ -70,8 +77,6 @@ are compile markers, not a compatibility claim.
    ```
 
    The server jar lands at `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`.
-   It is self-contained: the API module, SQLite and SnakeYAML are inside it, so
-   no companion jars are needed in `plugins/`.
 3. Restart the server. The first start creates `plugins/ChunkLand/` with
    `config.yml`, `lang/en_US.yml`, `lang/zh_TW.yml` and the SQLite database
    `chunkland.db`.
@@ -151,14 +156,37 @@ Other entry points: [CHANGELOG.md](CHANGELOG.md) for what changed,
 
 ## Using ChunkLand from another plugin
 
-There is no published artifact to depend on, no Maven coordinate and no
-ServicesManager registration. You build against local jars:
+The API is published on JitPack under the root coordinate
+`com.github.smile-minecraft:ChunkLand` — not a module coordinate:
 
 ```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
 dependencies {
-    compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi, ChunkLandEventBus, domain types
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
 }
 ```
+
+The JitPack artifact is the API jar alone: domain types, `ChunkLandApi` and the
+event bus interface, with no Bukkit, SQL or AceLib — and no plugin class either.
+The second entry is what the sample below needs, because `getReadApi()` and
+`publicEventBus()` are declared on `com.smile.chunkland.ChunkLandPlugin`, and
+that class ships in the plugin jar. Download
+`chunkland-plugin-0.1.0.jar` from the
+[v0.1.0 release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0)
+into `libs/`. Code that only passes `ChunkLandApi` values around needs the first
+entry on its own. `Bukkit` and the rest of the server API come from the
+paper-api compile dependency you already have.
+
+Declare `depend: [ChunkLand]` in your own `plugin.yml` so ChunkLand loads first,
+and keep both entries `compileOnly` — the server already provides these classes,
+and bundling them gives you two copies of the same types.
+
+ChunkLand does not register itself in Bukkit's `ServicesManager`, so
+`getRegistration(...)` will never find it. Get the API from the plugin instance:
 
 ```java
 ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand");

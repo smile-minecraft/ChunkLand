@@ -19,24 +19,24 @@
 
 外掛描述檔與編譯設定中標記的 `26.1.2` 僅為相依標記。**ChunkLand 深度依賴 Folia 的非同步區塊調度，無法在標準 Paper 上運行**，請勿將其安裝於 Paper 伺服器。
 
-## 從原始碼建置
+## 安裝步驟
 
-專案目前處於開發階段，尚未在 Maven 或 GitHub 發布預編譯 Release，請直接從原始碼建置 jar 檔：
+1. 將 AceLib 1.3.0 放進伺服器的 `plugins/` 目錄（ChunkLand 在 `plugin.yml` 宣告了 `depend: [AceLib]`，缺少前置時伺服器會拒絕載入）。
+2. 從 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下載 `chunkland-plugin-0.1.0.jar`，複製到 `plugins/`。此檔案已內嵌核心相依（API 模組、SQLite 驅動、SnakeYAML），伺服器的 `plugins/` 目錄不需要額外補充執行庫；同一個 Release 內的 `SHA256SUMS` 列出各附件的預期雜湊值。
+3. 啟動伺服器。
+
+### 若要改從原始碼建置
 
 ```bash
 ./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.3.0
 ./gradlew build --no-daemon --console=plain
 ```
 
-建置產物位於 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。此檔案已內嵌核心相依（API 模組、SQLite 驅動、SnakeYAML），伺服器的 `plugins/` 目錄不需要額外補充執行庫。
+建置產物位於 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`，把它複製到 `plugins/` 即可。
 
 本專案工具鏈鎖定 Java 25；`./gradlew build` 會自動執行完整的單元測試與架構邊界檢查，執行時間會比純編譯稍長。
 
-## 安裝步驟
-
-1. 將 AceLib 1.3.0 放進伺服器的 `plugins/` 目錄（ChunkLand 在 `plugin.yml` 宣告了 `depend: [AceLib]`，缺少前置時伺服器會拒絕載入）。
-2. 將編譯出的 `chunkland-plugin-0.1.0.jar` 複製到 `plugins/`。
-3. 啟動伺服器。
+## 初次啟動會生成什麼
 
 初次啟動完成後，外掛會在 `plugins/ChunkLand/` 目錄下自動建立以下檔案：
 

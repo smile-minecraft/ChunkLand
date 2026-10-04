@@ -2,7 +2,7 @@
 
 > Single-file bundle of ChunkLand's English reference material, for language models that would rather read one document than follow links. The per-page documents under `docs/en/` are canonical; if this file and a page disagree, the page is right.
 >
-> Source version in this checkout: **0.1.0**. No release has been published. Supported runtime: **Folia 26.2** on **Java 25**, with **AceLib 1.3.0** required. Paper is not supported. The `api-version: '26.1.2'` in `plugin.yml` and the paper-api 26.1.2 compile dependency are build markers, not a compatibility claim.
+> Current release: **0.1.0**, published at <https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0>. Supported runtime: **Folia 26.2** on **Java 25**, with **AceLib 1.3.0** required. Paper is not supported. The `api-version: '26.1.2'` in `plugin.yml` and the paper-api 26.1.2 compile dependency are build markers, not a compatibility claim.
 
 ## What the plugin is
 
@@ -10,14 +10,16 @@ A land-claim plugin for Folia. Players fence off a claim with a selection wand, 
 
 ## Obtaining and installing
 
-No published artifact, no Maven coordinate, no JitPack entry. Build from a checkout:
+Download `chunkland-plugin-0.1.0.jar` from the [v0.1.0 release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) and copy that one file into `plugins/` — self-contained, with `chunkland-api`, SQLite and SnakeYAML embedded. `SHA256SUMS` in the same release lists the expected digest of every attachment. AceLib must already be in `plugins/` because `plugin.yml` declares `depend: [AceLib]`.
+
+To build the same jar from a checkout instead:
 
 ```bash
 ./scripts/build-acelib.sh          # AceLib 1.3.0 into $XDG_CACHE_HOME/chunkland-acelib, SHA-256 verified
 ./gradlew build --no-daemon --console=plain
 ```
 
-Output: `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar` — self-contained, with `chunkland-api`, SQLite and SnakeYAML embedded. `chunkland-api/build/libs/chunkland-api-0.1.0.jar` is produced alongside. Copy the plugin jar into `plugins/`. AceLib must already be in `plugins/` because `plugin.yml` declares `depend: [AceLib]`.
+Output: `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`. `chunkland-api/build/libs/chunkland-api-0.1.0.jar` is produced alongside.
 
 First start creates `plugins/ChunkLand/` with `config.yml`, `config-last-known-good.yml`, `lang/en_US.yml`, `lang/zh_TW.yml` and `chunkland.db` (SQLite — all land, chunk, permission and ledger data). Language files are written only when missing and never overwritten, so keys added by a later version come from the jar while your existing values stay.
 
@@ -233,7 +235,22 @@ Recovery: stop the server, fix `plugins/ChunkLand/config.yml` or restore the mis
 
 ## API
 
-There is no published artifact, no Maven coordinate, and **no `ServicesManager` registration**. Depend on the locally built jar with `compileOnly` and declare `depend: [ChunkLand]`.
+The API is published on JitPack under the **root** coordinate `com.github.smile-minecraft:ChunkLand`, not a module one. The artifact is the API jar alone: domain types, `ChunkLandApi` and the event bus interface, with no Bukkit, SQL or AceLib.
+
+```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
+dependencies {
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi, ChunkLandEventBus, domain types
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
+}
+```
+
+The second entry is required by the sample below. `getReadApi()` and `publicEventBus()` are declared on `com.smile.chunkland.ChunkLandPlugin`, and that class ships in the plugin jar, not in the API jar — so code that imports, casts or declares it does not compile against the JitPack artifact alone. Download `chunkland-plugin-0.1.0.jar` from <https://github.com/smile-minecraft/ChunkLand/releases/download/v0.1.0/chunkland-plugin-0.1.0.jar> into `libs/`. That jar embeds the API module, so it also serves as the JitPack replacement: pointing `compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))` at a local build instead works for both needs in one entry. Code that never names `ChunkLandPlugin` needs the JitPack coordinate alone.
+
+Declare `depend: [ChunkLand]` in your own `plugin.yml` and keep every entry `compileOnly`. `Bukkit` comes from the paper-api compile dependency a Paper plugin already declares; neither jar ships it. There is **no `ServicesManager` registration**: `getRegistration(ChunkLandApi.class)` returns `null` by design.
 
 ```java
 ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand");

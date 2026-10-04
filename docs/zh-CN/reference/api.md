@@ -8,11 +8,34 @@
 
 ## 先讲清楚现在能拿到什么
 
-项目还没有发布任何版本，**没有公开构件、没有 Maven 或 JitPack 坐标，也没有注册到 Bukkit 的 `ServicesManager`**。你只能挂自己从源码构建出来的 jar。
+API 已发布在 JitPack，坐标是**根坐标** `com.github.smile-minecraft:ChunkLand`，不是模块坐标。该构件就是 API jar 本身：领域类型、`ChunkLandApi` 与事件总线接口，不含 Bukkit、SQL 或 AceLib。
 
-这代表两件事：拿不到能靠相依管理解析的构件，也没有办法用服务注册找到实例。
+插件没有注册到 Bukkit 的 `ServicesManager`，所以 `getRegistration(ChunkLandApi.class)` 一律返回 `null`，要拿实例只能从插件实例去取。
 
-从源码构建：
+在自己的 Gradle 项目里挂：
+
+```kotlin
+repositories {
+    maven { url = uri("https://jitpack.io") }
+}
+
+dependencies {
+    compileOnly("com.github.smile-minecraft:ChunkLand:v0.1.0") // ChunkLandApi、事件总线接口、领域类型
+    compileOnly(files("libs/chunkland-plugin-0.1.0.jar"))      // ChunkLandPlugin
+}
+```
+
+在自己的 `plugin.yml` 声明 `depend: [ChunkLand]` 让 ChunkLand 先加载，两条依赖都保持 `compileOnly`——服务器已经提供这些类型，打包进去只会让同一组类型出现两份。
+
+### 为什么要挂两个
+
+[取得实例](#取得实例)之后的两个取用点都声明在 `com.smile.chunkland.ChunkLandPlugin` 上，这个类在**插件 jar** 里，不在 JitPack 构件里。所以只要代码写出 `ChunkLandPlugin` 这个类型——不论是 import、cast 还是局部变量声明——就必须再挂一份插件 jar，否则编译期找不到这个类。从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载 `chunkland-plugin-0.1.0.jar` 放进 `libs/` 即可；`SHA256SUMS` 里有它的预期摘要值。
+
+`Bukkit` 不在这两个 jar 的任何一个里，它来自你自己的 paper-api 编译期依赖。
+
+插件 jar 已内嵌 API 模块，所以已经在用它的人可以去掉 JitPack 那条。反过来，只把 `ChunkLandApi` 与领域值传来传去、没有用到 `ChunkLandPlugin` 的代码，单靠 JitPack 坐标就编译得过。
+
+## 不想走仓库的话，从源码构建
 
 ```bash
 ./scripts/build-acelib.sh          # 取得编译用的 AceLib 1.3.0
@@ -28,13 +51,7 @@
 
 插件 jar 是自带相依的：API 模块、SQLite、SnakeYAML 都包在里面，服务器的 `plugins/` 不需要再放其他 jar。paper-api 与 AceLib 属于服务器提供，不会被打包进去。
 
-在自己的 Gradle 项目里挂本机档案：
-
-```kotlin
-dependencies {
-    compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))
-}
-```
+要从本机档案编译，就指 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`（自带 API 模块，一个条目就够）：`compileOnly(files("chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar"))`。
 
 ## 取得实例
 
