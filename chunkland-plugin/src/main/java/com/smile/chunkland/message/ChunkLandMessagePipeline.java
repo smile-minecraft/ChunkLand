@@ -113,6 +113,41 @@ public class ChunkLandMessagePipeline {
 
     private final ConcurrentMap<CacheKey, String> templateCache = new ConcurrentHashMap<>();
 
+    /** Plain label text per (label key, locale); bounded by the lang key surface. */
+    private final ConcurrentMap<CacheKey, String> labelCache = new ConcurrentHashMap<>();
+
+    /** Lang prefix for protection action display names. */
+    public static final String ACTION_LABEL_PREFIX = "permission.action.";
+
+    /** Lang prefix for {@code ALLOW}/{@code DENY}/{@code INHERIT} display names. */
+    public static final String STATE_LABEL_PREFIX = "permission.state.";
+
+    /** Lang prefix for deciding-layer display names. */
+    public static final String LAYER_LABEL_PREFIX = "permission.layer.";
+
+    /** Lang prefix for decision-source display names. */
+    public static final String SOURCE_LABEL_PREFIX = "permission.source.";
+
+    /** Lang prefix for yes/no display names. */
+    public static final String FLAG_LABEL_PREFIX = "permission.flag.";
+
+    /**
+     * Vars whose enum-style value is swapped for its localized label before
+     * a template renders, so no message has to show a raw constant name.
+     */
+    private static final Map<String, String> LABEL_NAMESPACES = Map.of(
+        "action", ACTION_LABEL_PREFIX,
+        "state", STATE_LABEL_PREFIX,
+        "outcome", STATE_LABEL_PREFIX,
+        "layer", LAYER_LABEL_PREFIX,
+        "source", SOURCE_LABEL_PREFIX,
+        "isowner", FLAG_LABEL_PREFIX,
+        "adminbypass", FLAG_LABEL_PREFIX,
+        "steward", FLAG_LABEL_PREFIX,
+        "serverland", FLAG_LABEL_PREFIX);
+
+    private static final Pattern LABEL_TOKEN = Pattern.compile("[A-Za-z][A-Za-z0-9_]{0,63}");
+
     /** Allowed placeholders — must stay in sync with lang resources. */
     static final Set<String> ALLOWED_PLACEHOLDERS = Set.of(
         "value", "payload", "land_name", "sub_name", "chunk_count", "price", "conflict_count",
@@ -195,7 +230,11 @@ public class ChunkLandMessagePipeline {
             lang.load();
             BedrockService bedrock = api.getBedrockService();
             MessageService service = new MessageService(plugin, lang, bedrock);
-            return Optional.of(new ChunkLandMessagePipeline(service, lang, bedrock, defaultLocale));
+            // Lang files on disk are never overwritten, so an upgraded server
+            // keeps an older copy: keys added since then come from the jar.
+            LangProvider provider = BundledLangDefaults.fromPlugin(plugin,
+                    new LangManagerProvider(lang), LANG_RESOURCE_PATHS, defaultLocale);
+            return Optional.of(new ChunkLandMessagePipeline(service, provider, bedrock, defaultLocale));
         } catch (RuntimeException e) {
             return Optional.empty();
         }
@@ -476,6 +515,100 @@ public class ChunkLandMessagePipeline {
     }
 
     /**
+     * Localized display name for one label key (for example
+     * {@code permission.action.block_break}), as plain text. The effective
+     * locale is tried first, then the default locale. Unknown keys and
+     * unreadable templates answer empty so callers keep their own literal.
+     */
+    public Optional<String> label(String labelKey, Locale locale) {
+        if (labelKey == null || labelKey.isBlank()) {
+            return Optional.empty();
+        }
+        Locale effective = locale == null ? defaultLocale : locale;
+        Optional<String> found = labelIn(labelKey, effective);
+        if (found.isEmpty() && !effective.equals(defaultLocale)) {
+            found = labelIn(labelKey, defaultLocale);
+        }
+        return found;
+    }
+
+    private Optional<String> labelIn(String labelKey, Locale locale) {
+        CacheKey cacheKey = new CacheKey(labelKey, locale);
+        String cached = labelCache.get(cacheKey);
+        if (cached != null) {
+            return Optional.of(cached);
+        }
+        Optional<String> raw;
+        try {
+            raw = lang.get(locale, labelKey);
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+        if (raw == null || raw.isEmpty()) {
+            return Optional.empty();
+        }
+        String plain;
+        try {
+            Component parsed = parser.parse(resolveTemplate(labelKey, locale), Map.of());
+            plain = parsed == null ? null : PlainTextComponentSerializer.plainText().serialize(parsed);
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+        if (plain == null || plain.isBlank()) {
+            return Optional.empty();
+        }
+        labelCache.put(cacheKey, plain);
+        return Optional.of(plain);
+    }
+
+    /**
+     * Swap enum-style values of the label vars ({@code action}, {@code state},
+     * {@code outcome}, {@code layer}, {@code source} and the yes/no flags) for
+     * their localized display names. Values without a matching label entry
+     * stay untouched, so free-form values under the same var name (for
+     * example a subland preview step) render exactly as supplied.
+     */
+    private Map<String, Object> withPermissionLabels(Map<String, Object> vars, Locale effective) {
+        if (vars == null || vars.isEmpty()) {
+            return vars;
+        }
+        HashMap<String, Object> copy = null;
+        for (Map.Entry<String, String> namespace : LABEL_NAMESPACES.entrySet()) {
+            Object value = vars.get(namespace.getKey());
+            String token = labelToken(value);
+            if (token == null) {
+                continue;
+            }
+            Optional<String> label = label(namespace.getValue() + token, effective);
+            if (label.isEmpty()) {
+                continue;
+            }
+            if (copy == null) {
+                copy = new HashMap<>(vars);
+            }
+            copy.put(namespace.getKey(), label.get());
+        }
+        return copy == null ? vars : copy;
+    }
+
+    private static String labelToken(Object value) {
+        String raw;
+        if (value instanceof Enum<?> constant) {
+            raw = constant.name();
+        } else if (value instanceof Boolean flag) {
+            raw = flag.toString();
+        } else if (value instanceof String text) {
+            raw = text;
+        } else {
+            return null;
+        }
+        if (!LABEL_TOKEN.matcher(raw).matches()) {
+            return null;
+        }
+        return raw.toLowerCase(Locale.ROOT);
+    }
+
+    /**
      * Lower-case the placeholder variable keys before the parser builds its
      * resolver.
      *
@@ -511,7 +644,8 @@ public class ChunkLandMessagePipeline {
     public Component render(String messageKey, Map<String, Object> vars, Locale localeOverride, Player contextPlayer) {
         Locale effective = resolveLocale(contextPlayer, localeOverride);
         String template = resolveTemplate(messageKey, effective);
-        vars = withNestedReason(messageKey, normalizePlaceholderKeys(vars), effective);
+        vars = withPermissionLabels(
+                withNestedReason(messageKey, normalizePlaceholderKeys(vars), effective), effective);
         try {
             Component parsed = parser.parse(template, vars);
             if (parsed == null) {
@@ -539,7 +673,8 @@ public class ChunkLandMessagePipeline {
     public Component renderForBroadcast(String messageKey, Map<String, Object> vars, Locale localeOverride) {
         Locale effective = localeOverride != null ? localeOverride : defaultLocale;
         String template = resolveTemplate(messageKey, effective);
-        vars = withNestedReason(messageKey, normalizePlaceholderKeys(vars), effective);
+        vars = withPermissionLabels(
+                withNestedReason(messageKey, normalizePlaceholderKeys(vars), effective), effective);
         try {
             Component parsed = parser.parse(template, vars);
             if (parsed == null) {

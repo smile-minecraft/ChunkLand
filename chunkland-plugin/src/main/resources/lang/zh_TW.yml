@@ -27,7 +27,7 @@ command:
       <gray>  <hover:show_text:'<gray>切換管理員豁免。</gray>'><click:suggest_command:'/land bypass'>bypass    </click></hover><hover:show_text:'<gray>管理員工具。</gray>'><click:suggest_command:'/land admin'>admin    </click></hover>                </gray>
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
-    denied: "<red>缺少權限 <permission>。</red>"
+    denied: "<red>你沒有使用這個指令的權限。</red> <dark_gray>（需要 <permission>）</dark_gray>"
     not_yet: "<yellow>子指令 <subcommand> 尚未實作。</yellow>"
     wand:
       given: "<green>已發放選取魔杖。</green>"
@@ -53,7 +53,7 @@ command:
     default:
       console: "<red>只有玩家可以變更領地預設。</red>"
       usage: "<yellow>用法：/land default <action> [ALLOW|DENY|INHERIT]</yellow>"
-      success: "<green>領地預設 <action> 已設為 <state>。</green>"
+      success: "<green>已把「<action>」的領地預設值設為「<state>」。</green>"
       failed: "<red>領地預設變更失敗：<reason>。</red>"
     ban:
       console: "<red>只有玩家可以封鎖成員。</red>"
@@ -137,7 +137,7 @@ command:
       created: "<green>權限組合 <profile> 已建立。</green>"
       listed: "<green>權限組合：<profiles>。</green>"
       listed_empty: "<gray>尚無權限組合。</gray>"
-      set: "<green>權限組合 <profile> 的 <action> 已設為 <state>。</green>"
+      set: "<green>權限組合 <profile> 的「<action>」已設為「<state>」。</green>"
       deleted: "<green>權限組合 <profile> 已刪除。</green>"
       force_deleted: "<green>權限組合 <profile> 已強制刪除：<affected>。</green>"
       failed: "<red>權限組合操作失敗：<reason>。</red>"
@@ -151,13 +151,24 @@ command:
     explain:
       console: "<red>只有玩家可以查詢權限說明。</red>"
       usage: "<yellow>用法：/land explain <action></yellow>"
-      result: "<green>說明 <action>：<outcome>，經由 <source>/<layer>。<reason> 涵蓋 <coveringSubLandId> 擁有者 <isOwner> 略過 <adminBypass> 協管 <steward></green>"
-      denied: "<red>無法說明權限。</red>"
+      result: |-
+        <gold>━━ 權限說明：<action> ━━</gold>
+        <gray>結果：</gray><white><outcome></white><gray>　決定來源：</gray><white><layer></white><gray>（<source>）</gray>
+        <gray>你是擁有者：</gray><white><isOwner></white><gray>　管理員豁免：</gray><white><adminBypass></white><gray>　協管身分：</gray><white><steward></white>
+        <dark_gray>判定紀錄：<reason>｜所在子領地：<coveringSubLandId></dark_gray>
+      denied: "<red>無法查詢權限說明：請站在你可以管理的領地內，並確認權限項目名稱正確。</red>"
       failed: "<red>查詢權限說明失敗：<reason>。</red>"
     inspect:
       usage: "<yellow>用法：/land inspect [玩家]</yellow>"
-      result: "<green>領地 <landName>（<landId>）擁有者 <owner> 世界 <worldId> 區塊 <chunks> 子領地 <sublands> 版本 <structureRevision>/<landPolicyRevision> 擁有者 <isOwner> 伺服器 <serverLand> 協管 <steward> 上限 <limitMaxChunksPerLand>（<limitMaxChunksPerLandSource>）/<limitMaxSublandsPerLand>（<limitMaxSublandsPerLandSource>） 對象 <playerUuid></green>"
-      denied: "<red>無法查詢領地。</red>"
+      result: |-
+        <gold>━━ 領地「<landName>」━━</gold>
+        <gray>擁有者：</gray><white><owner></white><gray>　你是擁有者：</gray><white><isOwner></white>
+        <gray>範圍：</gray><white><chunks> 個區塊</white><gray>（上限 <limitMaxChunksPerLand>，依據 <limitMaxChunksPerLandSource>）</gray>
+        <gray>子領地：</gray><white><sublands> 個</white><gray>（上限 <limitMaxSublandsPerLand>，依據 <limitMaxSublandsPerLandSource>）</gray>
+        <gray>伺服器領地：</gray><white><serverLand></white><gray>　協管身分：</gray><white><steward></white>
+        <hover:show_text:'<gray>開啟管理介面，用點擊的方式調整權限。</gray>'><click:run_command:'/land manage'><green>[管理介面]</green></click></hover> <hover:show_text:'<gray>填入信任玩家的指令。</gray>'><click:suggest_command:'/land trust '><aqua>[信任玩家]</aqua></click></hover> <hover:show_text:'<gray>填入封鎖玩家的指令。</gray>'><click:suggest_command:'/land ban '><red>[封鎖玩家]</red></click></hover> <hover:show_text:'<gray>填入重新命名的指令。</gray>'><click:suggest_command:'/land rename '><yellow>[重新命名]</yellow></click></hover>
+        <dark_gray>領地編號 <landId>｜世界 <worldId>｜版本 <structureRevision>/<landPolicyRevision>｜查詢對象 <playerUuid></dark_gray>
+      denied: "<red>無法查詢領地：請站在你可以管理的領地內再試一次。</red>"
     log:
       usage: "<yellow>用法：/land log [u:玩家UUID] [t:7d] [a:動作] [land:領地UUID] [world:世界UUID] [limit:筆數] [page:頁數]</yellow>"
       empty: "<gray>沒有符合這些篩選條件的審計紀錄。</gray>"
@@ -170,7 +181,7 @@ command:
       unavailable: "<red>方塊歷史目前無法使用。</red>"
     manage:
       console: "<red>只有玩家可以開啟管理介面。</red>"
-      denied: "<red>管理介面目前無法使用。</red>"
+      denied: "<red>無法開啟管理介面：請站在你可以管理的領地內再試一次。</red>"
       bedrock:
         unsupported: "<yellow>這個步驟尚無 Bedrock 表單。請改用聊天指令 /land <subcommand>。</yellow>"
     bypass:
@@ -315,20 +326,41 @@ land:
     success: "<green>領地 <land_name> 已刪除。已退費 <refund>，共 <chunk_count> 個區塊。</green>"
 protection:
   rejection:
-    action_denied: "<red>動作 <action> 被拒絕。<reason></red>"
-    entry_denied: "<yellow>你無法進入這塊領地。</yellow>"
-    banned_inside: "<red>你位於禁止進入的領地內。</red>"
+    action_denied: "<red>無法<action>：<reason>。</red>"
+    entry_denied_at: "<yellow>領地「<land_name>」不開放你進入。</yellow>"
+    reason:
+      not_member: "你不是領地「<land_name>」的成員"
+      explicit: "領地「<land_name>」已經禁止你這麼做"
+      subland: "領地「<land_name>」的這個區域不對你開放"
+      unavailable: "領地資料還沒準備好，請稍後再試"
+      no_permission: "你在這裡沒有這項權限"
+    entry_denied: "<yellow>這塊領地不開放你進入。</yellow>"
+    banned_inside: "<red>你已被這塊領地封鎖，無法在這裡停留。</red>"
 claim:
+  compensated: "圈地沒有完成，費用已經退還"
+  compensation_pending: "圈地沒有完成，費用退還仍在處理中"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  finalize_failed: "最後的收尾步驟失敗，請聯繫管理員確認"
+  invalid: "選取範圍或名稱不符合規定"
+  publish_failed: "變更已儲存，但還沒同步到遊戲中，請稍後再確認"
+  reconciliation: "上一筆交易仍在對帳中，請稍後再試"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
   recovery_pending: "<yellow>領地資料仍在復原中，請稍後再試。</yellow>"
   recovery_failed: "<red>領地資料復原失敗，請聯繫管理員。</red>"
 world:
   claim_disabled: "<red>此世界已關閉圈地，既有領地仍受保護。</red>"
   unknown: "<red>世界政策目前無法確認，圈地已被阻擋，請稍後再試。</red>"
 pricing:
+  failed: "計算價格時發生問題"
   unavailable: "<red>圈地計價目前無法使用，請稍後再試。</red>"
 economy:
+  failed: "扣款或退款時發生問題"
+  insufficient: "你的餘額不足"
+  unsupported: "經濟系統不支援這項操作"
   unavailable: "<red>經濟服務目前無法使用，請稍後再試。</red>"
 selection:
+  disconnected: "選取的區塊必須彼此相連"
+  stale: "選取範圍已經過期，請重新選取"
   wand:
     first_point: "<yellow>已設定第一角。請再點擊一個方塊設定第二角。</yellow>"
     edit_target: "<yellow>正在編輯你的領地：已設定第一角。請選取要擴張或縮小的區塊。</yellow>"
@@ -342,39 +374,343 @@ selection:
     cancelled: "<yellow>已取消選取範圍。</yellow>"
 gui:
   manage:
+    roster:
+      denied: "<red>你沒有管理這塊領地成員的權限。</red>"
+      picker_empty: "沒有可以選擇的線上玩家"
+      picker_empty_hint: "離線玩家請改用聊天指令。"
+      previous: "上一頁"
+      next: "下一頁"
+      unknown_player: "未知玩家（<value>）"
+      members:
+        entry_name: "成員管理"
+        entry_hint: "查看、新增或移除可以使用這塊領地的玩家。"
+        title: "領地成員（<count> 人）"
+        remove_line: "點擊即可取消信任這位玩家。"
+        add_name: "新增成員"
+        add_hint: "從線上玩家中挑選要信任的人。"
+        empty: "目前還沒有任何成員"
+        picker_title: "選擇要信任的玩家"
+        pick_line: "點擊即可信任這位玩家。"
+      bans:
+        entry_name: "封鎖名單"
+        entry_hint: "查看、新增或解除被禁止進入這塊領地的玩家。"
+        title: "封鎖名單（<count> 人）"
+        remove_line: "點擊即可解除封鎖這位玩家。"
+        add_name: "封鎖玩家"
+        add_hint: "從線上玩家中挑選要封鎖的人。"
+        empty: "目前沒有封鎖任何人"
+        picker_title: "選擇要封鎖的玩家"
+        pick_line: "點擊即可封鎖這位玩家。"
     root:
       title: "<white>領地管理</white>"
-      entry_name: "<white>開啟權限明細畫面。</white>"
-      entry_hint: "<gray>開啟權限明細畫面。</gray>"
+      entry_name: "<white>權限設定</white>"
+      entry_hint: "<gray>查看並調整這塊領地的各項權限。</gray>"
     details:
-      title: "<white>領地權限（<deny_count> 拒絕，<allow_count> 允許）</white>"
+      title: "<white>領地權限（<deny_count> 項拒絕，<allow_count> 項允許）</white>"
       back_name: "<white>返回</white>"
     row:
-      head: "<white><action>: <outcome> @ <layer><conflict></white>"
-      conflict_suffix: " ！衝突"
+      head: "<white><action>：<outcome>（<layer>）<conflict></white>"
+      conflict_suffix: " ⚠ 設定互相衝突"
       remedy_line: "<gray>  - <remedy></gray>"
-      default_lore: "<gray>地預設值 <action>：<state></gray>"
-      default_unset: "未設定（繼承全域）"
-      readonly_line: "<gray>此選單僅供檢視。</gray>"
+      default_lore: "<gray>「<action>」的領地預設值：<state></gray>"
+      toggle_line: "<yellow>點擊即可切換這項預設值。</yellow>"
+      default_unset: "未設定（沿用上層設定）"
+      readonly_line: "<gray>這個項目只能查看，無法在這裡調整。</gray>"
     remedy:
       unavailable: |-
-        <red>結果不可用：資料缺失或解析失敗（已 fail-closed）。</red>
-        <gray>請等待快照重新載入後再開啟此畫面。</gray>
-        <gray>變更仍受門檻管制；未套用任何修改。</gray>
+        <red>暫時無法顯示權限：領地資料還沒準備好。</red>
+        <gray>請稍後重新開啟這個畫面。</gray>
+        <gray>目前沒有任何設定被更動。</gray>
       conflict: |-
-        <gray>經由既有綁定流程（仍受門檻管制）移除 <layer> 上的 DENY 綁定。</gray>
-        <gray>保留 DENY，改為移除 <layer> 上衝突的 ALLOW。</gray>
-        <gray>把想要的 ALLOW 移到更高優先層：子領地綁定優先於領地綁定，綁定優先於預設值。</gray>
+        <gray>移除「<layer>」裡的拒絕設定，就會恢復為允許。</gray>
+        <gray>或保留拒絕，改為移除「<layer>」裡與它衝突的允許設定。</gray>
+        <gray>也可以把允許設定放到更優先的位置：子領地授權優先於領地授權，授權優先於預設值。</gray>
       plain: |-
-        <gray>無衝突：由 <layer> 決定 <outcome>。</gray>
-        <gray>若要變更，請經由既有管理流程（仍受門檻管制）更新 <layer>。</gray>
-        <gray>預設值保持 INHERIT 以繼承；缺值一律 fail-closed 拒絕。</gray>
+        <gray>沒有衝突：目前由「<layer>」決定為「<outcome>」。</gray>
+        <gray>想要變更的話，請調整「<layer>」的設定。</gray>
+        <gray>沒有設定的項目會沿用上層設定；全部都沒設定時一律拒絕。</gray>
     unavailable:
       title: "<white>領地管理（不可用）</white>"
     confirm:
-      title: "<white>確認權限變更：<action></white>"
+      title: "<white>確認變更：<action></white>"
       confirm_name: "<green>確認</green>"
       cancel_name: "<red>取消</red>"
       back_name: "<white>返回</white>"
-      target_line: "<gray>變更目標：<state></gray>"
-      failed_line: "<red>變更未套用（已 fail-closed），未修改任何狀態。</red>"
+      target_line: "<gray>確認後會變更為：<state></gray>"
+      failed_line: "<red>變更沒有成功，設定維持原狀，請再試一次。</red>"
+ban:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unknown_target: "找不到這位玩家；離線玩家請輸入完整的玩家名稱或 UUID"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  not_allowed: "不能對領地主人或伺服器領地這麼做"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+binding:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  invalid: "名稱或參數的格式不正確"
+  reserved: "這個名稱是保留字，請換一個"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  unknown: "找不到指定的項目"
+bypass:
+  audit_failed: "審計紀錄寫入失敗，操作已取消"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+default:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown_action: "找不到這個權限項目，或它不能設定領地預設值"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+delete:
+  commit_failed: "儲存變更時失敗，沒有任何變更被套用"
+  compensation_pending: "款項退還仍在處理中"
+  economy_unavailable: "經濟系統暫時無法使用，請稍後再試"
+  empty_land: "這塊領地沒有任何區塊"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  finalize_failed: "最後的收尾步驟失敗，請聯繫管理員確認"
+  invalid_basis: "這塊領地的購買紀錄有問題，請聯繫管理員"
+  invalid_payload: "操作資料不完整，請重新操作一次"
+  ledger_failed: "交易紀錄寫入失敗，沒有任何變更被套用"
+  missing_basis: "找不到這塊領地的購買紀錄，請聯繫管理員"
+  owner_mismatch: "這塊領地不屬於你"
+  publish_failed: "變更已儲存，但還沒同步到遊戲中，請稍後再確認"
+  reconciliation: "上一筆交易仍在對帳中，請稍後再試"
+  reservation_conflict: "這塊領地正在進行其他操作，請稍後再試"
+  stale: "資料在這段期間已經更新，請重新操作一次"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unexpected_state: "領地狀態與預期不符，請重新操作一次"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  validation_failed: "檢查沒有通過，請確認內容後重新操作"
+  world_mismatch: "選取範圍與領地不在同一個世界"
+expand:
+  disconnected: "選取範圍必須與領地相連"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  hole: "擴張後領地中間不能留下空洞"
+  merge_unsupported: "目前不支援把兩塊領地合併"
+  overlap: "選取範圍與其他領地重疊"
+  owner_mismatch: "這塊領地不屬於你"
+  stale: "資料在這段期間已經更新，請重新操作一次"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  world_mismatch: "選取範圍與領地不在同一個世界"
+explain:
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+group:
+  duplicate: "這個名稱已經被使用了"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  invalid: "名稱或參數的格式不正確"
+  restricted: "仍有綁定正在使用它，請先解除綁定或改用強制刪除"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown_target: "找不到指定的玩家"
+  unknown: "找不到指定的項目"
+ledger:
+  audit_failed: "審計紀錄寫入失敗，操作已取消"
+  conflict: "這筆紀錄已被其他操作處理"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  state: "這筆紀錄目前的狀態無法進行此操作"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown: "找不到這筆帳本紀錄"
+limit:
+  reached: "已經達到上限"
+log:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+orphan:
+  conflict: "世界狀態已經變動，請重新列出後再試"
+  expired: "確認碼已經過期，請重新產生"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  mismatch: "確認碼不正確"
+  present: "這個世界仍然存在，不是孤兒世界"
+  refresh_failed: "重新整理世界目錄失敗"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown: "找不到這個孤兒世界"
+profile:
+  duplicate: "這個名稱已經被使用了"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  invalid_permission: "找不到這個權限項目"
+  invalid_state: "狀態只能是 ALLOW、DENY 或 INHERIT"
+  invalid: "名稱或參數的格式不正確"
+  reserved: "這個名稱是保留字，請換一個"
+  restricted: "仍有綁定正在使用它，請先解除綁定或改用強制刪除"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown: "找不到指定的項目"
+refund:
+  commit_failed: "儲存變更時失敗，沒有任何變更被套用"
+  compensation_pending: "款項退還仍在處理中"
+  economy_unavailable: "經濟系統暫時無法使用，請稍後再試"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  finalize_failed: "最後的收尾步驟失敗，請聯繫管理員確認"
+  idempotency_conflict: "這筆退款已經處理過了"
+  invalid_basis: "這塊領地的購買紀錄有問題，請聯繫管理員"
+  invalid_payload: "操作資料不完整，請重新操作一次"
+  invalid_ratio: "退款比例設定不正確，請聯繫管理員"
+  invalid_request: "退款請求不正確"
+  ledger_failed: "交易紀錄寫入失敗，沒有任何變更被套用"
+  missing_basis: "找不到這塊領地的購買紀錄，請聯繫管理員"
+  publish_failed: "變更已儲存，但還沒同步到遊戲中，請稍後再確認"
+  reconciliation: "上一筆交易仍在對帳中，請稍後再試"
+  reservation_conflict: "這塊領地正在進行其他操作，請稍後再試"
+  server_land_no_refund: "伺服器領地不會退款"
+  stale: "資料在這段期間已經更新，請重新操作一次"
+  unexpected_state: "領地狀態與預期不符，請重新操作一次"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  unknown_operation: "找不到對應的交易紀錄"
+  unknown_provider: "找不到可用的經濟服務"
+  unsupported: "經濟系統不支援退款"
+  validation_failed: "檢查沒有通過，請確認內容後重新操作"
+rename:
+  duplicate: "你已經有同名的領地了"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  invalid: "名稱不符合規定"
+  not_allowed: "你沒有重新命名這塊領地的權限"
+  publish_failed: "變更已儲存，但還沒同步到遊戲中，請稍後再確認"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+shrink:
+  commit_failed: "儲存變更時失敗，沒有任何變更被套用"
+  compensation_pending: "款項退還仍在處理中"
+  delete_required: "這會移除整塊領地，請改用 /land delete"
+  economy_unavailable: "經濟系統暫時無法使用，請稍後再試"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  finalize_failed: "最後的收尾步驟失敗，請聯繫管理員確認"
+  foreign_chunk: "選取範圍包含不屬於這塊領地的區塊"
+  invalid_basis: "這塊領地的購買紀錄有問題，請聯繫管理員"
+  invalid_payload: "操作資料不完整，請重新操作一次"
+  ledger_failed: "交易紀錄寫入失敗，沒有任何變更被套用"
+  missing_basis: "找不到這塊領地的購買紀錄，請聯繫管理員"
+  owner_mismatch: "這塊領地不屬於你"
+  publish_failed: "變更已儲存，但還沒同步到遊戲中，請稍後再確認"
+  reconciliation: "上一筆交易仍在對帳中，請稍後再試"
+  reservation_conflict: "這塊領地正在進行其他操作，請稍後再試"
+  split: "縮減後領地不能被切成不相連的幾塊"
+  stale: "資料在這段期間已經更新，請重新操作一次"
+  subland_overlap: "選取範圍內還有子領地，請先調整或移除子領地"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unexpected_state: "領地狀態與預期不符，請重新操作一次"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  validation_failed: "檢查沒有通過，請確認內容後重新操作"
+  world_mismatch: "選取範圍與領地不在同一個世界"
+subland:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  runtime_rebuild_pending: "即時地圖仍在重建中"
+trust:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unknown_target: "找不到這位玩家；離線玩家請輸入完整的玩家名稱或 UUID"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+unban:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unknown_target: "找不到這位玩家；離線玩家請輸入完整的玩家名稱或 UUID"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  not_allowed: "不能對領地主人或伺服器領地這麼做"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+untrust:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unknown_target: "找不到這位玩家；離線玩家請輸入完整的玩家名稱或 UUID"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+permission:
+  action:
+    block_break: "破壞方塊"
+    block_place: "放置方塊"
+    container_open: "開啟容器"
+    workstation_use: "使用工作方塊"
+    door_use: "開關門"
+    button_use: "按按鈕"
+    lever_use: "扳動拉桿"
+    redstone_use: "觸發紅石裝置"
+    bucket_use: "使用桶子"
+    entry: "進入領地"
+    vehicle_use: "使用載具"
+    entity_interact: "與生物互動"
+    entity_damage: "攻擊生物"
+    item_frame: "動用物品展示框"
+    armor_stand: "動用盔甲座"
+    hanging_entity: "動用畫與掛飾"
+    farmland_trample: "踩踏耕地"
+    player_damage_player: "玩家互相攻擊"
+    piston_move: "活塞推動方塊"
+    fluid_flow: "液體流動"
+    hopper_transfer: "漏斗傳輸物品"
+    fire_spread: "火焰蔓延"
+    fire_burn: "火焰燒毀方塊"
+    explosion_terrain: "爆炸破壞地形"
+    explosion_entity: "爆炸傷害生物"
+    mob_griefing: "生物破壞方塊"
+    hostile_mob_spawn: "敵對生物生成"
+    passive_mob_spawn: "友善生物生成"
+    block_move_in: "方塊被推入領地"
+    block_move_out: "方塊被推出領地"
+    fluid_enter: "液體流入領地"
+    fluid_exit: "液體流出領地"
+    item_transfer_in: "物品傳入領地"
+    item_transfer_out: "物品傳出領地"
+    dispenser_cross_boundary: "發射器跨越邊界"
+    manage_member: "管理成員"
+    manage_permission: "管理權限"
+    manage_subland: "管理子領地"
+    expand_land: "擴張領地"
+    delete_land: "刪除領地"
+  state:
+    allow: "允許"
+    deny: "拒絕"
+    inherit: "沿用上層設定"
+  layer:
+    bypass: "管理員豁免"
+    steward: "伺服器領地協管"
+    guarantee: "領地主人保障"
+    subland_binding: "子領地的個別授權"
+    subland_default: "子領地預設"
+    land_binding: "領地的個別授權"
+    land_default: "領地預設"
+    world_default: "世界預設"
+    global_default: "全域預設"
+    subland_rule: "子領地規則"
+    land_rule: "領地規則"
+    implicit_deny: "未設定（預設拒絕）"
+  source:
+    subject_permission: "玩家權限"
+    land_rule: "領地規則"
+    combined: "玩家權限與領地規則"
+  flag:
+    "true": "是"
+    "false": "否"
+bedrock:
+  manage:
+    root:
+      title: "領地管理"
+      content: "請選擇要進行的管理項目，部分項目會在聊天欄繼續。"
+    menu:
+      claim: "圈地"
+      expand: "擴張領地"
+      shrink: "縮減領地"
+      trust_untrust: "成員管理"
+      ban_unban: "封鎖名單"
+      basic_permission: "權限設定"
+      subland: "子領地"
+      group: "群組"
+      profile: "權限組合"
+      land_rule: "領地規則"
+      inspect: "領地資訊"
+      explain: "權限說明"
+      delete: "刪除領地"
+    trust:
+      title: "成員管理"
+      content: "請選擇動作。離線玩家請改用聊天指令。"
+      add: "信任玩家"
+      remove: "取消信任"
+    ban:
+      title: "封鎖名單"
+      content: "請選擇動作。離線玩家請改用聊天指令。"
+      add: "封鎖玩家"
+      remove: "解除封鎖"
+    choice:
+      title: "<value>：選擇玩家"
+      content: "請選擇要「<value>」的玩家。離線玩家請改用聊天指令。"
+      empty_title: "<value>：沒有線上玩家"
+      empty_content: "目前沒有其他線上玩家。離線玩家請改用聊天指令。"
+    delete:
+      title: "刪除領地"
+      content: "確定要刪除領地「<land_name>」嗎？刪除後無法復原。確認後會顯示刪除提示，請依聊天欄的指示完成最後一步。"
+      confirm: "刪除"
+      cancel: "保留"

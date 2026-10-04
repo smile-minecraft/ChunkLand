@@ -411,14 +411,96 @@ public final class LandCommand {
             }
             return out;
         }
-        // Subcommand-specific completions: explain completes the legal
-        // protection action names on its second arg; every other tail stays
-        // empty. Deterministic declaration order, case-insensitive prefix.
-        if (args.length == 2 && args[0] != null
-                && args[0].equalsIgnoreCase("explain")) {
-            return ExplainCommandHandler.completeAction(args[1]);
+        // Subcommand-specific completions, so nobody has to remember an
+        // action name, a mode word or a state by heart. Deterministic
+        // declaration order, case-insensitive prefix; subcommands without a
+        // fixed vocabulary (names the player invents) stay empty.
+        if (args[0] == null) {
+            return List.of();
+        }
+        String sub = args[0].toLowerCase(Locale.ROOT);
+        String typed = args[args.length - 1];
+        if (args.length == 2) {
+            return switch (sub) {
+                case "explain" -> ExplainCommandHandler.completeAction(typed);
+                case "default" -> matching(DEFAULT_ACTIONS, typed);
+                case "trust", "untrust", "ban", "unban", "inspect" ->
+                        matching(onlinePlayerNames(sender), typed);
+                case "help" -> matching(SUBCOMMANDS, typed);
+                case "subland" -> matching(SUBLAND_MODES, typed);
+                case "group" -> matching(GROUP_MODES, typed);
+                case "profile" -> matching(PROFILE_MODES, typed);
+                case "binding" -> matching(BINDING_MODES, typed);
+                case "bypass" -> matching(BYPASS_MODES, typed);
+                case "delete" -> matching(DELETE_MODES, typed);
+                case "admin" -> matching(ADMIN_MODES, typed);
+                default -> List.of();
+            };
+        }
+        if (args.length == 3) {
+            return switch (sub) {
+                case "default" -> matching(STATE_NAMES, typed);
+                case "binding" -> matching(BINDING_SUBJECTS, typed);
+                default -> List.of();
+            };
+        }
+        if (args.length == 4 && sub.equals("binding") && args[2] != null
+                && args[2].equalsIgnoreCase("player")) {
+            return matching(onlinePlayerNames(sender), typed);
         }
         return List.of();
+    }
+
+    /** Actions whose land default can be set, in declaration order. */
+    private static final List<String> DEFAULT_ACTIONS = java.util.Arrays
+            .stream(com.smile.chunkland.api.permission.ProtectionActionType.values())
+            .filter(com.smile.chunkland.protection.DirectTrustWhitelist::isAllowed)
+            .map(Enum::name)
+            .toList();
+
+    private static final List<String> STATE_NAMES = List.of("ALLOW", "DENY", "INHERIT");
+    private static final List<String> SUBLAND_MODES =
+            List.of("select", "create", "update", "delete", "extend");
+    private static final List<String> GROUP_MODES =
+            List.of("create", "list", "add", "remove", "delete");
+    private static final List<String> PROFILE_MODES = List.of("create", "list", "set", "delete");
+    private static final List<String> BINDING_MODES = List.of("bind", "unbind");
+    private static final List<String> BINDING_SUBJECTS = List.of("player", "group");
+    private static final List<String> BYPASS_MODES = List.of("on", "off");
+    private static final List<String> DELETE_MODES = List.of("confirm");
+    private static final List<String> ADMIN_MODES = List.of("ledger", "orphan");
+
+    /** Case-insensitive prefix filter that keeps the source order. */
+    private static List<String> matching(List<String> candidates, String typed) {
+        String prefix = typed == null ? "" : typed.toLowerCase(Locale.ROOT);
+        List<String> out = new ArrayList<>();
+        for (String candidate : candidates) {
+            if (candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) {
+                out.add(candidate);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Names of the players currently online, sorted. An unreadable server
+     * (console-less test harness, shutdown) answers empty instead of failing
+     * the completion.
+     */
+    private static List<String> onlinePlayerNames(CommandSender sender) {
+        try {
+            List<String> names = new ArrayList<>();
+            for (org.bukkit.entity.Player online : sender.getServer().getOnlinePlayers()) {
+                String name = online.getName();
+                if (name != null) {
+                    names.add(name);
+                }
+            }
+            names.sort(String.CASE_INSENSITIVE_ORDER);
+            return names;
+        } catch (RuntimeException unavailable) {
+            return List.of();
+        }
     }
 
     /** Accessor for wiring inspection. */

@@ -14,17 +14,19 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 
-/** Best-effort, player-only feedback for denied ENTRY transit. */
+/**
+ * Best-effort, player-only feedback for denied ENTRY transit.
+ *
+ * <p>This class owns the throttle and the hop to the player's thread; what
+ * is drawn belongs to the injected {@link ParticleSender}. Production draws
+ * the border the player ran into (see {@link EntryBoundaryTracer} and
+ * {@link DenialParticles#boundaryWall}).
+ */
 public final class EntryDenialParticleFeedback {
 
     public static final Duration DEFAULT_COOLDOWN = Duration.ofSeconds(2);
     public static final Duration DEFAULT_RETENTION = Duration.ofMinutes(10);
     public static final int MAX_ENTRIES = 4096;
-    public static final int PARTICLE_COUNT = 4;
-    public static final org.bukkit.Particle PARTICLE = org.bukkit.Particle.DUST;
-    public static final org.bukkit.Color DUST_COLOR = org.bukkit.Color.fromRGB(220, 40, 40);
-    public static final float DUST_SIZE = 0.8F;
-    public static final double PARTICLE_SPREAD = 0.05D;
 
     @FunctionalInterface
     public interface ParticleSender {
@@ -33,6 +35,7 @@ public final class EntryDenialParticleFeedback {
 
     private final SelectionClock clock;
     private final Duration cooldown;
+    private final java.util.function.Supplier<Duration> liveCooldown;
     private final Duration retention;
     private final int maxEntries;
     private final PlayerScheduler scheduler;
@@ -46,9 +49,30 @@ public final class EntryDenialParticleFeedback {
         this(clock, cooldown, DEFAULT_RETENTION, MAX_ENTRIES, scheduler, sender);
     }
 
+    /**
+     * @param liveCooldown window source read on every deny, so a config
+     *                     reload applies at once; a failing, {@code null} or
+     *                     negative answer falls back to
+     *                     {@link #DEFAULT_COOLDOWN}
+     */
+    public EntryDenialParticleFeedback(SelectionClock clock,
+                                        java.util.function.Supplier<Duration> liveCooldown,
+                                        PlayerScheduler scheduler, ParticleSender sender) {
+        this(clock, DEFAULT_COOLDOWN, DEFAULT_RETENTION, MAX_ENTRIES, scheduler, sender,
+                Objects.requireNonNull(liveCooldown, "liveCooldown"));
+    }
+
     EntryDenialParticleFeedback(SelectionClock clock, Duration cooldown,
                                 Duration retention, int maxEntries,
                                 PlayerScheduler scheduler, ParticleSender sender) {
+        this(clock, cooldown, retention, maxEntries, scheduler, sender, null);
+    }
+
+    private EntryDenialParticleFeedback(SelectionClock clock, Duration cooldown,
+                                Duration retention, int maxEntries,
+                                PlayerScheduler scheduler, ParticleSender sender,
+                                java.util.function.Supplier<Duration> liveCooldown) {
+        this.liveCooldown = liveCooldown;
         this.clock = Objects.requireNonNull(clock, "clock");
         this.cooldown = cooldown == null ? DEFAULT_COOLDOWN : cooldown;
         this.retention = retention == null ? DEFAULT_RETENTION : retention;
@@ -108,12 +132,28 @@ public final class EntryDenialParticleFeedback {
         return lastSent.size();
     }
 
+    private Duration currentCooldown() {
+        java.util.function.Supplier<Duration> live = this.liveCooldown;
+        if (live != null) {
+            try {
+                Duration window = live.get();
+                if (window != null && !window.isNegative()) {
+                    return window;
+                }
+            } catch (RuntimeException unreadable) {
+                // Fall through to the fixed window.
+            }
+        }
+        return cooldown;
+    }
+
     private boolean tryAcquire(UUID playerId, Instant now) {
         sweepExpired(now);
+        Duration window = currentCooldown();
         AtomicBoolean acquired = new AtomicBoolean();
         lastSent.compute(playerId, (ignored, previous) -> {
             if (previous != null
-                    && Duration.between(previous, now).compareTo(cooldown) < 0) {
+                    && Duration.between(previous, now).compareTo(window) < 0) {
                 return previous;
             }
             if (previous == null && !reserveSlot()) {

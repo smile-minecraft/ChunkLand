@@ -274,6 +274,38 @@ public final class LandAuthorisationSnapshot {
     }
 
     /**
+     * Players holding a direct grant on the land, for roster views. Never
+     * null and unmodifiable; empty when nobody is trusted there. Callers
+     * must check {@link #loaded()} first: an unloaded snapshot also answers
+     * empty.
+     */
+    public Set<UUID> trustedPlayers(LandId landId) {
+        Objects.requireNonNull(landId, "landId");
+        Map<UUID, Set<ProtectionActionType>> byPlayer = direct.get(landId);
+        if (byPlayer == null || byPlayer.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> trusted = new java.util.HashSet<>();
+        for (Map.Entry<UUID, Set<ProtectionActionType>> entry : byPlayer.entrySet()) {
+            if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                trusted.add(entry.getKey());
+            }
+        }
+        return Set.copyOf(trusted);
+    }
+
+    /**
+     * Players ENTRY-banned on the land, for roster views. Never null and
+     * unmodifiable; empty when nobody is banned there. Callers must check
+     * {@link #loaded()} first: an unloaded snapshot also answers empty.
+     */
+    public Set<UUID> bannedPlayers(LandId landId) {
+        Objects.requireNonNull(landId, "landId");
+        Set<UUID> banned = bans.get(landId);
+        return banned == null ? Set.of() : Set.copyOf(banned);
+    }
+
+    /**
      * Whether the actor is ENTRY-banned on the land. Never throws for
      * unknown lands or actors: missing data answers {@code false} so the
      * decision falls through to the normal trust/default chain. Callers

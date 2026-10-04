@@ -96,11 +96,13 @@ public final class ConfigSchema {
         for (String key : root.keySet()) {
             if (!"worlds".equals(key) && !"limits".equals(key) && !"messages".equals(key)
                     && !"selection".equals(key) && !"economy".equals(key) && !"audit".equals(key)
+                    && !"feedback".equals(key)
                     && !"subject-defaults".equals(key) && !"rule-defaults".equals(key)) {
                 throw new ConfigValidationException(
                         "unknown top-level key '" + key
                                 + "' (only 'worlds', 'limits', 'messages', 'selection', 'economy', 'audit', "
-                                + "'subject-defaults' and 'rule-defaults' are supported in the current schema)");
+                                + "'feedback', 'subject-defaults' and 'rule-defaults' are supported in the "
+                                + "current schema)");
             }
         }
         Map<String, WorldSettings> worlds = parseWorlds(root.get("worlds"), "worlds");
@@ -158,9 +160,11 @@ public final class ConfigSchema {
         EconomySettings economy = parseEconomyOptional(root.get("economy"), "economy",
                 root.containsKey("economy"));
         AuditSettings audit = parseAuditOptional(root.get("audit"), "audit", root.containsKey("audit"));
+        FeedbackSettings feedback = parseFeedbackOptional(root.get("feedback"), "feedback",
+                root.containsKey("feedback"));
         return new ChunkLandConfig(worlds, limits, messages, selection,
-                subjectDefaults, ruleDefaults, economy, audit, 0L, deriveWorldEpochs(worlds),
-                decisionCacheMaxEntries);
+                subjectDefaults, ruleDefaults, economy, audit, feedback, 0L,
+                deriveWorldEpochs(worlds), decisionCacheMaxEntries);
     }
 
     /**
@@ -280,6 +284,66 @@ public final class ConfigSchema {
         }
         try {
             return new AuditSettings(retentionDays);
+        } catch (IllegalArgumentException e) {
+            throw new ConfigValidationException(path + " is inconsistent: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Optional {@code feedback} section: deny particles and push-out tuning.
+     * Absent means the defaults; every key is optional and independently
+     * defaulted. Unknown keys, non-integers, non-booleans and out-of-range
+     * values fail closed so a typo never silently disables the feedback.
+     */
+    static FeedbackSettings parseFeedbackOptional(Object raw, String path, boolean present) {
+        FeedbackSettings defaults = FeedbackSettings.defaults();
+        if (!present) {
+            return defaults;
+        }
+        if (raw == null) {
+            throw new ConfigValidationException(
+                    path + " must not be null; remove the key or provide its settings");
+        }
+        Map<String, Object> map = requireMapping(raw, path, "feedback settings");
+        rejectUnknownKeys(map, path, Set.of(
+                "entry-wall-enabled", "entry-wall-radius-blocks",
+                "entry-wall-particle-size-percent", "entry-wall-points-per-block",
+                "entry-wall-cooldown-millis", "action-mark-enabled",
+                "action-mark-particle-size-percent", "action-mark-cooldown-millis",
+                "push-out-distance-blocks", "push-out-cooldown-millis"));
+        boolean wallEnabled = map.containsKey("entry-wall-enabled")
+                ? parseClaimEnabled(map.get("entry-wall-enabled"), path + ".entry-wall-enabled")
+                : defaults.entryWallEnabled();
+        boolean markEnabled = map.containsKey("action-mark-enabled")
+                ? parseClaimEnabled(map.get("action-mark-enabled"), path + ".action-mark-enabled")
+                : defaults.actionMarkEnabled();
+        int wallRadius = parseVisualizationField(map, "entry-wall-radius-blocks", path,
+                defaults.entryWallRadiusBlocks(), FeedbackSettings.MIN_WALL_RADIUS_BLOCKS,
+                FeedbackSettings.MAX_WALL_RADIUS_BLOCKS);
+        int wallSize = parseVisualizationField(map, "entry-wall-particle-size-percent", path,
+                defaults.entryWallParticleSizePercent(), FeedbackSettings.MIN_PARTICLE_SIZE_PERCENT,
+                FeedbackSettings.MAX_PARTICLE_SIZE_PERCENT);
+        int wallPoints = parseVisualizationField(map, "entry-wall-points-per-block", path,
+                defaults.entryWallPointsPerBlock(), FeedbackSettings.MIN_WALL_POINTS_PER_BLOCK,
+                FeedbackSettings.MAX_WALL_POINTS_PER_BLOCK);
+        int wallCooldown = parseVisualizationField(map, "entry-wall-cooldown-millis", path,
+                defaults.entryWallCooldownMillis(), FeedbackSettings.MIN_COOLDOWN_MILLIS,
+                FeedbackSettings.MAX_COOLDOWN_MILLIS);
+        int markSize = parseVisualizationField(map, "action-mark-particle-size-percent", path,
+                defaults.actionMarkParticleSizePercent(), FeedbackSettings.MIN_PARTICLE_SIZE_PERCENT,
+                FeedbackSettings.MAX_PARTICLE_SIZE_PERCENT);
+        int markCooldown = parseVisualizationField(map, "action-mark-cooldown-millis", path,
+                defaults.actionMarkCooldownMillis(), FeedbackSettings.MIN_COOLDOWN_MILLIS,
+                FeedbackSettings.MAX_COOLDOWN_MILLIS);
+        int pushDistance = parseVisualizationField(map, "push-out-distance-blocks", path,
+                defaults.pushOutDistanceBlocks(), FeedbackSettings.MIN_PUSH_OUT_DISTANCE_BLOCKS,
+                FeedbackSettings.MAX_PUSH_OUT_DISTANCE_BLOCKS);
+        int pushCooldown = parseVisualizationField(map, "push-out-cooldown-millis", path,
+                defaults.pushOutCooldownMillis(), FeedbackSettings.MIN_COOLDOWN_MILLIS,
+                FeedbackSettings.MAX_COOLDOWN_MILLIS);
+        try {
+            return new FeedbackSettings(wallEnabled, wallRadius, wallSize, wallPoints,
+                    wallCooldown, markEnabled, markSize, markCooldown, pushDistance, pushCooldown);
         } catch (IllegalArgumentException e) {
             throw new ConfigValidationException(path + " is inconsistent: " + e.getMessage());
         }

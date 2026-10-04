@@ -66,6 +66,7 @@ public final class InspectCommandHandler implements LandCommand.Handler {
     private final OfflinePlayerResolver players;
     private final PlayerScheduler scheduler;
     private final Function<UUID, Boolean> bypassStates;
+    private final Function<UUID, String> ownerNames;
 
     /**
      * @param snapshots live immutable snapshot source; {@code null} or failing
@@ -129,6 +130,23 @@ public final class InspectCommandHandler implements LandCommand.Handler {
             OfflinePlayerResolver players,
             PlayerScheduler scheduler,
             Function<UUID, Boolean> bypassStates) {
+        this(snapshots, providers, limits, players, scheduler, bypassStates, null);
+    }
+
+    /**
+     * @param ownerNames memory-only player-name lookup for the owner line;
+     *                   {@code null}, a {@code null} answer or a failing
+     *                   lookup shows the owner's UUID instead. Must never
+     *                   block: it runs on the caller's region thread.
+     */
+    public InspectCommandHandler(Supplier<LandRegistry> snapshots,
+            Supplier<PermissionContextProvider> providers,
+            Limits limits,
+            OfflinePlayerResolver players,
+            PlayerScheduler scheduler,
+            Function<UUID, Boolean> bypassStates,
+            Function<UUID, String> ownerNames) {
+        this.ownerNames = ownerNames;
         this.snapshots = snapshots;
         this.providers = providers;
         this.limits = limits;
@@ -301,14 +319,30 @@ public final class InspectCommandHandler implements LandCommand.Handler {
         }
     }
 
-    private static String describeOwner(OwnerRef owner) {
+    private String describeOwner(OwnerRef owner) {
         if (owner instanceof OwnerRef.PlayerOwnerRef player) {
-            return player.uuid() == null ? "unknown" : player.uuid().toString();
+            if (player.uuid() == null) {
+                return "unknown";
+            }
+            String name = ownerName(player.uuid());
+            return name == null ? player.uuid().toString() : name;
         }
         if (owner instanceof OwnerRef.ServerOwnerRef) {
             return "server";
         }
         return "unknown";
+    }
+
+    private String ownerName(UUID owner) {
+        if (ownerNames == null) {
+            return null;
+        }
+        try {
+            String name = ownerNames.apply(owner);
+            return name == null || name.isBlank() ? null : name;
+        } catch (RuntimeException unresolved) {
+            return null;
+        }
     }
 
     private static boolean isOwner(UUID actor, OwnerRef owner) {

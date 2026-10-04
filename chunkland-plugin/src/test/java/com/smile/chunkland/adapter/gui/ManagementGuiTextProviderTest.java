@@ -55,7 +55,8 @@ class ManagementGuiTextProviderTest {
             "gui.manage.confirm.back_name",
             "gui.manage.confirm.target_line",
             "gui.manage.confirm.failed_line",
-            "gui.manage.row.readonly_line");
+            "gui.manage.row.readonly_line",
+            "gui.manage.row.toggle_line");
 
     /**
      * Tag-free templates: plain values by design, so they render to
@@ -235,6 +236,7 @@ class ManagementGuiTextProviderTest {
         assertTrue(texts.confirmTexts().failedLine()
                 .contains("gui.manage.confirm.failed_line"));
         assertTrue(texts.readOnlyLine().contains("gui.manage.row.readonly_line"));
+        assertTrue(texts.toggleLine().contains("gui.manage.row.toggle_line"));
     }
 
     @Test

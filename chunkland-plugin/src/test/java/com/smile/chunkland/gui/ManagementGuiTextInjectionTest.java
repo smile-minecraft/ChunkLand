@@ -81,7 +81,8 @@ class ManagementGuiTextInjectionTest {
                         SENTINEL + "-confirm-back",
                         state -> SENTINEL + "-target:" + state,
                         SENTINEL + "-failed"),
-                SENTINEL + "-readonly");
+                SENTINEL + "-readonly",
+                SENTINEL + "-toggle");
     }
 
     private static String visibleText(GuiPage page) {

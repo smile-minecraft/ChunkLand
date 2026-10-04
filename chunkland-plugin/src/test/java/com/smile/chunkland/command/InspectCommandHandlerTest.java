@@ -332,6 +332,36 @@ class InspectCommandHandlerTest {
     }
 
     @Test
+    void ownerLineShowsThePlayerNameWhenItIsKnownWithoutBlocking() {
+        Env env = ownerEnv();
+        Player owner = playerAt(OWNER, WORLD, 5.0, 64.0, 5.0);
+
+        InspectCommandHandler named = new InspectCommandHandler(env.store()::snapshot,
+                () -> env.provider(), o -> Map.of(), null, null, null,
+                id -> OWNER.equals(id) ? "Steve" : null);
+        CaptureSink first = new CaptureSink();
+        named.handle(owner, new String[] {"inspect"}, first);
+        assertEquals("Steve", first.replies.get(0).vars().get("owner"));
+
+        InspectCommandHandler unknown = new InspectCommandHandler(env.store()::snapshot,
+                () -> env.provider(), o -> Map.of(), null, null, null, id -> null);
+        CaptureSink second = new CaptureSink();
+        unknown.handle(owner, new String[] {"inspect"}, second);
+        assertEquals(OWNER.toString(), second.replies.get(0).vars().get("owner"),
+                "a name the cache does not know falls back to the UUID");
+
+        InspectCommandHandler failing = new InspectCommandHandler(env.store()::snapshot,
+                () -> env.provider(), o -> Map.of(), null, null, null, id -> {
+                    throw new IllegalStateException("profile cache unavailable");
+                });
+        CaptureSink third = new CaptureSink();
+        failing.handle(owner, new String[] {"inspect"}, third);
+        assertEquals("command.land.inspect.result", third.replies.get(0).key(),
+                "a failing name lookup must not cost the player the answer");
+        assertEquals(OWNER.toString(), third.replies.get(0).vars().get("owner"));
+    }
+
+    @Test
     void tooManyArgsRepliesUsage() {
         Env env = ownerEnv();
         Player owner = playerAt(OWNER, WORLD, 5.0, 64.0, 5.0);

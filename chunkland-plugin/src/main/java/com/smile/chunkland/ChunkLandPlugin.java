@@ -76,6 +76,7 @@ import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.FeedbackSettings;
 import com.smile.chunkland.config.ConfigStartupResolver;
 import com.smile.chunkland.config.MessageSettings;
 import com.smile.chunkland.config.ConfigReloadListener;
@@ -137,7 +138,11 @@ import com.smile.chunkland.persistence.DepthExtendStore;
 import com.smile.chunkland.persistence.PermissionProfileRepository;
 import com.smile.chunkland.persistence.SubjectGroupRepository;
 import com.smile.chunkland.protection.EntryBanLookup;
+import com.smile.chunkland.protection.ActionDenialParticleFeedback;
+import com.smile.chunkland.protection.DenialParticles;
+import com.smile.chunkland.protection.EntryBoundaryTracer;
 import com.smile.chunkland.protection.EntryDenialParticleFeedback;
+import com.smile.chunkland.protection.EntryProtectionAdapter;
 import com.smile.chunkland.protection.DirectTrustWhitelist;
 import com.smile.chunkland.protection.ManagementPermissionGate;
 import com.smile.chunkland.protection.PermissionExplain;
@@ -311,6 +316,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * region thread. {@code null} reads as fail-closed (no redraw).
      */
     private PlayerScheduler managementGuiScheduler;
+
+    /**
+     * Behaviour behind the member and ban roster pages; null before wiring
+     * and after disable, which keeps the root page on its permission entry
+     * alone.
+     */
+    private com.smile.chunkland.adapter.gui.ManagementRosterController managementRoster;
     /** Online-player resolution for the GUI region hop; {@code null} fails closed. */
     private Function<UUID, Player> managementGuiPlayerLookup;
     /**
@@ -550,7 +562,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
         ManagementGuiActions actions = managementGuiActions(landId, texts, shared,
                 snapshot, contexts);
         try {
-            GuiPage page = ManagementGuiPages.rootPage(actions, texts);
+            com.smile.chunkland.adapter.gui.ManagementRosterController roster =
+                    this.managementRoster;
+            GuiPage page = roster == null
+                    ? ManagementGuiPages.rootPage(actions, texts)
+                    : com.smile.chunkland.gui.ManagementRosterPages.rootPage(actions, texts,
+                            roster.actionsFor(landId), roster.textsFor(playerUuid));
             Optional<Long> generation = navigator.open(playerUuid, page);
             if (generation.isEmpty()) {
                 getLogger().warning("ChunkLand management GUI open failed");
@@ -1242,6 +1259,160 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Visible copy for the member and ban roster pages, resolved for one
+     * viewer over the same pipeline and locale as the permission pages.
+     */
+    private com.smile.chunkland.gui.ManagementRosterTexts managementRosterTexts(UUID playerUuid) {
+        ChunkLandMessagePipeline pipeline =
+                landMessagePipeline == null ? null : landMessagePipeline.orElse(null);
+        PlayerPreferredLocaleService locales = this.playerLocaleService;
+        if (pipeline == null) {
+            return com.smile.chunkland.gui.ManagementRosterTexts.english();
+        }
+        try {
+            return ManagementGuiTextProvider.withPipeline(pipeline, uuid -> {
+                if (uuid == null || locales == null) {
+                    return null;
+                }
+                try {
+                    return locales.preferred(uuid).orElse(null);
+                } catch (RuntimeException ignored) {
+                    return null;
+                }
+            }).rosterTexts(playerUuid);
+        } catch (RuntimeException ignored) {
+            return com.smile.chunkland.gui.ManagementRosterTexts.english();
+        }
+    }
+
+    /**
+     * Roster controller behind the member and ban pages: snapshot reads,
+     * the shared management gate (permission node plus domain gate) per
+     * click, and the same trust and ban services the chat commands use.
+     * Every seam is guarded, so a missing dependency closes that button
+     * instead of running half-wired.
+     */
+    private com.smile.chunkland.adapter.gui.ManagementRosterController buildManagementRoster(
+            LandAuthorisationService authorisations) {
+        var navigation = new com.smile.chunkland.adapter.gui.ManagementRosterController.Navigation() {
+            @Override
+            public GuiNavigator navigator() {
+                return ChunkLandPlugin.this.guiNavigator;
+            }
+
+            @Override
+            public void render(UUID viewer, long generation, GuiPage page) {
+                renderManagementPage(viewer, generation, page);
+            }
+
+            @Override
+            public void back(GuiClickContext click) {
+                goBack(click);
+            }
+        };
+        var rosters = new com.smile.chunkland.adapter.gui.ManagementRosterController.Rosters() {
+            private Optional<LandAuthorisationSnapshot> loaded() {
+                LandAuthorisationCache cache = ChunkLandPlugin.this.landAuthorisationCache;
+                LandAuthorisationSnapshot snapshot = cache == null ? null : cache.snapshot();
+                return snapshot == null || !snapshot.loaded()
+                        ? Optional.empty() : Optional.of(snapshot);
+            }
+
+            @Override
+            public Optional<java.util.Set<UUID>> members(LandId landId) {
+                return loaded().map(snapshot -> snapshot.trustedPlayers(landId));
+            }
+
+            @Override
+            public Optional<java.util.Set<UUID>> bans(LandId landId) {
+                return loaded().map(snapshot -> snapshot.bannedPlayers(landId));
+            }
+
+            @Override
+            public UUID ownerOf(LandId landId) {
+                try {
+                    LandRegistryStore store = ChunkLandPlugin.this.protectionStore;
+                    LandRegistry snapshot = store == null ? null : store.snapshot();
+                    LandSnapshot land = snapshot == null ? null : snapshot.land(landId);
+                    return land != null
+                            && land.ownerRef() instanceof OwnerRef.PlayerOwnerRef owner
+                            ? owner.uuid() : null;
+                } catch (RuntimeException unresolved) {
+                    return null;
+                }
+            }
+        };
+        com.smile.chunkland.adapter.gui.ManagementRosterController.Gate gate =
+                (viewer, landId, slot) -> {
+                    Player player = resolveGuiPlayer(viewer);
+                    LandRegistryStore store = this.protectionStore;
+                    PermissionDefaultsCache defaults = this.permissionDefaults;
+                    if (player == null || store == null || defaults == null) {
+                        return false;
+                    }
+                    String node = com.smile.chunkland.command.LandPermissions.forSubcommand(slot);
+                    if (node == null || node.isBlank() || !player.hasPermission(node)) {
+                        return false;
+                    }
+                    ProtectionActionType action =
+                            ManagementPermissionGate.actionForSubcommand(slot).orElse(null);
+                    LandRegistry snapshot = store.snapshot();
+                    PermissionContextProvider contexts = defaults.provider();
+                    if (action == null || snapshot == null || contexts == null) {
+                        return false;
+                    }
+                    boolean steward = player.hasPermission(
+                            PluginManagementGateResolver.SERVER_LAND_STEWARD_NODE);
+                    PermissionDecision decision = ManagementPermissionGate.check(viewer, landId,
+                            action, snapshot, readAdminBypass(viewer), steward, contexts);
+                    return decision != null && decision.outcome() == PermissionState.ALLOW;
+                };
+        var people = new com.smile.chunkland.adapter.gui.ManagementRosterController.People() {
+            @Override
+            public String nameOf(UUID playerId) {
+                return cachedPlayerName(playerId);
+            }
+
+            @Override
+            public List<com.smile.chunkland.gui.ManagementRosterPages.Entry> online() {
+                List<com.smile.chunkland.gui.ManagementRosterPages.Entry> out = new ArrayList<>();
+                for (Player online : getServer().getOnlinePlayers()) {
+                    if (online != null && online.getName() != null) {
+                        out.add(new com.smile.chunkland.gui.ManagementRosterPages.Entry(
+                                online.getUniqueId(), online.getName()));
+                    }
+                }
+                return out;
+            }
+        };
+        com.smile.chunkland.adapter.gui.ManagementRosterController.Feedback feedback =
+                (viewer, key, vars) -> {
+                    Player player = resolveGuiPlayer(viewer);
+                    ChunkLandMessagePipeline pipeline = this.landMessagePipeline == null
+                            ? null : this.landMessagePipeline.orElse(null);
+                    if (player != null && pipeline != null) {
+                        pipeline.sendChat(player, key, vars, null);
+                    }
+                };
+        com.smile.chunkland.adapter.gui.ManagementRosterController.Hop hop = (viewer, task) -> {
+            Player player = resolveGuiPlayer(viewer);
+            PlayerScheduler scheduler = this.managementGuiScheduler;
+            if (player == null || scheduler == null) {
+                throw new IllegalStateException("viewer is not reachable");
+            }
+            scheduler.runForPlayer(player, task);
+        };
+        return new com.smile.chunkland.adapter.gui.ManagementRosterController(
+                navigation, rosters, gate,
+                new com.smile.chunkland.adapter.gui.ManagementRosterController.Changes(
+                        authorisations == null ? null : authorisations::trust,
+                        authorisations == null ? null : authorisations::untrust,
+                        authorisations == null ? null : authorisations::ban,
+                        authorisations == null ? null : authorisations::unban),
+                people, feedback, hop, this::managementRosterTexts);
+    }
+
+    /**
      * Read-only detail model over one snapshot: one context per listed
      * action, resolved and explained through the shared path. Actions whose
      * context, decision or explanation is missing or fails are skipped
@@ -1659,6 +1830,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.managementDefaultMutation =
                 authorisations == null ? null : authorisations::setDefaultExpected;
         this.managementGuiScheduler = buildPlayerScheduler(this);
+        this.managementRoster = buildManagementRoster(authorisations);
         this.managementGuiPlayerLookup = uuid -> {
             try {
                 return uuid == null ? null : getServer().getPlayer(uuid);
@@ -1867,7 +2039,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 (actor, landId) -> buildBedrockManageModel(
                         this.protectionStore, () -> atomicContexts, actor, landId),
                 landHandlers,
-                this::listOnlinePlayerNames);
+                this::listOnlinePlayerNames,
+                com.smile.chunkland.adapter.gui.BedrockFormTextProvider.over(
+                        () -> this.landMessagePipeline == null
+                                ? null : this.landMessagePipeline.orElse(null)));
         this.bedrockFormNavigator = bedrockManage == null ? null : bedrockManage.navigator();
         landHandlers.put("manage", wrapManageWithBedrock(landHandlers.get("manage"), bedrockManage));
         // Admin bypass toggle: the node only allows attempting the switch;
@@ -1929,9 +2104,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
         var protectionScheduler = buildPlayerScheduler(this);
         this.protectionListener = new ProtectionListener(this.protectionEngine,
                 buildRejectionNotifier(this.landMessagePipeline.orElse(null),
-                        protectionScheduler, rejectionCooldownSeconds(activeConfig)),
-                ProtectionListener.productionEntryAdapter(this.protectionEngine, banLookup, this),
-                buildEntryDenialParticleFeedback(protectionScheduler));
+                        protectionScheduler, rejectionCooldownSeconds(activeConfig),
+                        landNamesFrom(this.protectionStore::snapshot)),
+                ProtectionListener.productionEntryAdapter(this.protectionEngine, banLookup, this,
+                        pushOutTuning(() -> activeConfig.current().feedback())),
+                buildEntryDenialParticleFeedback(protectionScheduler, this.protectionEngine, this,
+                        () -> activeConfig.current().feedback()),
+                buildActionDenialParticleFeedback(protectionScheduler,
+                        () -> activeConfig.current().feedback()));
         try {
             registerWandListener(this.wandSafetyListener);
             registerSelectionListener(this.selectionLifecycleListener);
@@ -3051,7 +3231,33 @@ public final class ChunkLandPlugin extends JavaPlugin {
         Supplier<PermissionContextProvider> activeProviders = providers == null
                 ? () -> new SnapshotPermissionContextProvider(null, null) : providers;
         return new InspectCommandHandler(active::snapshot, activeProviders,
-                buildInspectLimits(configs, limitProviders), players, scheduler, bypassStates);
+                buildInspectLimits(configs, limitProviders), players, scheduler, bypassStates,
+                ChunkLandPlugin::cachedPlayerName);
+    }
+
+    /**
+     * Player name for a UUID without blocking: the online player first, then
+     * the server's in-memory profile cache. A player the cache does not know
+     * (or no reachable server) answers {@code null}, and callers show the
+     * UUID or a placeholder instead of waiting on disk or the network.
+     */
+    public static String cachedPlayerName(UUID playerId) {
+        if (playerId == null) {
+            return null;
+        }
+        try {
+            Player online = org.bukkit.Bukkit.getPlayer(playerId);
+            if (online != null) {
+                return online.getName();
+            }
+            com.destroystokyo.paper.profile.PlayerProfile profile =
+                    org.bukkit.Bukkit.createProfile(playerId);
+            profile.completeFromCache();
+            String name = profile.getName();
+            return name == null || name.isBlank() ? null : name;
+        } catch (RuntimeException | LinkageError unavailable) {
+            return null;
+        }
     }
 
     /**
@@ -3214,6 +3420,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
      */
     public static RejectionNotifier buildRejectionNotifier(ChunkLandMessagePipeline pipeline,
             com.smile.chunkland.command.PlayerScheduler scheduler, int cooldownSeconds) {
+        return buildRejectionNotifier(pipeline, scheduler, cooldownSeconds, null);
+    }
+
+    /**
+     * Same notifier, with a land-name seam so a notice can say whose land
+     * refused the action. A {@code null} seam keeps every notice generic.
+     */
+    public static RejectionNotifier buildRejectionNotifier(ChunkLandMessagePipeline pipeline,
+            com.smile.chunkland.command.PlayerScheduler scheduler, int cooldownSeconds,
+            PipelineRejectionRenderer.LandNames lands) {
         int seconds = Math.max(0, cooldownSeconds);
         RejectionCooldown cooldown = new RejectionCooldown(Instant::now,
                 Duration.ofSeconds(seconds));
@@ -3224,23 +3440,153 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     }, cooldown);
         }
         return new RejectionNotifier(new PlayerRegionRejectionSender(scheduler),
-                new PipelineRejectionRenderer(pipeline), cooldown);
+                new PipelineRejectionRenderer(pipeline, lands), cooldown);
     }
 
+    /**
+     * Land-name seam for rejection notices: the display name of the land
+     * owning the deny site, read from the immutable runtime snapshot. Memory
+     * reads only; wilderness, a missing snapshot, or any failure answers
+     * {@code null} and the notice stays generic.
+     */
+    public static PipelineRejectionRenderer.LandNames landNamesFrom(
+            java.util.function.Supplier<LandRegistry> snapshots) {
+        return site -> {
+            if (snapshots == null || site == null) {
+                return null;
+            }
+            LandRegistry snapshot = snapshots.get();
+            if (snapshot == null) {
+                return null;
+            }
+            LandSnapshot land = snapshot.findLand(site.worldId(), site.chunkX(), site.chunkZ());
+            return land == null ? null : land.displayName();
+        };
+    }
+
+    /** Ticks between the two pulses of the border wall. */
+    private static final long ENTRY_WALL_REPEAT_TICKS = 10L;
+
+    /**
+     * Builds the entry-deny feedback: the border the player ran into is
+     * traced from memory-only ENTRY decisions around the denied position and
+     * drawn as a wall of particles for that player alone. The wall is sent
+     * twice, a moment apart, so it stays readable while the player is being
+     * moved back. A {@code null} plugin sends the single immediate pulse.
+     */
     public static EntryDenialParticleFeedback buildEntryDenialParticleFeedback(
-            com.smile.chunkland.command.PlayerScheduler scheduler) {
+            com.smile.chunkland.command.PlayerScheduler scheduler, ProtectionEngine engine,
+            org.bukkit.plugin.Plugin plugin) {
+        return buildEntryDenialParticleFeedback(scheduler, engine, plugin,
+                FeedbackSettings::defaults);
+    }
+
+    /**
+     * Live push-out tuning over the current feedback settings. An
+     * unreadable snapshot falls back to the defaults.
+     */
+    public static EntryProtectionAdapter.Tuning pushOutTuning(
+            java.util.function.Supplier<FeedbackSettings> settings) {
+        return new EntryProtectionAdapter.Tuning() {
+            @Override
+            public Duration pushOutCooldown() {
+                return feedbackOrDefaults(settings).pushOutCooldown();
+            }
+
+            @Override
+            public int retreatDistance() {
+                return feedbackOrDefaults(settings).pushOutDistanceBlocks();
+            }
+        };
+    }
+
+    private static FeedbackSettings feedbackOrDefaults(
+            java.util.function.Supplier<FeedbackSettings> settings) {
+        try {
+            FeedbackSettings live = settings == null ? null : settings.get();
+            return live == null ? FeedbackSettings.defaults() : live;
+        } catch (RuntimeException unreadable) {
+            return FeedbackSettings.defaults();
+        }
+    }
+
+    /**
+     * Entry-deny feedback tuned by the live {@code feedback} config section:
+     * the switch, the traced radius, the dust size, the density and the
+     * per-player cooldown are read on every deny, so a reload applies to the
+     * next one.
+     */
+    public static EntryDenialParticleFeedback buildEntryDenialParticleFeedback(
+            com.smile.chunkland.command.PlayerScheduler scheduler, ProtectionEngine engine,
+            org.bukkit.plugin.Plugin plugin,
+            java.util.function.Supplier<FeedbackSettings> settings) {
+        Objects.requireNonNull(engine, "engine");
         return new EntryDenialParticleFeedback(Instant::now,
-                EntryDenialParticleFeedback.DEFAULT_COOLDOWN, scheduler,
-                (player, location) -> player.spawnParticle(
-                        EntryDenialParticleFeedback.PARTICLE,
-                        location.getX(), location.getY(), location.getZ(),
-                        EntryDenialParticleFeedback.PARTICLE_COUNT,
-                        EntryDenialParticleFeedback.PARTICLE_SPREAD,
-                        EntryDenialParticleFeedback.PARTICLE_SPREAD,
-                        EntryDenialParticleFeedback.PARTICLE_SPREAD,
-                        new org.bukkit.Particle.DustOptions(
-                                EntryDenialParticleFeedback.DUST_COLOR,
-                                EntryDenialParticleFeedback.DUST_SIZE)));
+                () -> feedbackOrDefaults(settings).entryWallCooldown(), scheduler,
+                (player, location) -> {
+                    FeedbackSettings tuned = feedbackOrDefaults(settings);
+                    if (!tuned.entryWallEnabled()) {
+                        return;
+                    }
+                    UUID playerId = player.getUniqueId();
+                    UUID worldId = location.getWorld().getUID();
+                    int blockY = location.getBlockY();
+                    List<EntryBoundaryTracer.Edge> edges = EntryBoundaryTracer.trace(
+                            location.getBlockX(), location.getBlockZ(),
+                            tuned.entryWallRadiusBlocks(),
+                            (blockX, blockZ) -> engine.decideAtBlock(playerId, worldId,
+                                    blockX, blockY, blockZ, ProtectionActionType.ENTRY)
+                                    .outcome() == PermissionState.DENY);
+                    if (edges.isEmpty()) {
+                        return;
+                    }
+                    double feetY = blockY;
+                    float dustSize = tuned.entryWallParticleSize();
+                    int density = tuned.entryWallPointsPerBlock();
+                    DenialParticles.boundaryWall(player, edges, feetY, dustSize, density);
+                    if (plugin == null) {
+                        return;
+                    }
+                    try {
+                        player.getScheduler().runDelayed(plugin, repeat -> {
+                            try {
+                                DenialParticles.boundaryWall(player, edges, feetY, dustSize,
+                                        density);
+                            } catch (RuntimeException ignored) {
+                                // The second pulse is cosmetic only.
+                            }
+                        }, null, ENTRY_WALL_REPEAT_TICKS);
+                    } catch (RuntimeException ignored) {
+                        // A retired scheduler only costs the second pulse.
+                    }
+                });
+    }
+
+    /**
+     * Builds the denied-action feedback: the refused block is outlined (or
+     * the refused entity ringed) for the denied player alone.
+     */
+    public static ActionDenialParticleFeedback buildActionDenialParticleFeedback(
+            com.smile.chunkland.command.PlayerScheduler scheduler) {
+        return buildActionDenialParticleFeedback(scheduler, FeedbackSettings::defaults);
+    }
+
+    /**
+     * Denied-action feedback tuned by the live {@code feedback} config
+     * section: the switch, the dust size and the per-player cooldown are
+     * read on every deny.
+     */
+    public static ActionDenialParticleFeedback buildActionDenialParticleFeedback(
+            com.smile.chunkland.command.PlayerScheduler scheduler,
+            java.util.function.Supplier<FeedbackSettings> settings) {
+        return new ActionDenialParticleFeedback(Instant::now,
+                () -> feedbackOrDefaults(settings).actionMarkCooldown(), scheduler,
+                (player, mark) -> {
+                    FeedbackSettings tuned = feedbackOrDefaults(settings);
+                    if (tuned.actionMarkEnabled()) {
+                        DenialParticles.mark(player, mark, tuned.actionMarkParticleSize());
+                    }
+                });
     }
 
     /**
@@ -3680,6 +4026,21 @@ public final class ChunkLandPlugin extends JavaPlugin {
             BedrockManageFormHandler.ModelSource models,
             Map<String, LandCommand.Handler> handlers,
             BedrockManageFormHandler.OnlineNames onlineNames) {
+        return buildBedrockManageForms(capabilities, gateResolver, models, handlers,
+                onlineNames, null);
+    }
+
+    /**
+     * Same assembly with the visible form copy resolved per player. A
+     * {@code null} text source keeps the bundled English wording.
+     */
+    static BedrockManageFormHandler buildBedrockManageForms(
+            Capabilities capabilities,
+            ManagementGateResolver gateResolver,
+            BedrockManageFormHandler.ModelSource models,
+            Map<String, LandCommand.Handler> handlers,
+            BedrockManageFormHandler.OnlineNames onlineNames,
+            BedrockManageFormHandler.TextSource texts) {
         if (capabilities == null || gateResolver == null || models == null
                 || handlers == null || onlineNames == null) {
             return null;
@@ -3707,7 +4068,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 handlers,
                 navigator,
                 onlineNames,
-                scheduler);
+                scheduler,
+                texts);
     }
 
     /**
@@ -5569,6 +5931,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         landAuthorisationService = null;
         landAuthorisationCache = null;
         managementDefaultMutation = null;
+        managementRoster = null;
         managementGuiScheduler = null;
         managementGuiPlayerLookup = null;
         synchronized (this) {

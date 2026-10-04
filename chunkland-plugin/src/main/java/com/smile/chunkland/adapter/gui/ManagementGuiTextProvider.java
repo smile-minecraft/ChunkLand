@@ -1,6 +1,7 @@
 package com.smile.chunkland.adapter.gui;
 
 import com.smile.chunkland.gui.ManagementGuiTexts;
+import com.smile.chunkland.gui.ManagementRosterTexts;
 import com.smile.chunkland.message.ChunkLandMessagePipeline;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +40,7 @@ public final class ManagementGuiTextProvider {
     public static final String ROW_DEFAULT_LORE_KEY = "gui.manage.row.default_lore";
     public static final String ROW_DEFAULT_UNSET_KEY = "gui.manage.row.default_unset";
     public static final String ROW_READONLY_LINE_KEY = "gui.manage.row.readonly_line";
+    public static final String ROW_TOGGLE_LINE_KEY = "gui.manage.row.toggle_line";
     public static final String REMEDY_UNAVAILABLE_KEY = "gui.manage.remedy.unavailable";
     public static final String REMEDY_CONFLICT_KEY = "gui.manage.remedy.conflict";
     public static final String REMEDY_PLAIN_KEY = "gui.manage.remedy.plain";
@@ -94,6 +96,25 @@ public final class ManagementGuiTextProvider {
         } catch (RuntimeException failed) {
             return fallbackTexts();
         }
+    }
+
+    /**
+     * Builds the roster-page texts for one viewer over the same template
+     * source and locale as {@link #resolve}. Never returns {@code null}
+     * and never throws: a key that fails to render falls back to the
+     * bundled English wording for that key alone.
+     */
+    public ManagementRosterTexts rosterTexts(UUID playerUuid) {
+        GuiTemplateRenderer source = this.renderer;
+        if (source == null) {
+            return ManagementRosterTexts.english();
+        }
+        Locale locale = localeOf(playerUuid);
+        return (key, vars) -> {
+            Map<String, Object> safeVars = vars == null ? Map.of() : vars;
+            return renderOr(source, key, safeVars, locale,
+                    ManagementRosterTexts.english().text(key, safeVars));
+        };
     }
 
     private Locale localeOf(UUID playerUuid) {
@@ -157,6 +178,8 @@ public final class ManagementGuiTextProvider {
         };
         String readOnlyLine = renderOr(renderer, ROW_READONLY_LINE_KEY, Map.of(), locale,
                 fallback.readOnlyLine());
+        String toggleLine = renderOr(renderer, ROW_TOGGLE_LINE_KEY, Map.of(), locale,
+                fallback.toggleLine());
         ManagementGuiTexts.ConfirmTexts confirmTexts = new ManagementGuiTexts.ConfirmTexts(
                 action -> renderOr(renderer, CONFIRM_TITLE_KEY, Map.of("action", action),
                         locale, fallback.confirmTexts().title().title(action)),
@@ -173,7 +196,7 @@ public final class ManagementGuiTextProvider {
                         fallback.confirmTexts().failedLine()));
         return new ManagementGuiTexts(rootTitle, entryName, entryLines, unavailableTitle,
                 unavailableLines, backName, detailsTitle, rowHead, rowRemedies, defaultLore,
-                confirmTexts, readOnlyLine);
+                confirmTexts, readOnlyLine, toggleLine);
     }
 
     private static String renderOr(GuiTemplateRenderer renderer, String key,
@@ -245,6 +268,7 @@ public final class ManagementGuiTextProvider {
                         state -> "Target default: "
                                 + (state == null ? "Unset (inherits global)" : state),
                         "Change not applied (fail-closed). No state was modified."),
-                "View only in this menu.");
+                "View only in this menu.",
+                "Click to switch this default.");
     }
 }

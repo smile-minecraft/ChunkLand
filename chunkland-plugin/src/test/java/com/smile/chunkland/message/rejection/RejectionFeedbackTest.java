@@ -427,6 +427,7 @@ class RejectionFeedbackTest {
     private static final class EndToEnd {
         final FakeClock clock = new FakeClock();
         final List<Component> delivered = new CopyOnWriteArrayList<>();
+        final AtomicReference<LandRegistryStore> landStore = new AtomicReference<>();
         ChunkLandMessagePipeline pipeline;
         RejectionNotifier notifier;
 
@@ -434,13 +435,18 @@ class RejectionFeedbackTest {
             pipeline = testPipeline();
             notifier = new RejectionNotifier(
                     new PlayerRegionRejectionSender(PlayerScheduler.direct()),
-                    new PipelineRejectionRenderer(pipeline),
+                    new PipelineRejectionRenderer(pipeline,
+                            com.smile.chunkland.ChunkLandPlugin.landNamesFrom(() -> {
+                                LandRegistryStore live = landStore.get();
+                                return live == null ? null : live.snapshot();
+                            })),
                     new RejectionCooldown(clock, Duration.ofSeconds(2)), Set.of());
             return this;
         }
 
         ProtectionListener listener(LandRegistryStore store,
                 EntryProtectionAdapter.BanLookup bans) {
+            landStore.set(store);
             return new ProtectionListener(
                     engineWithSubjectDefault(store, PermissionState.DENY), notifier, bans);
         }
@@ -493,7 +499,7 @@ class RejectionFeedbackTest {
         listener.onPlayerMove(event);
         assertTrue(event.isCancelled(), "ENTRY deny must still cancel");
         assertEquals(1, fx.delivered.size(), "ENTRY deny must notify once");
-        assertEquals("You cannot enter this land.", plain(fx.delivered.get(0)));
+        assertEquals("The land “TestLand” is not open to you.", plain(fx.delivered.get(0)));
     }
 
     @Test
@@ -509,7 +515,7 @@ class RejectionFeedbackTest {
         listener.onPlayerTeleport(event);
         assertTrue(event.isCancelled(), "teleport ENTRY deny must still cancel");
         assertEquals(1, fx.delivered.size(), "teleport ENTRY deny must notify once");
-        assertEquals("You cannot enter this land.", plain(fx.delivered.get(0)));
+        assertEquals("The land “TestLand” is not open to you.", plain(fx.delivered.get(0)));
     }
 
     @Test
@@ -526,7 +532,7 @@ class RejectionFeedbackTest {
         assertTrue(event.isCancelled(), "banned-inside stop must still cancel");
         assertEquals(1, fx.delivered.size(), "banned-inside stop must notify once");
         String text = plain(fx.delivered.get(0));
-        assertEquals("You are inside a land you are banned from.", text);
+        assertEquals("You are banned from this land and cannot stay here.", text);
         assertFalse(text.contains("Banned inside this land"),
                 "the raw English reason must never reach the player");
     }
@@ -544,7 +550,14 @@ class RejectionFeedbackTest {
         assertTrue(event.isCancelled(), "DENY must still cancel");
         assertEquals(1, fx.delivered.size(), "subject DENY must notify once");
         String text = plain(fx.delivered.get(0));
-        assertTrue(text.contains("BLOCK_BREAK"), "shared template must name the action: " + text);
+        assertTrue(text.contains("Breaking blocks"),
+                "shared template must name the action: " + text);
+        assertTrue(text.contains("you are not a member of “TestLand”"),
+                "the notice must say why, naming the land: " + text);
+        assertFalse(text.contains("BLOCK_BREAK"),
+                "the raw action constant must never reach the player: " + text);
+        assertFalse(text.contains("DENY"),
+                "the raw decision trace must never reach the player: " + text);
     }
 
     @Test
@@ -597,7 +610,10 @@ class RejectionFeedbackTest {
         assertTrue(notifier.notifyDenied(player, ProtectionActionType.BLOCK_BREAK,
                 denySubject("no access")));
         assertEquals(1, delivered.size());
-        assertTrue(plain(delivered.get(0)).contains("BLOCK_BREAK"));
+        String text = plain(delivered.get(0));
+        assertTrue(text.contains("Breaking blocks"), "notice must name the action: " + text);
+        assertFalse(text.contains("no access"),
+                "the decision trace must never reach the player: " + text);
     }
 
     private static Set<String> placeholders(String template) {

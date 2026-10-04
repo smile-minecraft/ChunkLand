@@ -7,6 +7,7 @@ import com.smile.chunkland.api.permission.PermissionDecision;
 import com.smile.chunkland.api.permission.DecisionSource;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.message.rejection.RejectionNotifier;
+import com.smile.chunkland.message.rejection.RejectionSite;
 import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.SubLandIndex;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
@@ -313,6 +314,7 @@ public final class ProtectionListener implements Listener {
     private final RejectionNotifier rejectionNotifier;
     private final EntryProtectionAdapter entryAdapter;
     private final EntryDenialParticleFeedback entryDenialParticles;
+    private final ActionDenialParticleFeedback actionDenialParticles;
 
     public ProtectionListener(ProtectionEngine engine) {
         this(engine, null, defaultEntryAdapter(engine, null), null);
@@ -345,10 +347,22 @@ public final class ProtectionListener implements Listener {
     public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
                               EntryProtectionAdapter entryAdapter,
                               EntryDenialParticleFeedback entryDenialParticles) {
+        this(engine, rejectionNotifier, entryAdapter, entryDenialParticles, null);
+    }
+
+    /**
+     * @param actionDenialParticles player-only highlight of a denied block or
+     *         entity target; {@code null} keeps those denies without a mark
+     */
+    public ProtectionListener(ProtectionEngine engine, RejectionNotifier rejectionNotifier,
+                              EntryProtectionAdapter entryAdapter,
+                              EntryDenialParticleFeedback entryDenialParticles,
+                              ActionDenialParticleFeedback actionDenialParticles) {
         this.engine = Objects.requireNonNull(engine, "engine");
         this.rejectionNotifier = rejectionNotifier;
         this.entryAdapter = entryAdapter == null ? defaultEntryAdapter(engine, null) : entryAdapter;
         this.entryDenialParticles = entryDenialParticles;
+        this.actionDenialParticles = actionDenialParticles;
     }
 
     /**
@@ -412,11 +426,125 @@ public final class ProtectionListener implements Listener {
      */
     public static EntryProtectionAdapter productionEntryAdapter(ProtectionEngine engine,
             EntryProtectionAdapter.BanLookup bans, Plugin plugin) {
+        return productionEntryAdapter(engine, bans, plugin, null);
+    }
+
+    /**
+     * Production transit adapter with live push-out tuning.
+     *
+     * @param tuning cooldown and retreat distance read from the current
+     *               config on every deny; {@code null} keeps the built-in
+     *               window and distance
+     */
+    public static EntryProtectionAdapter productionEntryAdapter(ProtectionEngine engine,
+            EntryProtectionAdapter.BanLookup bans, Plugin plugin,
+            EntryProtectionAdapter.Tuning tuning) {
         Objects.requireNonNull(engine, "engine");
         return new EntryProtectionAdapter(Instant::now,
-                EntryProtectionAdapter.DEFAULT_PUSH_OUT_COOLDOWN, bans,
+                EntryProtectionAdapter.RETREAT_PUSH_OUT_COOLDOWN, bans,
                 EntryProtectionAdapter.ChunkLoadedCheck.bukkit(),
-                entryCheckFor(engine), pushOutSink(plugin));
+                entryCheckFor(engine), standingRoom(), tuning, pushOutSink(plugin));
+    }
+
+    /** Heights tried around the retreat candidate, nearest first. */
+    private static final int[] LANDING_OFFSETS = {0, 1, -1, 2, -2, 3, -3};
+
+    /** Heights tried around a distant escape landing, nearest first. */
+    private static final int[] FAR_LANDING_OFFSETS = farLandingOffsets(16);
+
+    private static int[] farLandingOffsets(int reach) {
+        int[] offsets = new int[reach * 2 + 1];
+        for (int step = 1; step <= reach; step++) {
+            offsets[step * 2 - 1] = step;
+            offsets[step * 2] = -step;
+        }
+        return offsets;
+    }
+
+    /**
+     * Production standing-room probe for the retreat landing.
+     *
+     * <p>Blocks are read only when the candidate chunk is already loaded and
+     * owned by the calling region thread, so nothing is loaded and no other
+     * region is touched; anything else answers {@code null} and the retreat
+     * falls back to a shorter distance. A spot qualifies when feet and head
+     * are free and harmless and there is something to stand on. Flying,
+     * gliding and swimming players need no floor.
+     */
+    static EntryProtectionAdapter.LandingCheck standingRoom() {
+        return new EntryProtectionAdapter.LandingCheck() {
+            @Override
+            public Location settle(Player player, Location candidate) {
+                return standingSpot(player, candidate, LANDING_OFFSETS);
+            }
+
+            @Override
+            public Location settleFar(Player player, Location candidate) {
+                return standingSpot(player, candidate, FAR_LANDING_OFFSETS);
+            }
+        };
+    }
+
+    private static Location standingSpot(Player player, Location candidate, int[] offsets) {
+        try {
+            World world = candidate.getWorld();
+            if (world == null) {
+                return null;
+            }
+            int x = candidate.getBlockX();
+            int z = candidate.getBlockZ();
+            if (!world.isChunkLoaded(x >> 4, z >> 4)
+                    || !org.bukkit.Bukkit.isOwnedByCurrentRegion(world, x >> 4, z >> 4)) {
+                return null;
+            }
+            boolean airborne = player.isFlying() || player.isGliding();
+            int baseY = candidate.getBlockY();
+            for (int offset : offsets) {
+                int y = baseY + offset;
+                if (y <= world.getMinHeight() || y + 1 >= world.getMaxHeight()) {
+                    continue;
+                }
+                Block feet = world.getBlockAt(x, y, z);
+                Block head = world.getBlockAt(x, y + 1, z);
+                if (!freeAndHarmless(feet) || !freeAndHarmless(head)) {
+                    continue;
+                }
+                Block floor = world.getBlockAt(x, y - 1, z);
+                boolean swimming = feet.getType() == Material.WATER;
+                boolean supported = floor.getType().isSolid() && !hazardous(floor.getType());
+                if (!supported && !swimming && !(airborne && offset == 0)) {
+                    continue;
+                }
+                Location landing = candidate.clone();
+                if (offset != 0) {
+                    landing.setY(y);
+                }
+                return landing;
+            }
+            return null;
+        } catch (RuntimeException | LinkageError unverifiable) {
+            return null;
+        }
+    }
+
+    private static boolean freeAndHarmless(Block block) {
+        Material type = block.getType();
+        return block.isPassable() && !hazardous(type);
+    }
+
+    private static boolean hazardous(Material type) {
+        return type == Material.LAVA
+                || type == Material.FIRE
+                || type == Material.SOUL_FIRE
+                || type == Material.MAGMA_BLOCK
+                || type == Material.CAMPFIRE
+                || type == Material.SOUL_CAMPFIRE
+                || type == Material.CACTUS
+                || type == Material.SWEET_BERRY_BUSH
+                || type == Material.WITHER_ROSE
+                || type == Material.POWDER_SNOW
+                || type == Material.END_PORTAL
+                || type == Material.NETHER_PORTAL;
     }
 
     private static EntryProtectionAdapter.EntryAllowedCheck entryCheckFor(
@@ -542,7 +670,7 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.BLOCK_BREAK);
             if (decision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.BLOCK_BREAK, decision);
+                rejectAtBlock(player, ProtectionActionType.BLOCK_BREAK, decision, block);
             }
         } catch (RuntimeException ex) {
             try {
@@ -581,7 +709,7 @@ public final class ProtectionListener implements Listener {
                     action);
             if (decision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(damager, action, decision);
+                rejectAtSpot(damager, action, decision, location);
             }
         } catch (RuntimeException ex) {
             try {
@@ -628,7 +756,7 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.BLOCK_PLACE);
             if (placeDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.BLOCK_PLACE, placeDecision);
+                rejectAtBlock(player, ProtectionActionType.BLOCK_PLACE, placeDecision, placed);
             }
         } catch (RuntimeException ex) {
             try {
@@ -671,7 +799,8 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.BLOCK_PLACE);
             if (primaryDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.BLOCK_PLACE, primaryDecision);
+                rejectAtBlock(player, ProtectionActionType.BLOCK_PLACE, primaryDecision,
+                        placed);
                 return;
             }
             for (BlockState state : replaced) {
@@ -684,7 +813,8 @@ public final class ProtectionListener implements Listener {
                         ProtectionActionType.BLOCK_PLACE);
                 if (partDecision.outcome() == PermissionState.DENY) {
                     event.setCancelled(true);
-                    notifyRejection(player, ProtectionActionType.BLOCK_PLACE, partDecision);
+                    rejectAtBlock(player, ProtectionActionType.BLOCK_PLACE, partDecision,
+                            part);
                     return;
                 }
             }
@@ -715,7 +845,7 @@ public final class ProtectionListener implements Listener {
                     if (trampleDecision.outcome() == PermissionState.DENY) {
                         event.setCancelled(true);
                         notifyRejection(player, ProtectionActionType.FARMLAND_TRAMPLE,
-                                trampleDecision);
+                                trampleDecision, siteOf(floor));
                     }
                     return;
                 }
@@ -732,7 +862,7 @@ public final class ProtectionListener implements Listener {
                 if (plateDecision.outcome() == PermissionState.DENY) {
                     event.setCancelled(true);
                     notifyRejection(stepper, ProtectionActionType.REDSTONE_USE,
-                            plateDecision);
+                            plateDecision, siteOf(floor));
                 }
                 return;
             }
@@ -755,7 +885,7 @@ public final class ProtectionListener implements Listener {
             var interactDecision = decideAtBlock(player.getUniqueId(), clicked, action);
             if (interactDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, action, interactDecision);
+                rejectAtBlock(player, action, interactDecision, clicked);
             }
         } catch (RuntimeException ex) {
             try {
@@ -792,7 +922,7 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.BUCKET_USE);
             if (bucketDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.BUCKET_USE, bucketDecision);
+                rejectAtBlock(player, ProtectionActionType.BUCKET_USE, bucketDecision, block);
             }
         } catch (RuntimeException ex) {
             try {
@@ -1038,7 +1168,7 @@ public final class ProtectionListener implements Listener {
             if (entryAdapter.isBannedInside(player.getUniqueId(), current)) {
                 event.setCancelled(true);
                 notifyBannedInside(player);
-                entryAdapter.pushOut(player, null);
+                entryAdapter.pushOutOfBan(player, current);
                 return;
             }
             if (from != null && from.getWorld() != null
@@ -1096,8 +1226,8 @@ public final class ProtectionListener implements Listener {
             PlayerMoveEvent event, PermissionDecision entryDecision) {
         if (entryDecision.outcome() == PermissionState.DENY) {
             event.setCancelled(true);
-            notifyRejection(player, ProtectionActionType.ENTRY, entryDecision);
-            entryAdapter.pushOut(player, from);
+            notifyRejection(player, ProtectionActionType.ENTRY, entryDecision, to);
+            entryAdapter.pushOut(player, from, to);
             showEntryDenialParticle(player, to);
         }
     }
@@ -1177,14 +1307,14 @@ public final class ProtectionListener implements Listener {
                     && !rescued) {
                 event.setCancelled(true);
                 notifyBannedInside(player);
-                entryAdapter.pushOut(player, null);
+                entryAdapter.pushOutOfBan(player, current);
                 return;
             }
             var teleportDecision = decideAtLocation(player.getUniqueId(), to,
                     ProtectionActionType.ENTRY);
             if (teleportDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.ENTRY, teleportDecision);
+                notifyRejection(player, ProtectionActionType.ENTRY, teleportDecision, to);
                 entryAdapter.pushOut(player, from);
                 showEntryDenialParticle(player, to);
             }
@@ -1205,6 +1335,9 @@ public final class ProtectionListener implements Listener {
             try {
                 entryAdapter.discardPushOutPass(event.getPlayer().getUniqueId());
             } catch (RuntimeException ignored) {
+            }
+            if (actionDenialParticles != null) {
+                actionDenialParticles.forget(event.getPlayer().getUniqueId());
             }
             if (entryDenialParticles == null) {
                 return;
@@ -1230,7 +1363,8 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.VEHICLE_USE);
             if (enterDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.VEHICLE_USE, enterDecision);
+                rejectAtSpot(player, ProtectionActionType.VEHICLE_USE, enterDecision,
+                        vehicle.getLocation());
             }
         } catch (RuntimeException ex) {
             try {
@@ -1256,7 +1390,8 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.VEHICLE_USE);
             if (vehicleDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.VEHICLE_USE, vehicleDecision);
+                rejectAtSpot(player, ProtectionActionType.VEHICLE_USE, vehicleDecision,
+                        vehicle.getLocation());
             }
         } catch (RuntimeException ex) {
             try {
@@ -1288,7 +1423,7 @@ public final class ProtectionListener implements Listener {
                     clicked.getLocation(), action);
             if (entityDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, action, entityDecision);
+                rejectAtSpot(player, action, entityDecision, clicked.getLocation());
             }
         } catch (RuntimeException ex) {
             try {
@@ -1312,7 +1447,8 @@ public final class ProtectionListener implements Listener {
                     ProtectionActionType.ARMOR_STAND);
             if (standDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, ProtectionActionType.ARMOR_STAND, standDecision);
+                rejectAtSpot(player, ProtectionActionType.ARMOR_STAND, standDecision,
+                        stand.getLocation());
             }
         } catch (RuntimeException ex) {
             try {
@@ -1342,7 +1478,7 @@ public final class ProtectionListener implements Listener {
             var hangingDecision = decideAtLocation(player.getUniqueId(), at, action);
             if (hangingDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, action, hangingDecision);
+                rejectAtSpot(player, action, hangingDecision, at);
             }
         } catch (RuntimeException ex) {
             try {
@@ -1371,7 +1507,7 @@ public final class ProtectionListener implements Listener {
                     hanging.getLocation(), action);
             if (breakDecision.outcome() == PermissionState.DENY) {
                 event.setCancelled(true);
-                notifyRejection(player, action, breakDecision);
+                rejectAtSpot(player, action, breakDecision, hanging.getLocation());
             }
         } catch (RuntimeException ex) {
             try {
@@ -1662,14 +1798,84 @@ public final class ProtectionListener implements Listener {
      * call this; ownerless mechanics never do.
      */
     private void notifyRejection(Player player, ProtectionActionType action,
-                                 PermissionDecision decision) {
+                                 PermissionDecision decision, Location at) {
+        notifyRejection(player, action, decision, siteOf(at));
+    }
+
+    private void notifyRejection(Player player, ProtectionActionType action,
+                                 PermissionDecision decision, RejectionSite site) {
         RejectionNotifier notifier = this.rejectionNotifier;
         if (notifier == null) {
             return;
         }
         try {
-            notifier.notifyDenied(player, action, decision);
+            notifier.notifyDenied(player, action, decision, site);
         } catch (RuntimeException ignored) {
+        }
+    }
+
+    /**
+     * Deny site for the notice, from coordinates the event already carries.
+     * An unreadable position answers {@code null}, which keeps the notice
+     * generic instead of dropping it.
+     */
+    private static RejectionSite siteOf(Location at) {
+        try {
+            if (at == null || at.getWorld() == null) {
+                return null;
+            }
+            return new RejectionSite(at.getWorld().getUID(),
+                    at.getBlockX(), at.getBlockY(), at.getBlockZ());
+        } catch (RuntimeException unresolved) {
+            return null;
+        }
+    }
+
+    private static RejectionSite siteOf(Block block) {
+        try {
+            return new RejectionSite(block.getWorld().getUID(),
+                    block.getX(), block.getY(), block.getZ());
+        } catch (RuntimeException unresolved) {
+            return null;
+        }
+    }
+
+    /**
+     * Player-attributed deny on a block: the notice names the land, and the
+     * denied block is outlined for that player. Both are best-effort and
+     * never change the cancel decision.
+     */
+    private void rejectAtBlock(Player player, ProtectionActionType action,
+                               PermissionDecision decision, Block block) {
+        notifyRejection(player, action, decision, siteOf(block));
+        ActionDenialParticleFeedback feedback = this.actionDenialParticles;
+        if (feedback == null || RejectionNotifier.isSilentByDefault(action)) {
+            return;
+        }
+        try {
+            feedback.showBlock(player, block.getWorld().getUID(),
+                    block.getX(), block.getY(), block.getZ());
+        } catch (RuntimeException ignored) {
+            // Particle feedback is best effort and cannot change enforcement.
+        }
+    }
+
+    /**
+     * Player-attributed deny on an entity or other free spot: the notice
+     * names the land, and the spot is ringed for that player. Rule-decided
+     * denies stay unmarked, matching their silent notice.
+     */
+    private void rejectAtSpot(Player player, ProtectionActionType action,
+                              PermissionDecision decision, Location at) {
+        notifyRejection(player, action, decision, at);
+        ActionDenialParticleFeedback feedback = this.actionDenialParticles;
+        if (feedback == null || at == null || RejectionNotifier.isSilentByDefault(action)) {
+            return;
+        }
+        try {
+            feedback.showSpot(player, at.getWorld().getUID(), at.getX(), at.getY(), at.getZ());
+        } catch (RuntimeException ignored) {
+            // Particle feedback is best effort and cannot change enforcement.
         }
     }
 

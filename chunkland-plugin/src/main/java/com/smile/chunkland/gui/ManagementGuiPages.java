@@ -183,9 +183,9 @@ public final class ManagementGuiPages {
                 List<String> withDefault = new ArrayList<>(itemLore);
                 withDefault.add(texts.defaultLore().line(row.action().name(),
                         defaultDisplayName(landDefaults, row.action())));
-                if (!isToggleable(toggleable, action)) {
-                    withDefault.add(texts.readOnlyLine());
-                }
+                withDefault.add(isToggleable(toggleable, action)
+                        ? texts.toggleLine()
+                        : texts.readOnlyLine());
                 itemLore = List.copyOf(withDefault);
             } else if (!isToggleable(toggleable, action)) {
                 List<String> readOnly = new ArrayList<>(itemLore);

@@ -54,6 +54,7 @@ public final class ChunkLandConfig {
     private final RuleDefaultsConfig ruleDefaults;
     private final EconomySettings economy;
     private final AuditSettings audit;
+    private final FeedbackSettings feedback;
     private final long globalPolicyEpoch;
     private final Map<String, Long> worldPolicyEpochs;
     private final int decisionCacheMaxEntries;
@@ -140,6 +141,29 @@ public final class ChunkLandConfig {
                            long globalPolicyEpoch,
                            Map<String, Long> worldPolicyEpochs,
                            int decisionCacheMaxEntries) {
+        this(worlds, limits, messages, selection, subjectDefaults, ruleDefaults, economy,
+                audit, FeedbackSettings.defaults(), globalPolicyEpoch, worldPolicyEpochs,
+                decisionCacheMaxEntries);
+    }
+
+    /**
+     * Canonical snapshot with the typed feedback section. A snapshot built
+     * by an older overload keeps the default deny feedback; the config
+     * loader always uses this overload so the section survives reloads.
+     */
+    public ChunkLandConfig(Map<String, WorldSettings> worlds,
+                           LimitSettings limits,
+                           MessageSettings messages,
+                           SelectionSettings selection,
+                           SubjectDefaultsConfig subjectDefaults,
+                           RuleDefaultsConfig ruleDefaults,
+                           EconomySettings economy,
+                           AuditSettings audit,
+                           FeedbackSettings feedback,
+                           long globalPolicyEpoch,
+                           Map<String, Long> worldPolicyEpochs,
+                           int decisionCacheMaxEntries) {
+        Objects.requireNonNull(feedback, "feedback");
         Objects.requireNonNull(worlds, "worlds");
         Objects.requireNonNull(limits, "limits");
         Objects.requireNonNull(messages, "messages");
@@ -185,6 +209,7 @@ public final class ChunkLandConfig {
         this.ruleDefaults = ruleDefaults;
         this.economy = economy;
         this.audit = audit;
+        this.feedback = feedback;
         this.globalPolicyEpoch = globalPolicyEpoch;
         this.worldPolicyEpochs = Collections.unmodifiableMap(defensiveEpochs);
         this.decisionCacheMaxEntries = decisionCacheMaxEntries;
@@ -255,6 +280,22 @@ public final class ChunkLandConfig {
         return audit;
     }
 
+    /**
+     * Typed feedback section ({@code feedback.*}): deny particles and the
+     * push-out comfort tuning. Never {@code null}.
+     */
+    public FeedbackSettings feedback() {
+        return feedback;
+    }
+
+    /** Return a copy with the feedback section substituted. */
+    public ChunkLandConfig withFeedback(FeedbackSettings newFeedback) {
+        Objects.requireNonNull(newFeedback, "newFeedback");
+        return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, ruleDefaults,
+                economy, audit, newFeedback, globalPolicyEpoch, worldPolicyEpochs,
+                decisionCacheMaxEntries);
+    }
+
     public long globalPolicyEpoch() {
         return globalPolicyEpoch;
     }
@@ -293,31 +334,31 @@ public final class ChunkLandConfig {
     public ChunkLandConfig withWorlds(Map<String, WorldSettings> newWorlds) {
         Objects.requireNonNull(newWorlds, "newWorlds");
         return new ChunkLandConfig(newWorlds, limits, messages, selection, subjectDefaults, ruleDefaults,
-                economy, audit, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, audit, feedback, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withLimits(LimitSettings newLimits) {
         Objects.requireNonNull(newLimits, "newLimits");
         return new ChunkLandConfig(worlds, newLimits, messages, selection, subjectDefaults, ruleDefaults,
-                economy, audit, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, audit, feedback, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withMessages(MessageSettings newMessages) {
         Objects.requireNonNull(newMessages, "newMessages");
         return new ChunkLandConfig(worlds, limits, newMessages, selection, subjectDefaults, ruleDefaults,
-                economy, audit, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, audit, feedback, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withSubjectDefaults(SubjectDefaultsConfig newSubjectDefaults) {
         Objects.requireNonNull(newSubjectDefaults, "newSubjectDefaults");
         return new ChunkLandConfig(worlds, limits, messages, selection, newSubjectDefaults, ruleDefaults,
-                economy, audit, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, audit, feedback, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     public ChunkLandConfig withRuleDefaults(RuleDefaultsConfig newRuleDefaults) {
         Objects.requireNonNull(newRuleDefaults, "newRuleDefaults");
         return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, newRuleDefaults,
-                economy, audit, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, audit, feedback, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     /**
@@ -326,7 +367,7 @@ public final class ChunkLandConfig {
     public ChunkLandConfig withAudit(AuditSettings newAudit) {
         Objects.requireNonNull(newAudit, "newAudit");
         return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, ruleDefaults,
-                economy, newAudit, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                economy, newAudit, feedback, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     /**
@@ -335,7 +376,7 @@ public final class ChunkLandConfig {
      */
     public ChunkLandConfig withEconomy(EconomySettings newEconomy) {
         return new ChunkLandConfig(worlds, limits, messages, selection, subjectDefaults, ruleDefaults,
-                newEconomy, audit, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
+                newEconomy, audit, feedback, globalPolicyEpoch, worldPolicyEpochs, decisionCacheMaxEntries);
     }
 
     /**
@@ -367,6 +408,7 @@ public final class ChunkLandConfig {
                 this.ruleDefaults,
                 this.economy,
                 this.audit,
+                this.feedback,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped,
                 this.decisionCacheMaxEntries);
@@ -391,6 +433,7 @@ public final class ChunkLandConfig {
                 this.ruleDefaults,
                 this.economy,
                 this.audit,
+                this.feedback,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped,
                 this.decisionCacheMaxEntries);
@@ -453,6 +496,26 @@ public final class ChunkLandConfig {
                                                EconomySettings nextEconomy,
                                                AuditSettings nextAudit,
                                                int nextDecisionCacheMaxEntries) {
+        return withEpochsBumped(nextWorlds, nextLimits, nextMessages, nextSelection,
+                nextSubjectDefaults, nextRuleDefaults, nextEconomy, nextAudit, this.feedback,
+                nextDecisionCacheMaxEntries);
+    }
+
+    /**
+     * Epoch-bumped copy carrying every typed section of a reloaded file,
+     * the feedback section included.
+     */
+    public ChunkLandConfig withEpochsBumped(Map<String, WorldSettings> nextWorlds,
+                                               LimitSettings nextLimits,
+                                               MessageSettings nextMessages,
+                                               SelectionSettings nextSelection,
+                                               SubjectDefaultsConfig nextSubjectDefaults,
+                                               RuleDefaultsConfig nextRuleDefaults,
+                                               EconomySettings nextEconomy,
+                                               AuditSettings nextAudit,
+                                               FeedbackSettings nextFeedback,
+                                               int nextDecisionCacheMaxEntries) {
+        Objects.requireNonNull(nextFeedback, "nextFeedback");
         Objects.requireNonNull(nextWorlds, "nextWorlds");
         Objects.requireNonNull(nextLimits, "nextLimits");
         Objects.requireNonNull(nextMessages, "nextMessages");
@@ -476,6 +539,7 @@ public final class ChunkLandConfig {
                 nextRuleDefaults,
                 nextEconomy,
                 nextAudit,
+                nextFeedback,
                 Math.addExact(this.globalPolicyEpoch, 1L),
                 bumped,
                 nextDecisionCacheMaxEntries);

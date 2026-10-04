@@ -7,6 +7,7 @@
 #   messages          -> message settings
 #   audit             -> audit history retention
 #   selection         -> selection sessions and particle budgets
+#   feedback          -> deny particles and push-out tuning
 #   economy           -> claim currency + owner-total price-per-chunk tiers
 #   worlds.<name>     -> per-world claim-enabled + vertical-mode
 #   subject-defaults  -> world/global SUBJECT_PERMISSION defaults (optional)
@@ -88,6 +89,35 @@ selection:
   visualization-max-particles-per-tick: 512
   visualization-render-distance-blocks: 64
   visualization-refresh-interval-ticks: 10
+
+# Deny feedback (operator-tunable, reloadable). Everything here is shown to
+# the denied player only and never changes what is allowed.
+#
+# entry-wall-*: the red border drawn when a player is refused entry.
+#   enabled: draw it at all.
+#   radius-blocks: how far around the player the border is traced (2-16).
+#   particle-size-percent: dust size, 100 = vanilla size (25-400).
+#   points-per-block: particles per block along the border (1-4).
+#   cooldown-millis: quiet time between two walls for one player (100-60000).
+# action-mark-*: the outline on a block (or rings on an entity) the land
+#   refused to let the player break, place or use.
+# push-out-*: how a refused player is moved back.
+#   distance-blocks: blocks between the border and the landing (1-8).
+#   cooldown-millis: quiet time between two push-outs for one player
+#     (100-60000). Keep it at or below the time a player needs to walk the
+#     distance back (about 500 ms for 3 blocks), otherwise the player is
+#     held on cancelled moves and the screen stutters.
+feedback:
+  entry-wall-enabled: true
+  entry-wall-radius-blocks: 6
+  entry-wall-particle-size-percent: 160
+  entry-wall-points-per-block: 2
+  entry-wall-cooldown-millis: 2000
+  action-mark-enabled: true
+  action-mark-particle-size-percent: 110
+  action-mark-cooldown-millis: 400
+  push-out-distance-blocks: 3
+  push-out-cooldown-millis: 500
 
 worlds:
   # Worlds not listed here follow the `claim-enabled: true` and

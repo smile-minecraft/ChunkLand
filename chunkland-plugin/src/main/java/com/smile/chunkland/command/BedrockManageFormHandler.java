@@ -7,6 +7,7 @@ import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.gui.BedrockFormNavigator;
+import com.smile.chunkland.gui.BedrockFormTexts;
 import com.smile.chunkland.gui.BedrockManageForms;
 import com.smile.chunkland.gui.ManagementGuiModel;
 import com.smile.chunkland.protection.ManagementPermissionGate;
@@ -60,6 +61,12 @@ public final class BedrockManageFormHandler {
         List<String> list();
     }
 
+    /** Visible form copy for one player, resolved in that player's locale. */
+    @FunctionalInterface
+    public interface TextSource {
+        BedrockFormTexts textsFor(Player player);
+    }
+
     private static final String DENIED_KEY = "command.land.manage.denied";
     private static final String UNSUPPORTED_KEY = "command.land.manage.bedrock.unsupported";
     private static final String ROOT_PAGE_ID = "chunkland:bedrock-manage-root";
@@ -75,10 +82,22 @@ public final class BedrockManageFormHandler {
     private final BedrockFormNavigator navigator;
     private final OnlineNames onlineNames;
     private final SafeScheduler folia;
+    private final TextSource texts;
 
     public BedrockManageFormHandler(BedrockLookup bedrock, ManagementGateResolver gateResolver,
             ModelSource models, Map<String, LandCommand.Handler> handlers,
             BedrockFormNavigator navigator, OnlineNames onlineNames, SafeScheduler folia) {
+        this(bedrock, gateResolver, models, handlers, navigator, onlineNames, folia, null);
+    }
+
+    /**
+     * @param texts visible form copy per player (their own locale);
+     *              {@code null} keeps the bundled English wording
+     */
+    public BedrockManageFormHandler(BedrockLookup bedrock, ManagementGateResolver gateResolver,
+            ModelSource models, Map<String, LandCommand.Handler> handlers,
+            BedrockFormNavigator navigator, OnlineNames onlineNames, SafeScheduler folia,
+            TextSource texts) {
         this.bedrock = Objects.requireNonNull(bedrock, "bedrock");
         this.gateResolver = Objects.requireNonNull(gateResolver, "gateResolver");
         this.models = Objects.requireNonNull(models, "models");
@@ -86,6 +105,38 @@ public final class BedrockManageFormHandler {
         this.navigator = Objects.requireNonNull(navigator, "navigator");
         this.onlineNames = Objects.requireNonNull(onlineNames, "onlineNames");
         this.folia = folia;
+        this.texts = texts;
+    }
+
+    /**
+     * Visible form copy for one player. A {@code null} source, a
+     * {@code null} answer or a failing lookup falls back to the bundled
+     * English wording, so a form always opens.
+     */
+    private BedrockFormTexts textsFor(Player player) {
+        TextSource source = this.texts;
+        if (source == null) {
+            return BedrockFormTexts.english();
+        }
+        try {
+            BedrockFormTexts resolved = source.textsFor(player);
+            return resolved == null ? BedrockFormTexts.english() : resolved;
+        } catch (RuntimeException unresolved) {
+            return BedrockFormTexts.english();
+        }
+    }
+
+    /** Display name of the pinned land, or its id when the snapshot cannot name it. */
+    private static String landLabel(ManagementGateResolver.Request request) {
+        try {
+            var land = request.snapshot().land(request.landId());
+            if (land != null && land.displayName() != null && !land.displayName().isBlank()) {
+                return land.displayName();
+            }
+        } catch (RuntimeException unresolved) {
+            // Fall through to the id.
+        }
+        return String.valueOf(request.landId().value());
     }
 
     /**
@@ -134,7 +185,7 @@ public final class BedrockManageFormHandler {
         BedrockFormNavigator.FailureReply failure = (key, vars) -> sink.reply(key, vars);
         FormSpec.Simple root;
         try {
-            root = BedrockManageForms.rootMenu();
+            root = BedrockManageForms.rootMenu(textsFor(player));
         } catch (RuntimeException failureToBuild) {
             replyDenied(sink);
             return true;
@@ -232,9 +283,9 @@ public final class BedrockManageFormHandler {
                 case INSPECT -> delegate(player, sink, request, "inspect", new String[] {"inspect"});
                 case DELETE -> pushDeleteModal(player, sink, request);
                 case TRUST_UNTRUST -> pushModeMenu(player, sink, request,
-                        BedrockManageForms.trustModeMenu(), "trust", "untrust");
+                        BedrockManageForms.trustModeMenu(textsFor(player)), "trust", "untrust");
                 case BAN_UNBAN -> pushModeMenu(player, sink, request,
-                        BedrockManageForms.banModeMenu(), "ban", "unban");
+                        BedrockManageForms.banModeMenu(textsFor(player)), "ban", "unban");
                 default -> replyUnsupported(sink, route.handlerSlot());
             }
         } catch (RuntimeException failure) {
@@ -247,7 +298,7 @@ public final class BedrockManageFormHandler {
         ManagementGuiModel live = loadModel(request);
         FormSpec.Simple detail;
         try {
-            detail = BedrockManageForms.permissionDetail(live);
+            detail = BedrockManageForms.permissionDetail(live, textsFor(player));
         } catch (RuntimeException buildFailure) {
             replyDenied(sink);
             return;
@@ -296,11 +347,13 @@ public final class BedrockManageFormHandler {
             ManagementGateResolver.Request request) {
         FormSpec.Modal modal;
         try {
-            modal = BedrockManageForms.confirmModal("Delete land",
-                    "Delete land " + request.landId().value()
-                            + "? This cannot be undone. Confirming runs the usual delete "
-                            + "prompt; finish with /land delete confirm <token> in chat.",
-                    "Delete", "Keep");
+            BedrockFormTexts copy = textsFor(player);
+            modal = BedrockManageForms.confirmModal(
+                    copy.text(BedrockFormTexts.DELETE_TITLE),
+                    copy.text(BedrockFormTexts.DELETE_CONTENT,
+                            Map.of("land_name", landLabel(request))),
+                    copy.text(BedrockFormTexts.DELETE_CONFIRM),
+                    copy.text(BedrockFormTexts.DELETE_CANCEL));
         } catch (RuntimeException buildFailure) {
             replyDenied(sink);
             return;
@@ -366,9 +419,11 @@ public final class BedrockManageFormHandler {
             }
             int index = button.get();
             if (index == 0) {
-                pushPlayerChoice(player, sink, request, firstSlot, actionLabel(firstSlot));
+                pushPlayerChoice(player, sink, request, firstSlot,
+                        actionLabel(firstSlot, textsFor(player)));
             } else if (index == 1) {
-                pushPlayerChoice(player, sink, request, secondSlot, actionLabel(secondSlot));
+                pushPlayerChoice(player, sink, request, secondSlot,
+                        actionLabel(secondSlot, textsFor(player)));
             } else if (index == backIndex) {
                 backQuietly(request.actor());
             } else {
@@ -390,7 +445,7 @@ public final class BedrockManageFormHandler {
         }
         FormSpec.Simple menu;
         try {
-            menu = BedrockManageForms.playerChoiceMenu(names, actionLabel);
+            menu = BedrockManageForms.playerChoiceMenu(names, actionLabel, textsFor(player));
         } catch (RuntimeException buildFailure) {
             replyDenied(sink);
             return;
@@ -548,12 +603,12 @@ public final class BedrockManageFormHandler {
         return sink::reply;
     }
 
-    private static String actionLabel(String slot) {
+    private static String actionLabel(String slot, BedrockFormTexts copy) {
         return switch (slot) {
-            case "trust" -> "Trust player";
-            case "untrust" -> "Untrust player";
-            case "ban" -> "Ban player";
-            case "unban" -> "Unban player";
+            case "trust" -> copy.text(BedrockFormTexts.TRUST_ADD);
+            case "untrust" -> copy.text(BedrockFormTexts.TRUST_REMOVE);
+            case "ban" -> copy.text(BedrockFormTexts.BAN_ADD);
+            case "unban" -> copy.text(BedrockFormTexts.BAN_REMOVE);
             default -> slot;
         };
     }

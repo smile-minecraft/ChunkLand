@@ -6,6 +6,7 @@ import com.smile.chunkland.api.permission.PermissionState;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -105,33 +106,32 @@ public final class BedrockManageForms {
                         "確認對話框後轉交既有 delete 槽位；token 第二步仍走聊天。"));
     }
 
-    /** 主選單上某能力的按鈕文字。 */
+    /** 主選單上某能力的按鈕文字（內建英文）。 */
     public static String menuLabel(Capability capability) {
-        Objects.requireNonNull(capability, "capability");
-        return switch (capability) {
-            case CLAIM -> "Claim land";
-            case EXPAND -> "Expand land";
-            case SHRINK -> "Shrink land";
-            case TRUST_UNTRUST -> "Trust members";
-            case BAN_UNBAN -> "Ban management";
-            case BASIC_PERMISSION -> "Permissions";
-            case SUBLAND -> "SubLand";
-            case GROUP -> "Groups";
-            case PROFILE -> "Profiles";
-            case LAND_RULE -> "Land rules";
-            case INSPECT -> "Inspect";
-            case EXPLAIN -> "Explain";
-            case DELETE -> "Delete land";
-        };
+        return menuLabel(capability, BedrockFormTexts.english());
     }
 
-    /** 主選單：十三項能力的 Simple 表單，按鈕順序與對照表一致。 */
+    /** 主選單上某能力的按鈕文字，文字由呼叫端注入。 */
+    public static String menuLabel(Capability capability, BedrockFormTexts texts) {
+        Objects.requireNonNull(capability, "capability");
+        Objects.requireNonNull(texts, "texts");
+        return texts.text(BedrockFormTexts.MENU_PREFIX
+                + capability.name().toLowerCase(Locale.ROOT));
+    }
+
+    /** 主選單：十三項能力的 Simple 表單，按鈕順序與對照表一致（內建英文）。 */
     public static FormSpec.Simple rootMenu() {
+        return rootMenu(BedrockFormTexts.english());
+    }
+
+    /** 主選單，文字由呼叫端注入；按鈕順序與對照表一致。 */
+    public static FormSpec.Simple rootMenu(BedrockFormTexts texts) {
+        Objects.requireNonNull(texts, "texts");
         List<CapabilityRoute> routes = routes();
-        FormSpec.Simple.Builder builder = FormSpec.simple("Land Management")
-                .content("Choose a management step. Some steps continue in chat.");
+        FormSpec.Simple.Builder builder = FormSpec.simple(texts.text(BedrockFormTexts.ROOT_TITLE))
+                .content(texts.text(BedrockFormTexts.ROOT_CONTENT));
         for (CapabilityRoute route : routes) {
-            builder.button(menuLabel(route.capability()));
+            builder.button(menuLabel(route.capability(), texts));
         }
         return builder.build();
     }
@@ -142,11 +142,22 @@ public final class BedrockManageForms {
      * 模型不可用時回傳 fail-closed 的通知頁，不洩漏任何列資料。
      */
     public static FormSpec.Simple permissionDetail(ManagementGuiModel model) {
+        return permissionDetail(model, BedrockFormTexts.english());
+    }
+
+    /**
+     * 權限明細，文字由呼叫端注入：列標題、衝突標記與解法都走與 Java 管理
+     * GUI 相同的語言鍵，按鈕顯示該權限的顯示名稱。列順序與按鈕順序不變，
+     * 呼叫端仍以索引對回模型列。
+     */
+    public static FormSpec.Simple permissionDetail(ManagementGuiModel model,
+            BedrockFormTexts texts) {
+        Objects.requireNonNull(texts, "texts");
+        String back = texts.text(BedrockFormTexts.BACK);
         if (model == null || !model.available() || model.rows().isEmpty()) {
-            return FormSpec.simple("Land Management (unavailable)")
-                    .content(String.join("\n",
-                            ManagementGuiModel.unavailable().remediesFor(null)))
-                    .button("Back")
+            return FormSpec.simple(texts.text(BedrockFormTexts.UNAVAILABLE_TITLE))
+                    .content(texts.text(BedrockFormTexts.UNAVAILABLE_CONTENT))
+                    .button(back)
                     .build();
         }
         List<String> lines = new ArrayList<>();
@@ -154,24 +165,36 @@ public final class BedrockManageForms {
         int deny = 0;
         int allow = 0;
         for (ManagementPermissionRow row : model.rows()) {
-            buttons.add(row.action().name());
+            String action = row.action().name();
+            buttons.add(texts.text(BedrockFormTexts.ACTION_PREFIX
+                    + action.toLowerCase(Locale.ROOT)));
             if (row.outcome() == PermissionState.DENY) {
                 deny++;
             } else {
                 allow++;
             }
-            lines.add(row.action().name() + ": " + row.outcome().name()
-                    + " @ " + row.layer().name()
-                    + (row.conflict() ? " !CONFLICT" : ""));
+            String layer = row.layer().name();
+            String outcome = row.outcome().name();
+            String suffix = row.conflict()
+                    ? texts.text(BedrockFormTexts.ROW_CONFLICT_SUFFIX) : "";
+            lines.add(texts.text(BedrockFormTexts.ROW_HEAD, Map.of(
+                    "action", action, "outcome", outcome, "layer", layer,
+                    "conflict", suffix)));
             if (row.conflict()) {
-                for (String remedy : model.remediesFor(row)) {
-                    lines.add("  - " + remedy);
+                String remedies = texts.text(BedrockFormTexts.REMEDY_CONFLICT,
+                        Map.of("layer", layer, "outcome", outcome));
+                for (String remedy : remedies.split("\n")) {
+                    if (!remedy.isBlank()) {
+                        lines.add(texts.text(BedrockFormTexts.ROW_REMEDY_LINE,
+                                Map.of("remedy", remedy)));
+                    }
                 }
             }
         }
-        buttons.add("Back");
+        buttons.add(back);
         FormSpec.Simple.Builder builder = FormSpec.simple(
-                "Land Permissions (" + deny + " DENY, " + allow + " ALLOW)")
+                texts.text(BedrockFormTexts.DETAILS_TITLE,
+                        Map.of("deny_count", deny, "allow_count", allow)))
                 .content(String.join("\n", lines));
         for (String button : buttons) {
             builder.button(button);
@@ -187,21 +210,33 @@ public final class BedrockManageForms {
 
     /** 信任模式選單：信任、取消信任、返回。 */
     public static FormSpec.Simple trustModeMenu() {
-        return FormSpec.simple("Trust members")
-                .content("Choose an action. Offline players: use chat instead.")
-                .button("Trust player")
-                .button("Untrust player")
-                .button("Back")
+        return trustModeMenu(BedrockFormTexts.english());
+    }
+
+    /** 信任模式選單，文字由呼叫端注入。 */
+    public static FormSpec.Simple trustModeMenu(BedrockFormTexts texts) {
+        Objects.requireNonNull(texts, "texts");
+        return FormSpec.simple(texts.text(BedrockFormTexts.TRUST_TITLE))
+                .content(texts.text(BedrockFormTexts.TRUST_CONTENT))
+                .button(texts.text(BedrockFormTexts.TRUST_ADD))
+                .button(texts.text(BedrockFormTexts.TRUST_REMOVE))
+                .button(texts.text(BedrockFormTexts.BACK))
                 .build();
     }
 
     /** 封鎖模式選單：封鎖、解封、返回。 */
     public static FormSpec.Simple banModeMenu() {
-        return FormSpec.simple("Ban management")
-                .content("Choose an action. Offline players: use chat instead.")
-                .button("Ban player")
-                .button("Unban player")
-                .button("Back")
+        return banModeMenu(BedrockFormTexts.english());
+    }
+
+    /** 封鎖模式選單，文字由呼叫端注入。 */
+    public static FormSpec.Simple banModeMenu(BedrockFormTexts texts) {
+        Objects.requireNonNull(texts, "texts");
+        return FormSpec.simple(texts.text(BedrockFormTexts.BAN_TITLE))
+                .content(texts.text(BedrockFormTexts.BAN_CONTENT))
+                .button(texts.text(BedrockFormTexts.BAN_ADD))
+                .button(texts.text(BedrockFormTexts.BAN_REMOVE))
+                .button(texts.text(BedrockFormTexts.BACK))
                 .build();
     }
 
@@ -233,24 +268,32 @@ public final class BedrockManageForms {
      * 保留字與空白名稱一律過濾；名單為空時回傳 fail-closed 通知頁。
      */
     public static FormSpec.Simple playerChoiceMenu(List<String> onlineNames, String actionLabel) {
+        return playerChoiceMenu(onlineNames, actionLabel, BedrockFormTexts.english());
+    }
+
+    /** 線上玩家選擇選單，文字由呼叫端注入；過濾與 fail-closed 規則不變。 */
+    public static FormSpec.Simple playerChoiceMenu(List<String> onlineNames, String actionLabel,
+            BedrockFormTexts texts) {
+        Objects.requireNonNull(texts, "texts");
         if (actionLabel == null || actionLabel.isBlank()) {
             throw new IllegalArgumentException("action label must not be null or blank");
         }
+        Map<String, Object> vars = Map.of("value", actionLabel);
+        String back = texts.text(BedrockFormTexts.BACK);
         List<String> names = choiceNames(onlineNames);
         if (names.isEmpty()) {
-            return FormSpec.simple(actionLabel + " - no players online")
-                    .content("No online players right now. "
-                            + "For offline players, use the chat command instead.")
-                    .button("Back")
+            return FormSpec.simple(texts.text(BedrockFormTexts.CHOICE_EMPTY_TITLE, vars))
+                    .content(texts.text(BedrockFormTexts.CHOICE_EMPTY_CONTENT, vars))
+                    .button(back)
                     .build();
         }
-        FormSpec.Simple.Builder builder = FormSpec.simple(actionLabel + " - choose player")
-                .content("Choose a player for " + actionLabel
-                        + ". Offline players: use the chat command instead.");
+        FormSpec.Simple.Builder builder =
+                FormSpec.simple(texts.text(BedrockFormTexts.CHOICE_TITLE, vars))
+                        .content(texts.text(BedrockFormTexts.CHOICE_CONTENT, vars));
         for (String name : names) {
             builder.button(name);
         }
-        builder.button("Back");
+        builder.button(back);
         return builder.build();
     }
 

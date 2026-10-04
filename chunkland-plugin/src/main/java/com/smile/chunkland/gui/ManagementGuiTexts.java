@@ -15,9 +15,11 @@ import java.util.Objects;
  * the language templates is already resolved before injection, so the
  * Bukkit adapter renders these strings literally.</p>
  *
- * <p>The confirm-toggle follow-up composes its page from
- * {@link #defaultLore()} and {@link #confirmTexts()}; the second-layer
- * pages do not render them yet.</p>
+ * <p>The second-layer rows end with either {@link #toggleLine()} (the row
+ * can be clicked to change its land default) or {@link #readOnlyLine()}
+ * (the row is view-only), so the viewer always knows what a click does.
+ * The confirm page composes from {@link #defaultLore()} and
+ * {@link #confirmTexts()}.</p>
  */
 public record ManagementGuiTexts(
         String rootTitle,
@@ -31,7 +33,8 @@ public record ManagementGuiTexts(
         RowRemedies rowRemedies,
         DefaultLore defaultLore,
         ConfirmTexts confirmTexts,
-        String readOnlyLine) {
+        String readOnlyLine,
+        String toggleLine) {
 
     public ManagementGuiTexts {
         Objects.requireNonNull(rootTitle);
@@ -46,6 +49,7 @@ public record ManagementGuiTexts(
         Objects.requireNonNull(defaultLore);
         Objects.requireNonNull(confirmTexts);
         Objects.requireNonNull(readOnlyLine);
+        Objects.requireNonNull(toggleLine);
         entryLines = List.copyOf(entryLines);
         unavailableLines = List.copyOf(unavailableLines);
     }

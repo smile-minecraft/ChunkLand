@@ -401,6 +401,49 @@ class LandCommandTest {
     }
 
     @Test
+    void tabCompletionOffersActionNamesStatesAndModeWords() {
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CommandSender sender = permFilteredSender(Map.of(), out);
+
+        List<String> actions = LandCommand.tabComplete(sender, new String[]{"default", ""});
+        assertTrue(actions.contains("BLOCK_BREAK") && actions.contains("CONTAINER_OPEN"),
+                "default must offer the settable actions: " + actions);
+        assertFalse(actions.contains("MANAGE_PERMISSION"),
+                "actions without a land default must not be offered: " + actions);
+        assertFalse(actions.contains("FIRE_SPREAD"),
+                "land rules are not land defaults: " + actions);
+        assertEquals(List.of("BLOCK_BREAK", "BLOCK_PLACE"),
+                LandCommand.tabComplete(sender, new String[]{"default", "block_"}));
+        assertEquals(List.of("ALLOW", "DENY", "INHERIT"),
+                LandCommand.tabComplete(sender, new String[]{"default", "BLOCK_BREAK", ""}));
+        assertEquals(List.of("DENY"),
+                LandCommand.tabComplete(sender, new String[]{"default", "BLOCK_BREAK", "d"}));
+
+        assertEquals(List.of("select", "create", "update", "delete", "extend"),
+                LandCommand.tabComplete(sender, new String[]{"subland", ""}));
+        assertEquals(List.of("bind", "unbind"),
+                LandCommand.tabComplete(sender, new String[]{"binding", ""}));
+        assertEquals(List.of("player", "group"),
+                LandCommand.tabComplete(sender, new String[]{"binding", "bind", ""}));
+        assertEquals(List.of("on", "off"),
+                LandCommand.tabComplete(sender, new String[]{"bypass", "o"}));
+        assertEquals(List.of("confirm"),
+                LandCommand.tabComplete(sender, new String[]{"delete", ""}));
+        assertEquals(List.of("trust"),
+                LandCommand.tabComplete(sender, new String[]{"help", "tr"}));
+    }
+
+    @Test
+    void playerNameCompletionSurvivesAnUnreadableServer() {
+        CopyOnWriteArrayList<String> out = new CopyOnWriteArrayList<>();
+        CommandSender sender = permFilteredSender(Map.of(), out);
+        for (String sub : List.of("trust", "untrust", "ban", "unban", "inspect")) {
+            assertEquals(List.of(), LandCommand.tabComplete(sender, new String[]{sub, "St"}),
+                    sub + " must answer empty when no server is reachable");
+        }
+    }
+
+    @Test
     void replySinkPlayerUsesPipelineChatPath() throws Exception {
         CountingSender cs = new CountingSender();
         ChunkLandMessagePipeline pipeline = buildPipeline(false, cs);

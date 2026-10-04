@@ -27,7 +27,7 @@ command:
       <gray>  <hover:show_text:'<gray>Toggle admin bypass.</gray>'><click:suggest_command:'/land bypass'>bypass    </click></hover><hover:show_text:'<gray>Administration tools.</gray>'><click:suggest_command:'/land admin'>admin    </click></hover>                </gray>
     usage: "<yellow>Usage: /land <subcommand> [args]</yellow>"
     unknown: "<red>Unknown subcommand <subcommand>. Use /land help.</red>"
-    denied: "<red>Missing permission <permission>.</red>"
+    denied: "<red>You are not allowed to use this command.</red> <dark_gray>(requires <permission>)</dark_gray>"
     not_yet: "<yellow>Subcommand <subcommand> is not yet implemented.</yellow>"
     wand:
       given: "<green>Wand given.</green>"
@@ -53,7 +53,7 @@ command:
     default:
       console: "<red>Only players can change land defaults.</red>"
       usage: "<yellow>Usage: /land default <action> [ALLOW|DENY|INHERIT]</yellow>"
-      success: "<green>Land default <action> set to <state>.</green>"
+      success: "<green>The land default for “<action>” is now “<state>”.</green>"
       failed: "<red>Land default change failed: <reason>.</red>"
     ban:
       console: "<red>Only players can ban members.</red>"
@@ -137,7 +137,7 @@ command:
       created: "<green>Profile <profile> created.</green>"
       listed: "<green>Profiles: <profiles>.</green>"
       listed_empty: "<gray>No profiles yet.</gray>"
-      set: "<green>Profile <profile> entry <action> set to <state>.</green>"
+      set: "<green>Profile <profile>: “<action>” is now “<state>”.</green>"
       deleted: "<green>Profile <profile> deleted.</green>"
       force_deleted: "<green>Profile <profile> force deleted: <affected>.</green>"
       failed: "<red>Profile operation failed: <reason>.</red>"
@@ -151,13 +151,24 @@ command:
     explain:
       console: "<red>Only players can explain permissions.</red>"
       usage: "<yellow>Usage: /land explain <action></yellow>"
-      result: "<green>Explain <action>: <outcome> via <source>/<layer>. <reason> Covering <coveringSubLandId> owner <isOwner> bypass <adminBypass> steward <steward></green>"
-      denied: "<red>Explain unavailable.</red>"
+      result: |-
+        <gold>━━ Permission check: <action> ━━</gold>
+        <gray>Result: </gray><white><outcome></white><gray>  Decided by: </gray><white><layer></white><gray> (<source>)</gray>
+        <gray>You own this land: </gray><white><isOwner></white><gray>  Admin bypass: </gray><white><adminBypass></white><gray>  Steward: </gray><white><steward></white>
+        <dark_gray>Trace: <reason> | Covering subland: <coveringSubLandId></dark_gray>
+      denied: "<red>Cannot explain that permission: stand inside a land you manage and check the permission name.</red>"
       failed: "<red>Explain failed: <reason>.</red>"
     inspect:
       usage: "<yellow>Usage: /land inspect [player]</yellow>"
-      result: "<green>Land <landName> (<landId>) owner <owner> world <worldId> chunks <chunks> sublands <sublands> rev <structureRevision>/<landPolicyRevision> owner <isOwner> server <serverLand> steward <steward> limits <limitMaxChunksPerLand>(<limitMaxChunksPerLandSource>)/<limitMaxSublandsPerLand>(<limitMaxSublandsPerLandSource>) subject <playerUuid></green>"
-      denied: "<red>Inspect unavailable.</red>"
+      result: |-
+        <gold>━━ Land “<landName>” ━━</gold>
+        <gray>Owner: </gray><white><owner></white><gray>  You own this land: </gray><white><isOwner></white>
+        <gray>Size: </gray><white><chunks> chunks</white><gray> (limit <limitMaxChunksPerLand>, from <limitMaxChunksPerLandSource>)</gray>
+        <gray>Sublands: </gray><white><sublands></white><gray> (limit <limitMaxSublandsPerLand>, from <limitMaxSublandsPerLandSource>)</gray>
+        <gray>Server land: </gray><white><serverLand></white><gray>  Steward: </gray><white><steward></white>
+        <hover:show_text:'<gray>Open the management menu and change permissions by clicking.</gray>'><click:run_command:'/land manage'><green>[Manage]</green></click></hover> <hover:show_text:'<gray>Fill in the trust command.</gray>'><click:suggest_command:'/land trust '><aqua>[Trust a player]</aqua></click></hover> <hover:show_text:'<gray>Fill in the ban command.</gray>'><click:suggest_command:'/land ban '><red>[Ban a player]</red></click></hover> <hover:show_text:'<gray>Fill in the rename command.</gray>'><click:suggest_command:'/land rename '><yellow>[Rename]</yellow></click></hover>
+        <dark_gray>Land id <landId> | World <worldId> | Revision <structureRevision>/<landPolicyRevision> | Subject <playerUuid></dark_gray>
+      denied: "<red>Cannot inspect a land here: stand inside a land you manage and try again.</red>"
     log:
       usage: "<yellow>Usage: /land log [u:player-uuid] [t:7d] [a:action] [land:land-uuid] [world:world-uuid] [limit:n] [page:n]</yellow>"
       empty: "<gray>No audit entries match those filters.</gray>"
@@ -170,7 +181,7 @@ command:
       unavailable: "<red>Block history unavailable.</red>"
     manage:
       console: "<red>Only players can open the management GUI.</red>"
-      denied: "<red>Management GUI unavailable.</red>"
+      denied: "<red>Cannot open the management menu: stand inside a land you manage and try again.</red>"
       bedrock:
         unsupported: "<yellow>That step is not available as a Bedrock form yet. Use /land <subcommand> in chat instead.</yellow>"
     bypass:
@@ -315,20 +326,41 @@ land:
     success: "<green>Land <land_name> deleted. Refunded <refund> for <chunk_count> chunks.</green>"
 protection:
   rejection:
-    action_denied: "<red>Action <action> denied. <reason></red>"
-    entry_denied: "<yellow>You cannot enter this land.</yellow>"
-    banned_inside: "<red>You are inside a land you are banned from.</red>"
+    action_denied: "<red><action> is not allowed here: <reason>.</red>"
+    entry_denied_at: "<yellow>The land “<land_name>” is not open to you.</yellow>"
+    reason:
+      not_member: "you are not a member of “<land_name>”"
+      explicit: "“<land_name>” has denied you this"
+      subland: "this area of “<land_name>” is not open to you"
+      unavailable: "land data is not ready yet, please try again shortly"
+      no_permission: "you do not have this permission here"
+    entry_denied: "<yellow>This land is not open to you.</yellow>"
+    banned_inside: "<red>You are banned from this land and cannot stay here.</red>"
 claim:
+  compensated: "the claim did not complete and the cost was returned"
+  compensation_pending: "the claim did not complete and the cost is still being returned"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  finalize_failed: "the final step failed, please ask an admin to check"
+  invalid: "the selection or the name does not meet the rules"
+  publish_failed: "the change was saved but is not live yet, please check again shortly"
+  reconciliation: "a previous transaction is still being reconciled, please try again later"
+  unavailable: "this feature is temporarily unavailable, please try again later"
   recovery_pending: "<yellow>Land data is still recovering. Please try again in a moment.</yellow>"
   recovery_failed: "<red>Land data recovery failed. Please contact an administrator.</red>"
 world:
   claim_disabled: "<red>Claiming is disabled in this world. Existing lands stay protected.</red>"
   unknown: "<red>The world policy is currently unavailable, so claiming is blocked. Please try again later.</red>"
 pricing:
+  failed: "the price could not be calculated"
   unavailable: "<red>Land pricing is currently unavailable. Please try again later.</red>"
 economy:
+  failed: "the payment or refund did not go through"
+  insufficient: "you do not have enough money"
+  unsupported: "the economy service does not support this operation"
   unavailable: "<red>The economy service is currently unavailable. Please try again later.</red>"
 selection:
+  disconnected: "the selected chunks must be connected"
+  stale: "the selection expired, please select again"
   wand:
     first_point: "<yellow>First corner set. Click another block to pick the second corner.</yellow>"
     edit_target: "<yellow>Editing your land: first corner set. Select chunks to expand or shrink it.</yellow>"
@@ -342,39 +374,343 @@ selection:
     cancelled: "<yellow>Selection cancelled.</yellow>"
 gui:
   manage:
+    roster:
+      denied: "<red>You are not allowed to manage the members of this land.</red>"
+      picker_empty: "No online player to choose"
+      picker_empty_hint: "For offline players use the chat command."
+      previous: "Previous page"
+      next: "Next page"
+      unknown_player: "Unknown player (<value>)"
+      members:
+        entry_name: "Members"
+        entry_hint: "See, add or remove the players trusted on this land."
+        title: "Land Members (<count>)"
+        remove_line: "Click to untrust this player."
+        add_name: "Add a member"
+        add_hint: "Pick an online player to trust."
+        empty: "Nobody is trusted on this land yet"
+        picker_title: "Choose a player to trust"
+        pick_line: "Click to trust this player."
+      bans:
+        entry_name: "Banned players"
+        entry_hint: "See, add or lift bans that keep players out of this land."
+        title: "Banned Players (<count>)"
+        remove_line: "Click to unban this player."
+        add_name: "Ban a player"
+        add_hint: "Pick an online player to ban."
+        empty: "Nobody is banned from this land"
+        picker_title: "Choose a player to ban"
+        pick_line: "Click to ban this player."
     root:
       title: "<white>Land Management</white>"
-      entry_name: "<white>Open the permission detail view.</white>"
-      entry_hint: "<gray>Open the permission detail view.</gray>"
+      entry_name: "<white>Permissions</white>"
+      entry_hint: "<gray>View and change what others may do on this land.</gray>"
     details:
-      title: "<white>Land Permissions (<deny_count> DENY, <allow_count> ALLOW)</white>"
+      title: "<white>Land Permissions (<deny_count> denied, <allow_count> allowed)</white>"
       back_name: "<white>Back</white>"
     row:
-      head: "<white><action>: <outcome> @ <layer><conflict></white>"
-      conflict_suffix: " !CONFLICT"
+      head: "<white><action>: <outcome> (<layer>)<conflict></white>"
+      conflict_suffix: " ⚠ conflicting settings"
       remedy_line: "<gray>  - <remedy></gray>"
-      default_lore: "<gray>Land default <action>: <state></gray>"
-      default_unset: "Unset (inherits global)"
-      readonly_line: "<gray>View only in this menu.</gray>"
+      default_lore: "<gray>Land default for “<action>”: <state></gray>"
+      toggle_line: "<yellow>Click to switch this default.</yellow>"
+      default_unset: "Not set (uses the level above)"
+      readonly_line: "<gray>This entry is view-only and cannot be changed here.</gray>"
     remedy:
       unavailable: |-
-        <red>Outcome unavailable: data missing or the resolver failed (fail-closed).</red>
-        <gray>Re-open the view after the snapshot reloads.</gray>
-        <gray>Mutations stay gated; no change was applied.</gray>
+        <red>Permissions cannot be shown right now: land data is not ready yet.</red>
+        <gray>Please reopen this menu in a moment.</gray>
+        <gray>No setting was changed.</gray>
       conflict: |-
-        <gray>Remove the DENY binding on <layer> through the existing binding flow (still gated).</gray>
-        <gray>Keep the DENY and remove the conflicting ALLOW on <layer> instead.</gray>
-        <gray>Move the intended ALLOW to a higher-precedence layer: SubLand binding ahead of Land binding, binding ahead of default.</gray>
+        <gray>Remove the deny entry in “<layer>” to allow this again.</gray>
+        <gray>Or keep the deny and remove the allow entry in “<layer>” that conflicts with it.</gray>
+        <gray>You can also move the allow entry somewhere stronger: sub-land grants beat land grants, grants beat defaults.</gray>
       plain: |-
-        <gray>No conflict: <layer> decides <outcome>.</gray>
-        <gray>To change it, update <layer> through the existing management flows (still gated).</gray>
-        <gray>Leave defaults INHERIT to inherit; missing values deny fail-closed.</gray>
+        <gray>No conflict: “<layer>” currently decides “<outcome>”.</gray>
+        <gray>To change it, adjust the “<layer>” setting.</gray>
+        <gray>Entries left unset use the level above; with nothing set anywhere the answer is deny.</gray>
     unavailable:
       title: "<white>Land Management (unavailable)</white>"
     confirm:
-      title: "<white>Confirm permission change: <action></white>"
+      title: "<white>Confirm change: <action></white>"
       confirm_name: "<green>Confirm</green>"
       cancel_name: "<red>Cancel</red>"
       back_name: "<white>Back</white>"
-      target_line: "<gray>Target default: <state></gray>"
-      failed_line: "<red>Change not applied (fail-closed). No state was modified.</red>"
+      target_line: "<gray>After confirming it becomes: <state></gray>"
+      failed_line: "<red>The change did not go through and nothing was modified. Please try again.</red>"
+ban:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unknown_target: "that player was not found; for an offline player use the exact name or UUID"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  not_allowed: "this cannot be done to the land owner or on a server land"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+binding:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  invalid: "the name or arguments are not valid"
+  reserved: "that name is reserved, please pick another"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  unknown: "the requested item was not found"
+bypass:
+  audit_failed: "writing the audit record failed, the action was cancelled"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+default:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown_action: "that permission does not exist or has no land default"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+delete:
+  commit_failed: "saving the change failed, nothing was applied"
+  compensation_pending: "the refund is still being processed"
+  economy_unavailable: "the economy service is temporarily unavailable, please try again later"
+  empty_land: "this land has no chunks"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  finalize_failed: "the final step failed, please ask an admin to check"
+  invalid_basis: "the purchase record of this land is inconsistent, please contact an admin"
+  invalid_payload: "the request data was incomplete, please redo the action"
+  ledger_failed: "recording the transaction failed, nothing was applied"
+  missing_basis: "the purchase record of this land is missing, please contact an admin"
+  owner_mismatch: "this land is not yours"
+  publish_failed: "the change was saved but is not live yet, please check again shortly"
+  reconciliation: "a previous transaction is still being reconciled, please try again later"
+  reservation_conflict: "another operation on this land is in progress, please try again shortly"
+  stale: "the data changed in the meantime, please redo the action"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unexpected_state: "the land is not in the expected state, please redo the action"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  validation_failed: "the check did not pass, please review and redo the action"
+  world_mismatch: "the selection and the land are in different worlds"
+expand:
+  disconnected: "the selection must touch the land"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  hole: "the land must not have a hole after expanding"
+  merge_unsupported: "merging two lands is not supported yet"
+  overlap: "the selection overlaps another land"
+  owner_mismatch: "this land is not yours"
+  stale: "the data changed in the meantime, please redo the action"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  world_mismatch: "the selection and the land are in different worlds"
+explain:
+  unavailable: "this feature is temporarily unavailable, please try again later"
+group:
+  duplicate: "that name is already in use"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  invalid: "the name or arguments are not valid"
+  restricted: "it is still used by bindings, remove them first or force the deletion"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown_target: "that player was not found"
+  unknown: "the requested item was not found"
+ledger:
+  audit_failed: "writing the audit record failed, the action was cancelled"
+  conflict: "that record was already handled by another operation"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  state: "that record is not in a state that allows this"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown: "that ledger record was not found"
+limit:
+  reached: "the limit has been reached"
+log:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+orphan:
+  conflict: "the world state changed, list again and retry"
+  expired: "the confirmation code expired, request a new one"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  mismatch: "the confirmation code does not match"
+  present: "that world still exists and is not orphaned"
+  refresh_failed: "refreshing the world catalog failed"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown: "that orphan world was not found"
+profile:
+  duplicate: "that name is already in use"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  invalid_permission: "that permission does not exist"
+  invalid_state: "the state must be ALLOW, DENY or INHERIT"
+  invalid: "the name or arguments are not valid"
+  reserved: "that name is reserved, please pick another"
+  restricted: "it is still used by bindings, remove them first or force the deletion"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown: "the requested item was not found"
+refund:
+  commit_failed: "saving the change failed, nothing was applied"
+  compensation_pending: "the refund is still being processed"
+  economy_unavailable: "the economy service is temporarily unavailable, please try again later"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  finalize_failed: "the final step failed, please ask an admin to check"
+  idempotency_conflict: "that refund was already processed"
+  invalid_basis: "the purchase record of this land is inconsistent, please contact an admin"
+  invalid_payload: "the request data was incomplete, please redo the action"
+  invalid_ratio: "the refund ratio is misconfigured, please contact an admin"
+  invalid_request: "the refund request is not valid"
+  ledger_failed: "recording the transaction failed, nothing was applied"
+  missing_basis: "the purchase record of this land is missing, please contact an admin"
+  publish_failed: "the change was saved but is not live yet, please check again shortly"
+  reconciliation: "a previous transaction is still being reconciled, please try again later"
+  reservation_conflict: "another operation on this land is in progress, please try again shortly"
+  server_land_no_refund: "server lands are not refunded"
+  stale: "the data changed in the meantime, please redo the action"
+  unexpected_state: "the land is not in the expected state, please redo the action"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  unknown_operation: "the matching transaction was not found"
+  unknown_provider: "no economy service is available"
+  unsupported: "the economy service does not support refunds"
+  validation_failed: "the check did not pass, please review and redo the action"
+rename:
+  duplicate: "you already own a land with that name"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  invalid: "that name does not meet the rules"
+  not_allowed: "you are not allowed to rename this land"
+  publish_failed: "the change was saved but is not live yet, please check again shortly"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+shrink:
+  commit_failed: "saving the change failed, nothing was applied"
+  compensation_pending: "the refund is still being processed"
+  delete_required: "that would remove the whole land, use /land delete instead"
+  economy_unavailable: "the economy service is temporarily unavailable, please try again later"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  finalize_failed: "the final step failed, please ask an admin to check"
+  foreign_chunk: "the selection includes chunks outside this land"
+  invalid_basis: "the purchase record of this land is inconsistent, please contact an admin"
+  invalid_payload: "the request data was incomplete, please redo the action"
+  ledger_failed: "recording the transaction failed, nothing was applied"
+  missing_basis: "the purchase record of this land is missing, please contact an admin"
+  owner_mismatch: "this land is not yours"
+  publish_failed: "the change was saved but is not live yet, please check again shortly"
+  reconciliation: "a previous transaction is still being reconciled, please try again later"
+  reservation_conflict: "another operation on this land is in progress, please try again shortly"
+  split: "the land must stay in one piece after shrinking"
+  stale: "the data changed in the meantime, please redo the action"
+  subland_overlap: "a subland sits inside the selection, adjust or remove it first"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unexpected_state: "the land is not in the expected state, please redo the action"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  validation_failed: "the check did not pass, please review and redo the action"
+  world_mismatch: "the selection and the land are in different worlds"
+subland:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  runtime_rebuild_pending: "the live map is still rebuilding"
+trust:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unknown_target: "that player was not found; for an offline player use the exact name or UUID"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+unban:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unknown_target: "that player was not found; for an offline player use the exact name or UUID"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  not_allowed: "this cannot be done to the land owner or on a server land"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+untrust:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unknown_target: "that player was not found; for an offline player use the exact name or UUID"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+permission:
+  action:
+    block_break: "Breaking blocks"
+    block_place: "Placing blocks"
+    container_open: "Opening containers"
+    workstation_use: "Using workstations"
+    door_use: "Using doors"
+    button_use: "Pressing buttons"
+    lever_use: "Flipping levers"
+    redstone_use: "Triggering redstone"
+    bucket_use: "Using buckets"
+    entry: "Entering the land"
+    vehicle_use: "Using vehicles"
+    entity_interact: "Interacting with entities"
+    entity_damage: "Attacking entities"
+    item_frame: "Changing item frames"
+    armor_stand: "Changing armor stands"
+    hanging_entity: "Changing paintings and hangings"
+    farmland_trample: "Trampling farmland"
+    player_damage_player: "Player versus player combat"
+    piston_move: "Piston movement"
+    fluid_flow: "Fluid flow"
+    hopper_transfer: "Hopper transfers"
+    fire_spread: "Fire spread"
+    fire_burn: "Fire burning blocks"
+    explosion_terrain: "Explosions damaging terrain"
+    explosion_entity: "Explosions damaging entities"
+    mob_griefing: "Mob griefing"
+    hostile_mob_spawn: "Hostile mob spawning"
+    passive_mob_spawn: "Passive mob spawning"
+    block_move_in: "Blocks pushed into the land"
+    block_move_out: "Blocks pushed out of the land"
+    fluid_enter: "Fluids flowing into the land"
+    fluid_exit: "Fluids flowing out of the land"
+    item_transfer_in: "Items moved into the land"
+    item_transfer_out: "Items moved out of the land"
+    dispenser_cross_boundary: "Dispensers firing across the border"
+    manage_member: "Managing members"
+    manage_permission: "Managing permissions"
+    manage_subland: "Managing sublands"
+    expand_land: "Expanding the land"
+    delete_land: "Deleting the land"
+  state:
+    allow: "Allowed"
+    deny: "Denied"
+    inherit: "Inherited"
+  layer:
+    bypass: "Admin bypass"
+    steward: "Server-land steward"
+    guarantee: "Owner guarantee"
+    subland_binding: "Sub-land grants"
+    subland_default: "Sub-land default"
+    land_binding: "Land grants"
+    land_default: "Land default"
+    world_default: "World default"
+    global_default: "Server default"
+    subland_rule: "Sub-land rule"
+    land_rule: "Land rule"
+    implicit_deny: "Not set (denied by default)"
+  source:
+    subject_permission: "Player permission"
+    land_rule: "Land rule"
+    combined: "Player permission and land rule"
+  flag:
+    "true": "yes"
+    "false": "no"
+bedrock:
+  manage:
+    root:
+      title: "Land Management"
+      content: "Choose what to manage. Some steps continue in chat."
+    menu:
+      claim: "Claim land"
+      expand: "Expand land"
+      shrink: "Shrink land"
+      trust_untrust: "Members"
+      ban_unban: "Banned players"
+      basic_permission: "Permissions"
+      subland: "Sublands"
+      group: "Groups"
+      profile: "Permission profiles"
+      land_rule: "Land rules"
+      inspect: "Land info"
+      explain: "Explain a permission"
+      delete: "Delete land"
+    trust:
+      title: "Members"
+      content: "Choose an action. For offline players use the chat command."
+      add: "Trust a player"
+      remove: "Untrust a player"
+    ban:
+      title: "Banned players"
+      content: "Choose an action. For offline players use the chat command."
+      add: "Ban a player"
+      remove: "Unban a player"
+    choice:
+      title: "<value>: choose a player"
+      content: "Choose the player to apply “<value>” to. For offline players use the chat command."
+      empty_title: "<value>: nobody online"
+      empty_content: "Nobody else is online right now. For offline players use the chat command."
+    delete:
+      title: "Delete land"
+      content: "Delete the land “<land_name>”? This cannot be undone. Confirming shows the delete prompt; follow the instruction in chat to finish."
+      confirm: "Delete"
+      cancel: "Keep"

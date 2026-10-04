@@ -44,6 +44,18 @@ public final class RejectionNotifier {
     public interface Renderer {
         Component render(Player player, ProtectionActionType action,
                          PermissionDecision decision);
+
+        /**
+         * Site-aware variant: renderers that can name the land override this.
+         * The default ignores the site, so a plain three-argument renderer
+         * keeps working unchanged.
+         *
+         * @param site where the deny happened; {@code null} when unknown
+         */
+        default Component render(Player player, ProtectionActionType action,
+                                 PermissionDecision decision, RejectionSite site) {
+            return render(player, action, decision);
+        }
     }
 
     private final Sender sender;
@@ -88,6 +100,18 @@ public final class RejectionNotifier {
      */
     public boolean notifyDenied(Player player, ProtectionActionType action,
                                  PermissionDecision decision) {
+        return notifyDenied(player, action, decision, null);
+    }
+
+    /**
+     * Notifies the denied player, naming the land at {@code site} when the
+     * renderer can resolve it. Guards and failure handling match
+     * {@link #notifyDenied(Player, ProtectionActionType, PermissionDecision)}.
+     *
+     * @param site where the deny happened; {@code null} when unknown
+     */
+    public boolean notifyDenied(Player player, ProtectionActionType action,
+                                 PermissionDecision decision, RejectionSite site) {
         if (decision == null || decision.outcome() != PermissionState.DENY) {
             return false;
         }
@@ -110,7 +134,7 @@ public final class RejectionNotifier {
         }
         Component message;
         try {
-            message = renderer.render(player, action, decision);
+            message = renderer.render(player, action, decision, site);
         } catch (RuntimeException ex) {
             return false;
         }

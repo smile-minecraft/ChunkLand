@@ -48,6 +48,21 @@ import org.bukkit.event.player.PlayerTeleportEvent;
  * routine ejects stay quiet. A transport that refuses the landing is recorded
  * the same way instead of reading as a successful eject.
  *
+ * <p>Retreat: a walked-in deny does not put the player back on the border
+ * itself. When a {@link LandingCheck} is wired, the landing is moved
+ * {@link #RETREAT_DISTANCE} blocks away from the side that was crossed, so
+ * a player who keeps walking gets a moment of free movement instead of
+ * being stopped again on the very next tick. Shorter distances are tried
+ * when the full retreat has no standing room or is itself denied, and the
+ * plain pre-entry position stays the last resort.
+ *
+ * <p>Escape: a player who is banned while standing inside is not sent to
+ * the world spawn when a way out is close. With a {@link LandingCheck}
+ * wired, the nearest side of the banning land is found by walking the four
+ * axis directions chunk by chunk (at most {@link #ESCAPE_SEARCH_CHUNKS}),
+ * and the player lands {@link #RETREAT_DISTANCE} blocks outside it. The
+ * world spawn stays the fallback when no side is close, loaded, and safe.
+ *
  * <p>A push-out teleport always departs from the denying area, so without
  * help the banned-inside stop would cancel the very teleport sent to rescue
  * the player and wedge them inside. Every initiated push-out therefore
@@ -81,6 +96,23 @@ public final class EntryProtectionAdapter {
 
     /** Default quiet window between two push-outs for one player. */
     public static final Duration DEFAULT_PUSH_OUT_COOLDOWN = Duration.ofSeconds(3);
+
+    /**
+     * Quiet window for the retreating push-out. A retreat buys the player
+     * roughly this long before they can reach the border again, so every
+     * contact ends in one clean step back instead of a run of cancelled
+     * moves.
+     */
+    public static final Duration RETREAT_PUSH_OUT_COOLDOWN = Duration.ofMillis(500);
+
+    /** Blocks between the crossed border and the retreat landing. */
+    public static final int RETREAT_DISTANCE = 3;
+
+    /** Chunks walked in each direction when looking for a way out of a ban. */
+    public static final int ESCAPE_SEARCH_CHUNKS = 8;
+
+    /** Shortest window between two warning records for one player. */
+    private static final Duration WARNING_WINDOW = DEFAULT_PUSH_OUT_COOLDOWN;
 
     /**
      * Read seam for the banned-inside check. Implemented by ban storage later;
@@ -141,6 +173,43 @@ public final class EntryProtectionAdapter {
     }
 
     /**
+     * Standing-room probe for a retreat landing. Production reads the blocks
+     * around the candidate only when its chunk is loaded and owned by the
+     * calling thread, and never loads anything.
+     */
+    @FunctionalInterface
+    public interface LandingCheck {
+        /**
+         * @return the candidate, adjusted to a height the player can stand
+         *         at, or {@code null} when the spot is not safe or cannot be
+         *         verified
+         */
+        Location settle(Player player, Location candidate);
+
+        /**
+         * Same answer for a landing that may sit far from the player, where
+         * the ground can be at a very different height. Defaults to
+         * {@link #settle}; production searches a taller column.
+         */
+        default Location settleFar(Player player, Location candidate) {
+            return settle(player, candidate);
+        }
+    }
+
+    /**
+     * Live comfort tuning for the push-out. Production reads the current
+     * config snapshot on every call, so a reload applies to the next deny
+     * without rebuilding the adapter. Memory reads only.
+     */
+    public interface Tuning {
+        /** Quiet window between two push-outs for one player. */
+        Duration pushOutCooldown();
+
+        /** Blocks between the crossed border and the landing. */
+        int retreatDistance();
+    }
+
+    /**
      * ENTRY-validity probe for push-out targets. Production answers from the
      * engine destination decision ({@code ENTRY DENY} means not allowed);
      * anything unverifiable answers {@code false} (fail-closed, cancel-only).
@@ -155,8 +224,11 @@ public final class EntryProtectionAdapter {
     private final BanLookup bans;
     private final ChunkLoadedCheck chunks;
     private final EntryAllowedCheck entryCheck;
+    private final LandingCheck landing;
+    private final Tuning tuning;
     private final PushOutSink sink;
     private final ConcurrentMap<UUID, Instant> lastPushOut = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Instant> lastWarned = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, Location> pushOutPasses = new ConcurrentHashMap<>();
 
     private static final Logger LOG = Logger.getLogger(EntryProtectionAdapter.class.getName());
@@ -191,6 +263,42 @@ public final class EntryProtectionAdapter {
     public EntryProtectionAdapter(SelectionClock clock, Duration pushOutCooldown,
                                   BanLookup bans, ChunkLoadedCheck chunks,
                                   EntryAllowedCheck entryCheck, PushOutSink sink) {
+        this(clock, pushOutCooldown, bans, chunks, entryCheck, null, sink);
+    }
+
+    /**
+     * @param clock            time source; tests advance a fake clock instead
+     *                         of sleeping the event thread
+     * @param pushOutCooldown  quiet window per player ({@code null} selects
+     *                         {@link #DEFAULT_PUSH_OUT_COOLDOWN})
+     * @param bans             ban read seam; {@code null} means no ban source
+     *                         is wired yet and the inside check skips
+     * @param chunks           loaded-state probe, never a loader
+     * @param entryCheck       ENTRY-validity probe per push-out candidate;
+     *                         {@code null} allows nothing (fail-closed)
+     * @param landing          standing-room probe for the retreat landing;
+     *                         {@code null} disables the retreat, so a deny
+     *                         lands on the pre-entry position
+     * @param sink             push-out transport
+     */
+    public EntryProtectionAdapter(SelectionClock clock, Duration pushOutCooldown,
+                                  BanLookup bans, ChunkLoadedCheck chunks,
+                                  EntryAllowedCheck entryCheck, LandingCheck landing,
+                                  PushOutSink sink) {
+        this(clock, pushOutCooldown, bans, chunks, entryCheck, landing, null, sink);
+    }
+
+    /**
+     * @param tuning live cooldown and retreat distance; {@code null}, a
+     *               failing read or an out-of-range value keeps the fixed
+     *               {@code pushOutCooldown} and {@link #RETREAT_DISTANCE}.
+     *               Every other parameter matches the overload above.
+     */
+    public EntryProtectionAdapter(SelectionClock clock, Duration pushOutCooldown,
+                                  BanLookup bans, ChunkLoadedCheck chunks,
+                                  EntryAllowedCheck entryCheck, LandingCheck landing,
+                                  Tuning tuning, PushOutSink sink) {
+        this.tuning = tuning;
         this.clock = Objects.requireNonNull(clock, "clock");
         Duration interval = pushOutCooldown == null ? DEFAULT_PUSH_OUT_COOLDOWN : pushOutCooldown;
         if (interval.isNegative()) {
@@ -200,6 +308,7 @@ public final class EntryProtectionAdapter {
         this.bans = bans;
         this.chunks = Objects.requireNonNull(chunks, "chunks");
         this.entryCheck = entryCheck;
+        this.landing = landing;
         this.sink = Objects.requireNonNull(sink, "sink");
     }
 
@@ -256,9 +365,10 @@ public final class EntryProtectionAdapter {
     public boolean tryAcquirePushOut(UUID playerId) {
         Objects.requireNonNull(playerId, "playerId");
         Instant now = Objects.requireNonNull(clock.now(), "clock must not return null");
+        Duration window = currentCooldown();
         while (true) {
             Instant previous = lastPushOut.get(playerId);
-            if (previous != null && Duration.between(previous, now).compareTo(pushOutCooldown) < 0) {
+            if (previous != null && Duration.between(previous, now).compareTo(window) < 0) {
                 return false;
             }
             if (previous == null) {
@@ -333,6 +443,21 @@ public final class EntryProtectionAdapter {
      *         {@code false} when the player stays put
      */
     public boolean pushOut(Player player, Location from) {
+        return pushOut(player, from, null);
+    }
+
+    /**
+     * Deny path for a walked-in crossing: same contract as
+     * {@link #pushOut(Player, Location)}, but the landing retreats
+     * {@link #RETREAT_DISTANCE} blocks from the border between {@code from}
+     * and {@code deniedTo} when a {@link LandingCheck} is wired and a safe,
+     * ENTRY-allowed, ban-free spot exists there. Without one the landing
+     * falls back to the pre-entry position and then the world spawn.
+     *
+     * @param deniedTo the position the player was refused at; {@code null}
+     *                 skips the retreat
+     */
+    public boolean pushOut(Player player, Location from, Location deniedTo) {
         if (player == null) {
             return false;
         }
@@ -352,11 +477,25 @@ public final class EntryProtectionAdapter {
         } catch (RuntimeException ex) {
             return false;
         }
-        Optional<Location> target = pushOutTarget(player, from);
+        Optional<Location> target = retreatTarget(player, playerId, from, deniedTo);
         if (target.isEmpty()) {
-            LOG.warning("ChunkLand push-out found no push-out target for a denied move: "
-                    + "no candidate chunk is loaded, ENTRY-allowed, and ban-free, "
-                    + "so the deny stands as cancel-only");
+            target = pushOutTarget(player, from);
+        }
+        return deliver(player, playerId, target);
+    }
+
+    /**
+     * Hands a resolved landing to the transport, registering its rescue pass
+     * first. An empty landing or a refusing transport leaves the cancel in
+     * place and is recorded once per warning window.
+     */
+    private boolean deliver(Player player, UUID playerId, Optional<Location> target) {
+        if (target.isEmpty()) {
+            if (mayWarn(playerId)) {
+                LOG.warning("ChunkLand push-out found no push-out target for a denied move: "
+                        + "no candidate chunk is loaded, ENTRY-allowed, and ban-free, "
+                        + "so the deny stands as cancel-only");
+            }
             return false;
         }
         Location landing = target.get();
@@ -372,10 +511,244 @@ public final class EntryProtectionAdapter {
             // pass; leaving it would waive the origin ban stop for an unrelated
             // teleport later.
             discardPass(playerId, landing);
-            LOG.warning("ChunkLand push-out transport refused the landing for a denied move: "
-                    + "the platform rejected the ejection, so the deny stands as cancel-only");
+            if (mayWarn(playerId)) {
+                LOG.warning("ChunkLand push-out transport refused the landing for a denied "
+                        + "move: the platform rejected the ejection, so the deny stands as "
+                        + "cancel-only");
+            }
         }
         return accepted;
+    }
+
+    /**
+     * Deny path for a player banned where they stand: same contract as
+     * {@link #pushOut(Player, Location)}, but the landing is the nearest spot
+     * just outside the banning land when one can be verified, and the world
+     * spawn only otherwise.
+     *
+     * @param inside the banned position the player currently occupies
+     */
+    public boolean pushOutOfBan(Player player, Location inside) {
+        if (player == null) {
+            return false;
+        }
+        UUID playerId;
+        try {
+            playerId = player.getUniqueId();
+        } catch (RuntimeException ex) {
+            return false;
+        }
+        if (playerId == null) {
+            return false;
+        }
+        try {
+            if (!tryAcquirePushOut(playerId)) {
+                return false;
+            }
+        } catch (RuntimeException ex) {
+            return false;
+        }
+        Optional<Location> target = escapeTarget(player, playerId, inside);
+        if (target.isEmpty()) {
+            target = pushOutTarget(player, null);
+        }
+        return deliver(player, playerId, target);
+    }
+
+    /** One way out of a banning land: the axis direction and how far it is. */
+    private record Exit(int stepX, int stepZ, double border, double distance) {
+    }
+
+    /**
+     * Nearest verified landing just outside the land that bans the player.
+     * Each axis direction is walked chunk by chunk until the ban ends; the
+     * closest ends are tried first, each at the full retreat distance and
+     * then shorter. Empty when no probe is wired, nothing ends within reach,
+     * or no landing passes the standing-room, loaded, ENTRY and ban checks.
+     */
+    private Optional<Location> escapeTarget(Player player, UUID playerId, Location inside) {
+        LandingCheck check = this.landing;
+        if (check == null || inside == null) {
+            return Optional.empty();
+        }
+        try {
+            World world = inside.getWorld();
+            if (world == null) {
+                return Optional.empty();
+            }
+            int chunkX = inside.getBlockX() >> 4;
+            int chunkZ = inside.getBlockZ() >> 4;
+            java.util.List<Exit> exits = new java.util.ArrayList<>(4);
+            int[][] steps = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            for (int[] step : steps) {
+                for (int reach = 1; reach <= ESCAPE_SEARCH_CHUNKS; reach++) {
+                    int cx = chunkX + step[0] * reach;
+                    int cz = chunkZ + step[1] * reach;
+                    Location probe = new Location(world, (cx << 4) + 8, inside.getY(),
+                            (cz << 4) + 8);
+                    if (isBannedInside(playerId, probe)) {
+                        continue;
+                    }
+                    double border;
+                    double distance;
+                    if (step[0] != 0) {
+                        border = step[0] > 0 ? cx << 4 : (cx + 1) << 4;
+                        distance = Math.abs(border - inside.getX());
+                    } else {
+                        border = step[1] > 0 ? cz << 4 : (cz + 1) << 4;
+                        distance = Math.abs(border - inside.getZ());
+                    }
+                    exits.add(new Exit(step[0], step[1], border, distance));
+                    break;
+                }
+            }
+            exits.sort(java.util.Comparator.comparingDouble(Exit::distance));
+            for (Exit exit : exits) {
+                for (int distance = currentRetreatDistance(); distance >= 1; distance--) {
+                    Location candidate = inside.clone();
+                    if (exit.stepX() != 0) {
+                        candidate.setX(exit.border() + exit.stepX() * (distance + 0.5D));
+                    } else {
+                        candidate.setZ(exit.border() + exit.stepZ() * (distance + 0.5D));
+                    }
+                    Location settled = check.settleFar(player, candidate);
+                    if (settled != null && settled.getWorld() != null
+                            && usableTarget(playerId, settled)) {
+                        return Optional.of(settled);
+                    }
+                }
+            }
+            return Optional.empty();
+        } catch (RuntimeException ex) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Retreat landing for a walked-in deny: the pre-entry position moved away
+     * from the crossed side until it sits {@link #RETREAT_DISTANCE} blocks
+     * clear of the border, shortened block by block when that spot is
+     * unsafe, denied, banned, or unverifiable.
+     *
+     * <p>The crossed side comes from coordinates alone. A chunk change names
+     * the chunk border; inside one chunk (a subland face) the block change
+     * names the block face. A purely vertical crossing has no horizontal
+     * side to retreat from and answers empty.
+     */
+    private Optional<Location> retreatTarget(Player player, UUID playerId, Location from,
+                                             Location deniedTo) {
+        LandingCheck check = this.landing;
+        if (check == null || from == null || deniedTo == null) {
+            return Optional.empty();
+        }
+        try {
+            World world = from.getWorld();
+            World deniedWorld = deniedTo.getWorld();
+            if (world == null || deniedWorld == null
+                    || !world.getUID().equals(deniedWorld.getUID())) {
+                return Optional.empty();
+            }
+            int fromX = from.getBlockX();
+            int fromZ = from.getBlockZ();
+            int toX = deniedTo.getBlockX();
+            int toZ = deniedTo.getBlockZ();
+            int sideX = Integer.signum((fromX >> 4) - (toX >> 4));
+            int sideZ = Integer.signum((fromZ >> 4) - (toZ >> 4));
+            double borderX;
+            double borderZ;
+            if (sideX != 0 || sideZ != 0) {
+                borderX = sideX > 0 ? ((toX >> 4) + 1) << 4 : (toX >> 4) << 4;
+                borderZ = sideZ > 0 ? ((toZ >> 4) + 1) << 4 : (toZ >> 4) << 4;
+            } else {
+                sideX = Integer.signum(fromX - toX);
+                sideZ = Integer.signum(fromZ - toZ);
+                if (sideX == 0 && sideZ == 0) {
+                    return Optional.empty();
+                }
+                borderX = sideX > 0 ? toX + 1 : toX;
+                borderZ = sideZ > 0 ? toZ + 1 : toZ;
+            }
+            for (int distance = currentRetreatDistance(); distance >= 1; distance--) {
+                Location candidate = from.clone();
+                if (sideX != 0) {
+                    candidate.setX(retreat(from.getX(), borderX, sideX, distance));
+                }
+                if (sideZ != 0) {
+                    candidate.setZ(retreat(from.getZ(), borderZ, sideZ, distance));
+                }
+                Location settled = check.settle(player, candidate);
+                if (settled != null && settled.getWorld() != null
+                        && usableTarget(playerId, settled)) {
+                    return Optional.of(settled);
+                }
+            }
+            return Optional.empty();
+        } catch (RuntimeException ex) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Centre of the block that leaves {@code distance} whole blocks between
+     * it and the border on the player's side, never closer to the border
+     * than the player already stood.
+     */
+    private static double retreat(double current, double border, int side, int distance) {
+        return side > 0
+                ? Math.max(current, border + distance + 0.5D)
+                : Math.min(current, border - distance - 0.5D);
+    }
+
+    /** Live push-out window, or the fixed one when no usable tuning answers. */
+    private Duration currentCooldown() {
+        Tuning live = this.tuning;
+        if (live != null) {
+            try {
+                Duration window = live.pushOutCooldown();
+                if (window != null && !window.isNegative()) {
+                    return window;
+                }
+            } catch (RuntimeException unreadable) {
+                // Fall through to the fixed window.
+            }
+        }
+        return pushOutCooldown;
+    }
+
+    /** Live retreat distance, or the fixed one when no usable tuning answers. */
+    private int currentRetreatDistance() {
+        Tuning live = this.tuning;
+        if (live != null) {
+            try {
+                int distance = live.retreatDistance();
+                if (distance >= 1 && distance <= 16) {
+                    return distance;
+                }
+            } catch (RuntimeException unreadable) {
+                // Fall through to the fixed distance.
+            }
+        }
+        return RETREAT_DISTANCE;
+    }
+
+    /**
+     * Spends the warning slot for this player, so a short push-out window
+     * never turns a stuck player into a log line per attempt.
+     */
+    private boolean mayWarn(UUID playerId) {
+        try {
+            Instant now = Objects.requireNonNull(clock.now(), "clock must not return null");
+            Duration cooldown = currentCooldown();
+            Duration window = cooldown.compareTo(WARNING_WINDOW) > 0 ? cooldown : WARNING_WINDOW;
+            Instant previous = lastWarned.get(playerId);
+            if (previous != null && Duration.between(previous, now).compareTo(window) < 0) {
+                return false;
+            }
+            lastWarned.put(playerId, now);
+            return true;
+        } catch (RuntimeException ex) {
+            return true;
+        }
     }
 
     /** Drops the pass registered for {@code landing} unless a newer one replaced it. */
@@ -432,6 +805,7 @@ public final class EntryProtectionAdapter {
         }
         try {
             pushOutPasses.remove(playerId);
+            lastWarned.remove(playerId);
         } catch (RuntimeException ex) {
             // Memory-only map: nothing to recover, never fail the caller.
         }

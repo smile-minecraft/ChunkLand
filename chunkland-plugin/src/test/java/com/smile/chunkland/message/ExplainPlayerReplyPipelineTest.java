@@ -67,7 +67,7 @@ class ExplainPlayerReplyPipelineTest {
     private static final UUID WORLD = UUID.randomUUID();
     private static final UUID OWNER = UUID.randomUUID();
     private static final String EXPLAIN_PERM = "chunkland.command.land.explain";
-    private static final String DENIED_TEXT = "Explain unavailable.";
+    private static final String DENIED_TEXT = "Cannot explain that permission";
 
     /** Strong references for proxy worlds held weakly by Paper Location. */
     private static final List<World> PINNED_WORLDS =
@@ -337,8 +337,10 @@ class ExplainPlayerReplyPipelineTest {
         assertEquals(1, capture.messages.size(),
                 "authorized explain must reach the player through the real pipeline");
         String rendered = plain(capture.messages.get(0));
-        assertTrue(rendered.contains("BLOCK_PLACE"),
+        assertTrue(rendered.contains("Placing blocks"),
                 "player result must name the explained action: " + rendered);
+        assertFalse(rendered.contains("BLOCK_PLACE"),
+                "player result must show the display name, not the constant: " + rendered);
         assertTrue(rendered.contains("Covering"),
                 "player result must render the covering summary: " + rendered);
         assertFalse(rendered.contains("command.land.explain"),

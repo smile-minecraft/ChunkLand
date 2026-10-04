@@ -142,6 +142,12 @@ public final class GuiContentRenderer {
             case "cancel" -> Material.RED_WOOL;
             case "back" -> Material.ARROW;
             case "unavailable" -> Material.BARRIER;
+            case "members", "member" -> Material.PLAYER_HEAD;
+            case "bans" -> Material.IRON_BARS;
+            case "banned" -> Material.SKELETON_SKULL;
+            case "add" -> Material.EMERALD;
+            case "previous", "next" -> Material.SPECTRAL_ARROW;
+            case "empty" -> Material.PAPER;
             default -> Material.COMPASS;
         };
     }
