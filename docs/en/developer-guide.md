@@ -87,7 +87,7 @@ below before you do real work in a listener.
 
 ## Reading state
 
-`ChunkLandApi` has six query methods:
+`ChunkLandApi` has nine query methods:
 
 | Method | Returns today |
 | --- | --- |
@@ -95,19 +95,35 @@ below before you do real work in a listener.
 | `getSubLandSnapshot(SubLandId)` | Live. Empty if no such subland |
 | `getOwner(LandId)` | Live. Derived from the land snapshot |
 | `getProtectionDepth(LandId)` | Live. `PER_CHUNK_DEPTH` lands report their stored minimum depth; `FULL_HEIGHT` lands report the world minimum |
-| `can(UUID, LandId, ProtectionActionType)` | **Always `false`.** Not backed by production data |
+| `can(UUID, LandId, ProtectionActionType)` | Live. Land-level decision through the same permission context the protection engine uses; no subland, because there is no block position. `false` while `isReady()` is `false` or the land is unknown |
 | `getRule(LandId, LandRuleType)` | **Always empty.** Not backed by production data |
+| `isReady()` | Live. `true` once the land index has finished loading at startup, while the plugin stays enabled |
+| `getLandAt(UUID worldId, int chunkX, int chunkZ)` | Live. Land owning a chunk, from the in-memory index |
+| `decideAtBlock(UUID actor, UUID worldId, int x, int y, int z, ProtectionActionType)` | Live. The full protection decision ChunkLand's own listeners enforce at that block |
 
-The last two are the trap. `ChunkLandPlugin.getReadApi()` builds the read API
-with a permission-context provider that returns `null` and a rule lookup that
-returns `Optional.empty()`. `can()` maps a `null` context to `false` by design,
-so it denies everything; `getRule()` has nothing to report. Both are honest
-fail-closed answers, not bugs you can work around — if you need a permission
-verdict today, ask a player with `/land explain <action>` and parse nothing, or
-wait for the wiring to land. Do not build a feature that depends on either
-method returning something useful.
+Two traps remain. First, `getRule()`: `ChunkLandPlugin.getReadApi()` builds the
+read API with a rule lookup that returns `Optional.empty()`, so it has nothing
+to report. That is an honest fail-closed answer, not a bug you can work around;
+do not build a feature that depends on it.
 
-The four live methods share one guarantee: each call reads exactly one volatile
+Second, readiness. Until `isReady()` is `true`, an empty `getLandAt` answer
+means "unknown", not wilderness, and `decideAtBlock` answers `DENY`. In
+wilderness (once ready) `decideAtBlock` answers `ALLOW`, because vanilla
+applies. A protection integration looks like this:
+
+```java
+if (!api.isReady()) return; // index still loading: unknown, not wilderness
+boolean allowed = api.decideAtBlock(
+        player.getUniqueId(), world.getUID(), x, y, z,
+        ProtectionActionType.BLOCK_PLACE).outcome() == PermissionState.ALLOW;
+```
+
+`decideAtBlock` never throws for a lookup failure — it answers `DENY` — but a
+`null` actor, world id or action throws `NullPointerException`. See the
+[API reference](reference/api.md#making-a-protection-decision-at-a-block) for
+the full table.
+
+Every method shares one guarantee: each call reads exactly one volatile
 snapshot, does no I/O, never loads a chunk, and returns immutable values. There
 is no way to observe a half-applied mutation through them.
 

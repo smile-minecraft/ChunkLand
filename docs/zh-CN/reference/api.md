@@ -75,7 +75,7 @@ if (plugin == null || !plugin.isEnabled()) return;
 
 ## 读取 API
 
-`ChunkLandApi` 一共六个方法。
+`ChunkLandApi` 一共九个方法。
 
 ```java
 Optional<LandSnapshot> getLandSnapshot(LandId landId);
@@ -84,6 +84,11 @@ Optional<OwnerRef> getOwner(LandId landId);
 boolean can(UUID actor, LandId landId, ProtectionActionType action);
 Optional<PermissionState> getRule(LandId landId, LandRuleType rule);
 Optional<Integer> getProtectionDepth(LandId landId);
+boolean isReady();
+Optional<LandId> getLandAt(UUID worldId, int chunkX, int chunkZ);
+PermissionDecision decideAtBlock(UUID actor, UUID worldId,
+                                 int blockX, int blockY, int blockZ,
+                                 ProtectionActionType action);
 ```
 
 | 方法 | 是否接上正式数据 | 说明 |
@@ -92,20 +97,51 @@ Optional<Integer> getProtectionDepth(LandId landId);
 | `getSubLandSnapshot(SubLandId)` | 是 | 在快照的子领地索引里查找 |
 | `getOwner(LandId)` | 是 | 由领地快照推出 |
 | `getProtectionDepth(LandId)` | 是 | 回有效保护的最下方块 Y。读取不会改写已储存的深度 |
-| `can(UUID, LandId, ProtectionActionType)` | **否** | 固定回 `false` |
+| `can(UUID, LandId, ProtectionActionType)` | 是 | 经由保护引擎所用的同一个权限脉络做领地层级判定；没有方块坐标，所以不套用子领地。`isReady()` 为 `false` 或领地不存在时回 `false` |
 | `getRule(LandId, LandRuleType)` | **否** | 固定回 `Optional.empty()` |
+| `isReady()` | 是 | 只有本次启用仍有效、且启动时的领地索引已加载完成才回 `true`。在那之前，`getLandAt` 回空代表「未知」，不代表野外 |
+| `getLandAt(UUID, int, int)` | 是 | 从内存索引查出拥有该区块的领地；只有 `isReady()` 为 `true` 时，回空才代表野外 |
+| `decideAtBlock(UUID, UUID, int, int, int, ProtectionActionType)` | 是 | ChunkLand 自己的监听器在该方块上执行的完整保护裁决，见下节 |
+
+`isReady`、`getLandAt`、`decideAtBlock` 是 default 方法。自己实作 `ChunkLandApi`（例如测试替身）时，默认实作分别回 `false`、空值与 `DENY`。
 
 `LandId` 与 `SubLandId` 都是包着 `UUID` 的 record，直接 `new LandId(uuid)` 即可。`OwnerRef` 是 sealed 介面，`OwnerRef.player(uuid)` 与 `OwnerRef.server()` 是它的两个工厂，稳定键分别形如 `PLAYER:<uuid>` 与 `SERVER`。
 
 要拿领地编号，来源是 `/land inspect` 的输出。
 
-### 不要把 `can()` 当成保护裁决用
+### 在方块上做保护裁决
 
-这是目前最重要的一件事。`getReadApi()` 建立读取 API 时，注入的权限脉络来源固定回 `null`，于是 `can()` 每次都走 fail-closed 分支回 `false`；`getRule()` 的规则查找来源同理，固定回空的 `Optional`。
+`decideAtBlock` 回的 `PermissionDecision`，就是 ChunkLand 自己的监听器据以放行或拦下的那一份：管理员略过、拥有者保障、覆盖该方块的子领地、成员与群组绑定、默认值、领地规则全都算进去。裁决用的是读取 API 当下看到的同一份快照。
 
-这两个方法**不是**领地保护引擎的查询介面。保护引擎在内部走自己的判定路径，两条路径不共用。拿 `can()` 去做 UI 显示、指令检查或任何「能不能做」的裁决，结果会是恒定的「不行」，而且看不出原因。
+| 情况 | 结果 |
+| --- | --- |
+| 方块在野外（索引已就绪） | `ALLOW`，照原版运作 |
+| 索引尚未确认完整（`isReady()` 为 `false`） | `DENY` |
+| 插件已停用（缓存的持有者） | `DENY` |
+| 内部查找失败 | `DENY`，不会抛异常 |
+| `actor`、`worldId` 或 `action` 为 `null` | 抛 `NullPointerException` |
 
-**现在需要权限裁决的话，请让站在领地里的玩家跑 `/land explain <action>`**，那一条读的是真正的执行路径。
+`DecisionSource` 为 `LAND_RULE` 的动作，actor 只影响管理员略过。
+
+```java
+ChunkLandApi api = plugin.getReadApi();
+if (!api.isReady()) {
+    return; // 领地索引还在加载：当成未知，不要当成野外
+}
+boolean allowed = api.decideAtBlock(
+        player.getUniqueId(), world.getUID(), x, y, z,
+        ProtectionActionType.BLOCK_PLACE).outcome() == PermissionState.ALLOW;
+```
+
+索引未就绪时 `decideAtBlock` 本来就回 `DENY`；先查 `isReady()` 是让你自己决定这段时间怎么处理，比如稍后再试，而不是直接提示「被拒绝」。
+
+手上只有领地、没有方块坐标时用 `can`，它给的是领地层级的答案，不看子领地；知道坐标就一律用 `decideAtBlock`。
+
+### `getRule()` 为什么固定回空
+
+`getReadApi()` 建立读取 API 时，注入的规则查找来源固定回 `Optional.empty()`，所以 `getRule()` 没有东西可报。领地规则目前没有可调整的介面（见[已知限制](../limitations.md)），这是 fail-closed 的预期结果，不是能从外部绕过的缺陷。对 `LAND_RULE` 类动作，规则仍会在 `decideAtBlock` 的裁决里生效。
+
+需要排查时，请让站在领地里的玩家跑 `/land explain <action>`，那一条读的是真正的执行路径。
 
 `ChunkLandApi` 介面本身也注明了 `can`、`getRule`、`getProtectionDepth` 的签章仍是暂定的，最终形状会跟着权限解析器与读取 API 的实作一起定案。
 

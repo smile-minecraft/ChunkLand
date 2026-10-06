@@ -136,7 +136,7 @@ ChunkLandApi api = plugin.getReadApi();          // 永不为 null；插件未�
 ChunkLandEventBus bus = plugin.publicEventBus(); // 只有首次启用前才会是 null；之后每次启用都要重新获取
 ```
 
-目前 `ChunkLandApi` 提供六个查询方法；其中 `can()` 与 `getRule()` 尚在对接中（暂时返回 stub），请先不要用于关键保护判定。完整公开接口约定请参考[API 参考](docs/zh-CN/reference/api.md)。
+目前 `ChunkLandApi` 提供九个查询方法。做保护判定时，先确认 `isReady()`，再调用 `decideAtBlock(...)`，它返回的就是 ChunkLand 自己的监听器所执行的裁决。其中只有 `getRule()` 尚未对接正式数据（固定返回空值），请先不要依赖它。完整公开接口约定请参考[API 参考](docs/zh-CN/reference/api.md)。
 
 ## 开源授权
 

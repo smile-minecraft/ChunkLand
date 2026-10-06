@@ -137,9 +137,8 @@ Vault、LuckPerms 與 CoreProtect 均為軟相依整合。這三項服務的探�
 
 | 元件位置 | 當前狀態說明 |
 | --- | --- |
-| `chunkland-api` 的 `ChunkLandApi.can()` | 權限脈絡來源恆定回傳 `null`，目前固定回傳 `false`（fail-closed stub） |
 | `ChunkLandApi.getRule()` | 規則查詢來源恆定回傳空 `Optional` |
 | `config.yml` 的 `rule-defaults` 區段 | 僅保留註解範例，尚未連結內部規則引擎 |
 | `ChunkLandPlugin` 設定重載機制 | 保留內部重載 API，尚未對接玩家或管理指令 |
 
-前兩項 API 目前為 stub，切勿用於正式的保護裁決或使用者介面顯示，詳細架構考量請見[API 參考](reference/api.md#不要把-can-當成保護裁決用)。
+`getRule()` 目前未接線，切勿用於正式的保護裁決或使用者介面顯示，原因請見[API 參考](reference/api.md#getrule-為什麼固定回空)。要做保護裁決請改用 `decideAtBlock`，見[在方塊上做保護裁決](reference/api.md#在方塊上做保護裁決)。

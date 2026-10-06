@@ -84,7 +84,7 @@ ChunkLandApi api = plugin.getReadApi();          // 不会是 null；启用前�
 ChunkLandEventBus bus = plugin.publicEventBus(); // 只有首次启用前才会是 null；之后每次启用都要重新获取
 ```
 
-读 API 有六个查询方法，事件总线有 `register`、`unregister`、`publish` 三个方法。两者的生命周期、方法语义、当前接上线到什么程度，都写在[API 参考](reference/api.md)里——尤其是 `can()` 与 `getRule()` 目前不接正式数据，不要拿它们当生产裁决依据。
+读 API 有九个查询方法，事件总线有 `register`、`unregister`、`publish` 三个方法。两者的生命周期、方法语义、当前接上线到什么程度，都写在[API 参考](reference/api.md)里——尤其是 `getRule()` 目前不接正式数据，固定回空；要做保护裁决请先确认 `isReady()`，再用 `decideAtBlock`，见[在方块上做保护裁决](reference/api.md#在方块上做保护裁决)。
 
 ## 动手前值得知道的两条不变量
 

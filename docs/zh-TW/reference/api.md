@@ -71,7 +71,7 @@ ChunkLand 在 `plugin.yml` 宣告的外掛名稱為 `ChunkLand`。請確保在 C
 
 ## 唯讀查詢 API
 
-`ChunkLandApi` 提供六個查詢方法：
+`ChunkLandApi` 提供九個查詢方法：
 
 | 方法 | 回傳值 | 當前狀態 |
 | --- | --- | --- |
@@ -79,14 +79,47 @@ ChunkLand 在 `plugin.yml` 宣告的外掛名稱為 `ChunkLand`。請確保在 C
 | `getSubLandSnapshot(SubLandId)` | `Optional<SubLandSnapshot>` | 正式可用。子領地不存在時回傳空值 |
 | `getOwner(LandId)` | `Optional<OwnerRef>` | 正式可用。由領地快照推導 |
 | `getProtectionDepth(LandId)` | `Optional<Integer>` | 正式可用。回傳領地有效保護的最低 Y 座標 |
-| `can(UUID, LandId, ProtectionActionType)` | `boolean` | **施工中：目前固定回傳 `false`（fail closed）** |
-| `getRule(LandId, LandRuleType)` | `Optional<PermissionState>` | **施工中：目前固定回傳空 `Optional`** |
+| `can(UUID, LandId, ProtectionActionType)` | `boolean` | 正式可用。走與保護引擎相同的權限脈絡做領地層級判定；沒有方塊座標，所以不套用子領地。`isReady()` 為 `false` 或領地不存在時回傳 `false` |
+| `getRule(LandId, LandRuleType)` | `Optional<PermissionState>` | **未接線：目前固定回傳空 `Optional`** |
+| `isReady()` | `boolean` | 正式可用。只有在本次啟用仍有效、且啟動時的領地索引已載入完成時才是 `true`。在那之前，`getLandAt` 回空代表「未知」，不代表荒野 |
+| `getLandAt(UUID worldId, int chunkX, int chunkZ)` | `Optional<LandId>` | 正式可用。從記憶體索引查出擁有該區塊的領地；只有在 `isReady()` 為 `true` 時，回空才代表荒野 |
+| `decideAtBlock(UUID actor, UUID worldId, int blockX, int blockY, int blockZ, ProtectionActionType action)` | `PermissionDecision` | 正式可用。回傳 ChunkLand 自己的監聽器在該方塊上執行的完整保護裁決，見下節 |
 
-### 不要把 `can()` 當成保護裁決用
+`isReady`、`getLandAt`、`decideAtBlock` 是 default 方法。若你自行實作 `ChunkLandApi`（例如測試替身），預設實作分別回傳 `false`、空值與 `DENY`。
 
-這是目前最關鍵的整合注意事項：`can()` 的內部資料來源目前固定回傳 `null`，因此每次呼叫都會走 fail-closed 安全分支回傳 `false`；`getRule()` 同理恆定回傳空 `Optional`。
+### 在方塊上做保護裁決
 
-這兩個方法目前處於 stub 階段，並非伺服器保護引擎的實際判定路徑。請勿將 `can()` 用於客製化 UI 顯示或保護裁決，否則會恆定得到拒絕結果。完整判定邏輯將隨後續版本對接。
+`decideAtBlock` 回傳的 `PermissionDecision`，就是 ChunkLand 自己的監聽器據以放行或攔截的那一份：管理員略過、擁有者保障、涵蓋該方塊的子領地、成員與群組綁定、預設值、領地規則全部納入。裁決使用的是讀取 API 當下看到的同一份快照。
+
+| 情況 | 結果 |
+| --- | --- |
+| 方塊位於荒野（索引已就緒） | `ALLOW`，照原版運作 |
+| 索引尚未確認完整（`isReady()` 為 `false`） | `DENY` |
+| 外掛已停用（快取的持有者） | `DENY` |
+| 內部查詢失敗 | `DENY`，不會拋例外 |
+| `actor`、`worldId` 或 `action` 為 `null` | 拋出 `NullPointerException` |
+
+`DecisionSource` 為 `LAND_RULE` 的動作，actor 只影響管理員略過。
+
+```java
+ChunkLandApi api = plugin.getReadApi();
+if (!api.isReady()) {
+    return; // 領地索引仍在載入：視為未知，不要當成荒野
+}
+boolean allowed = api.decideAtBlock(
+        player.getUniqueId(), world.getUID(), x, y, z,
+        ProtectionActionType.BLOCK_PLACE).outcome() == PermissionState.ALLOW;
+```
+
+索引未就緒時 `decideAtBlock` 本來就會回 `DENY`；先檢查 `isReady()` 是讓你自己決定這段期間怎麼處理，例如稍後重試，而不是直接顯示「被拒絕」。
+
+手上只有領地、沒有方塊座標時用 `can`，它給的是領地層級的答案，不看子領地；知道座標時一律用 `decideAtBlock`。
+
+### `getRule()` 為什麼固定回空
+
+`getReadApi()` 建立讀取 API 時注入的規則查詢來源固定回傳 `Optional.empty()`，所以 `getRule()` 沒有東西可回報。領地規則目前沒有可調整的介面（見[已知限制](../limitations.md)），這是 fail-closed 的預期結果，不是能從外部繞過的缺陷。對 `LAND_RULE` 類動作，規則仍會在 `decideAtBlock` 的裁決中生效。
+
+需要排查時，請讓站在領地裡的玩家執行 `/land explain <action>`，它讀的是實際的執行路徑。
 
 ### 呼叫約定與線程安全
 

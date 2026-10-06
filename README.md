@@ -196,9 +196,11 @@ ChunkLandApi api = plugin.getReadApi();          // never null; reads as empty b
 ChunkLandEventBus bus = plugin.publicEventBus(); // null only before the first enable; re-acquire after every enable
 ```
 
-`ChunkLandApi` has six query methods. Two of them are not backed by production
-data yet — `can()` returns `false` and `getRule()` returns empty — so read the
-[API reference](docs/en/reference/api.md) before you rely on them.
+`ChunkLandApi` has nine query methods. For protection checks, confirm
+`isReady()` and then call `decideAtBlock(...)`, which returns the same decision
+ChunkLand's own listeners enforce. One method is not backed by production data
+yet — `getRule()` always returns empty — so read the
+[API reference](docs/en/reference/api.md) before you rely on it.
 
 ## License
 

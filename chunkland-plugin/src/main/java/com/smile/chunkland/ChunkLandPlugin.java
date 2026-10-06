@@ -6251,6 +6251,38 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Production assembly with permission and block decisions wired.
+     *
+     * <p>{@code can()} resolves through the same atomic context provider the
+     * protection engine uses, against the snapshot the read API observed, and
+     * {@code decideAtBlock()} delegates to the engine's snapshot-bound block
+     * decision, so external callers see exactly what the listeners enforce.
+     * Readiness requires the enable generation to be active and the engine to
+     * report a hydrated index. A {@code null} provider keeps {@code can()}
+     * fail-closed; a {@code null} engine keeps every block decision a DENY and
+     * readiness false.
+     */
+    static ChunkLandReadApi buildReadApi(Supplier<com.smile.chunkland.runtime.index.LandRegistry> registrySupplier,
+            ProtectionDepthLookup depthLookup, PermissionContextProvider contexts,
+            ProtectionEngine engine, BooleanSupplier active) {
+        Supplier<com.smile.chunkland.runtime.index.LandRegistry> activeSupplier =
+                registrySupplier == null
+                        ? com.smile.chunkland.runtime.index.LandRegistry::empty : registrySupplier;
+        ProtectionDepthLookup activeLookup =
+                depthLookup == null ? (landId, snapshot) -> Optional.empty() : depthLookup;
+        PermissionContextProvider activeContexts =
+                contexts == null ? (actor, landId, action, snapshot) -> null : contexts;
+        BooleanSupplier activeGate = active == null ? () -> false : active;
+        return new ChunkLandReadApi(activeSupplier, activeContexts,
+                (landId, rule, snapshot) -> Optional.empty(),
+                activeLookup,
+                () -> activeGate.getAsBoolean() && engine != null && engine.isRegistryReady(),
+                engine == null
+                        ? (actor, worldId, x, y, z, action, snapshot) -> null
+                        : engine::decideAtBlockOnSnapshot);
+    }
+
+    /**
      * @return the production read API bound to the shared protection store
      *         and the formal depth lookup built at enable. Each call returns
      *         a lightweight holder over the live volatile snapshot, so mode
@@ -6288,7 +6320,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 () -> captured.active
                         ? base.get()
                         : com.smile.chunkland.runtime.index.LandRegistry.empty();
-        return buildReadApi(gated, lookup);
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        PermissionContextProvider contexts = defaults == null ? null : defaults.provider();
+        return buildReadApi(gated, lookup, contexts, this.protectionEngine, () -> captured.active);
     }
 
     static Command commandForTest(String name) {
