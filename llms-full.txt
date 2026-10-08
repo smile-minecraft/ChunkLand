@@ -272,6 +272,11 @@ Optional<OwnerRef> getOwner(LandId landId);
 boolean can(UUID actor, LandId landId, ProtectionActionType action);
 Optional<PermissionState> getRule(LandId landId, LandRuleType rule);
 Optional<Integer> getProtectionDepth(LandId landId);
+boolean isReady();
+Optional<LandId> getLandAt(UUID worldId, int chunkX, int chunkZ);
+PermissionDecision decideAtBlock(UUID actor, UUID worldId,
+                                 int blockX, int blockY, int blockZ,
+                                 ProtectionActionType action);
 ```
 
 | Method | Wired | Notes |
@@ -280,12 +285,26 @@ Optional<Integer> getProtectionDepth(LandId landId);
 | `getSubLandSnapshot` | Yes | Searches the snapshot's subland indexes |
 | `getOwner` | Yes | Derived from the land snapshot |
 | `getProtectionDepth` | Yes | `PER_CHUNK_DEPTH` lands report their stored minimum depth; `FULL_HEIGHT` lands report the world minimum. Reads never rewrite stored depths |
-| `can` | **No** | Always `false` |
+| `can` | Yes | Land-level decision through the same permission context the protection engine uses; no subland (no block position). `false` while `isReady()` is `false` or the land is unknown |
 | `getRule` | **No** | Always `Optional.empty()` |
+| `isReady` | Yes | `true` only while the current enable is active and the land index has finished loading at startup. Until then an empty `getLandAt` answer means unknown, not wilderness |
+| `getLandAt` | Yes | Land owning a chunk, from the in-memory index. Empty means wilderness only while `isReady()` is `true` |
+| `decideAtBlock` | Yes | Full protection decision exactly as ChunkLand's own listeners enforce it: admin bypass, owner guarantee, covering subland, member and group bindings, defaults, land rules |
 
-`can` and `getRule` are not backed by production data: `getReadApi()` injects a permission-context provider returning `null` and a rule lookup returning `Optional.empty()`. `can()` maps a `null` context to `false`; `getRule()` has nothing to report. Both are fail-closed answers working as designed. Do not build features on them — for diagnosis, have a player in the land run `/land explain <action>`.
+`isReady`, `getLandAt` and `decideAtBlock` are default methods; a custom implementation of the interface that does not override them answers `false`, empty and `DENY`.
 
-Contract for all six: callable from any thread; one volatile snapshot per call; no I/O; never loads a chunk; returns only immutable values. Unknown ids return empty; a null argument throws `NullPointerException`.
+`decideAtBlock`: wilderness answers `ALLOW` (vanilla applies). An index not yet confirmed, a disabled plugin's cached holder, or any lookup failure answers `DENY` — it never throws for a lookup failure. For `LAND_RULE` actions the actor only matters for admin bypass. A `null` actor, world id or action throws `NullPointerException`.
+
+```java
+if (!api.isReady()) return; // index still loading: unknown, not wilderness
+boolean allowed = api.decideAtBlock(
+        player.getUniqueId(), world.getUID(), x, y, z,
+        ProtectionActionType.BLOCK_PLACE).outcome() == PermissionState.ALLOW;
+```
+
+`getRule` is not backed by production data: `getReadApi()` injects a rule lookup returning `Optional.empty()`, so it has nothing to report. That is a fail-closed answer working as designed. Do not build features on it — for diagnosis, have a player in the land run `/land explain <action>`.
+
+Contract for all nine: callable from any thread; one volatile snapshot per call; no I/O; never loads a chunk; returns only immutable values. Unknown ids return empty; a null argument throws `NullPointerException`.
 
 ### Events
 

@@ -49,6 +49,11 @@ Optional<OwnerRef> getOwner(LandId landId);
 boolean can(UUID actor, LandId landId, ProtectionActionType action);
 Optional<PermissionState> getRule(LandId landId, LandRuleType rule);
 Optional<Integer> getProtectionDepth(LandId landId);
+boolean isReady();
+Optional<LandId> getLandAt(UUID worldId, int chunkX, int chunkZ);
+PermissionDecision decideAtBlock(UUID actor, UUID worldId,
+                                 int blockX, int blockY, int blockZ,
+                                 ProtectionActionType action);
 ```
 
 | Method | Wired to production data | Notes |
@@ -57,19 +62,60 @@ Optional<Integer> getProtectionDepth(LandId landId);
 | `getSubLandSnapshot` | Yes | Searches the subland indexes of the snapshot |
 | `getOwner` | Yes | Derived from the land snapshot |
 | `getProtectionDepth` | Yes | `PER_CHUNK_DEPTH` lands report their stored minimum depth; `FULL_HEIGHT` lands report the world minimum. Reads never rewrite stored depths |
-| `can` | **No** | Always `false` |
+| `can` | Yes | Land-level decision through the same permission context the protection engine uses. No block position, so no subland applies. `false` while `isReady()` is `false` or the land is unknown |
 | `getRule` | **No** | Always `Optional.empty()` |
+| `isReady` | Yes | `true` only while the current enable is active and the land index has finished loading at startup. Until then an empty `getLandAt` answer means "unknown", not wilderness |
+| `getLandAt` | Yes | Land owning a chunk, from the in-memory index. Empty means wilderness only while `isReady()` is `true` |
+| `decideAtBlock` | Yes | The full protection decision ChunkLand's own listeners enforce at that block. See below |
 
-### Why `can` and `getRule` always fail
+`isReady`, `getLandAt` and `decideAtBlock` are default methods. If you implement
+`ChunkLandApi` yourself (for example as a test double), the defaults answer
+`false`, empty and `DENY`.
 
-`getReadApi()` builds the read API with a permission-context provider that
-returns `null` and a rule lookup that returns `Optional.empty()`. `can()` treats
-a `null` context as "no permission" and returns `false`; `getRule()` has nothing
-to report and returns empty. Both are the fail-closed answer working as designed,
-not a defect you can work around from outside.
+### Making a protection decision at a block
 
-If you need a permission verdict today, do not read it from these methods. For
-diagnosis, ask a player standing in the land to run `/land explain <action>`,
+`decideAtBlock` returns the same `PermissionDecision` ChunkLand's own listeners
+act on: admin bypass, the owner guarantee, the subland covering the block,
+member and group bindings, defaults and land rules all apply. The decision is
+taken against the same snapshot the read API observed.
+
+| Situation | Outcome |
+| --- | --- |
+| Block is in wilderness (index ready) | `ALLOW` — vanilla applies |
+| Index not confirmed yet (`isReady()` is `false`) | `DENY` |
+| Plugin disabled (cached holder) | `DENY` |
+| Lookup fails internally | `DENY` — it does not throw |
+| `actor`, `worldId` or `action` is `null` | Throws `NullPointerException` |
+
+For actions whose `DecisionSource` is `LAND_RULE`, the actor only matters for
+admin bypass.
+
+```java
+ChunkLandApi api = plugin.getReadApi();
+if (!api.isReady()) {
+    return; // land index still loading: treat as unknown, not wilderness
+}
+boolean allowed = api.decideAtBlock(
+        player.getUniqueId(), world.getUID(), x, y, z,
+        ProtectionActionType.BLOCK_PLACE).outcome() == PermissionState.ALLOW;
+```
+
+`decideAtBlock` already answers `DENY` while the index is not ready, so the
+`isReady()` check is there for your own handling of that window — for example,
+to wait rather than show a "denied" message.
+
+Use `can` when you have a land but no block position: it gives the land-level
+answer and ignores sublands. Use `decideAtBlock` whenever a position is known.
+
+### Why `getRule` always returns empty
+
+`getReadApi()` builds the read API with a rule lookup that returns
+`Optional.empty()`, so `getRule()` has nothing to report. Land rules have no
+adjustable interface yet (see [limitations](../limitations.md)); this is the
+fail-closed answer working as designed, not a defect you can work around from
+outside. The rule still takes effect in `decideAtBlock` for `LAND_RULE` actions.
+
+For diagnosis, ask a player standing in the land to run `/land explain <action>`,
 which reads the real enforcement path.
 
 ### Thread and I/O contract

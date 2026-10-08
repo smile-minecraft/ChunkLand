@@ -6,6 +6,28 @@ All notable changes to ChunkLand are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ChunkLandApi.isReady()` reports whether the land index has finished loading
+  at startup. Until it is `true`, an empty location answer means unknown, not
+  wilderness.
+- `ChunkLandApi.getLandAt(worldId, chunkX, chunkZ)` returns the land owning a
+  chunk from the in-memory index, without loading the chunk.
+- `ChunkLandApi.decideAtBlock(actor, worldId, x, y, z, action)` returns the
+  full protection decision ChunkLand's own listeners enforce at that block.
+  Wilderness answers `ALLOW`; an unconfirmed index, a disabled plugin or a
+  lookup failure answers `DENY`.
+- All three are default methods on the interface; an implementation that does
+  not override them answers `false`, empty and `DENY`.
+
+### Changed
+
+- `getReadApi().can(actor, landId, action)` now returns real land-level
+  decisions through the same permission context the protection engine uses,
+  instead of always `false`. It still returns `false` while `isReady()` is
+  `false` or the land is unknown. `getRule()` is unchanged and still always
+  returns empty.
+
 ## [0.1.0] - 2026-10-04
 
 First public shape of the plugin: chunk-based land claims, per-action protection
