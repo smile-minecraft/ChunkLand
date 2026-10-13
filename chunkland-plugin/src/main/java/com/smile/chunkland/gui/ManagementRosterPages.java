@@ -144,6 +144,37 @@ public final class ManagementRosterPages {
     }
 
     /**
+     * First-layer page with the permission entry, both roster entries and
+     * the rule-list entry. The rule entry routes through
+     * {@link ManagementGuiActions#openRuleDetails}; without rule texts the
+     * caller must use the three-entry overload above instead.
+     */
+    public static GuiPage rootPage(ManagementGuiActions actions, ManagementGuiTexts texts,
+            Actions roster, ManagementRosterTexts rosterTexts, ManagementRuleTexts ruleTexts) {
+        ManagementGuiActions seam = actions == null ? ManagementGuiActions.noop() : actions;
+        Objects.requireNonNull(ruleTexts, "ruleTexts");
+        GuiPage rosterRoot;
+        try {
+            rosterRoot = rootPage(seam, texts, roster, rosterTexts);
+        } catch (RuntimeException broken) {
+            return ManagementRulePages.rootPage(seam, texts, ruleTexts);
+        }
+        GuiButton ruleEntry = new GuiButton(ManagementRulePages.RULE_ENTRY_SLOT, click -> {
+            Objects.requireNonNull(click, "click");
+            seam.openRuleDetails(click);
+        });
+        List<GuiButton> buttons = new ArrayList<>(rosterRoot.buttons().values());
+        buttons.add(ruleEntry);
+        List<String> lines = new ArrayList<>(rosterRoot.lines());
+        lines.addAll(ruleTexts.entryLines());
+        List<GuiPage.RenderItem> items = new ArrayList<>(rosterRoot.renderItems());
+        items.add(new GuiPage.RenderItem(ManagementRulePages.RULE_ENTRY_SLOT,
+                ruleTexts.entryName(), List.copyOf(ruleTexts.entryLines()), "rules"));
+        return GuiPage.of(rosterRoot.id(), rosterRoot.title(), rosterRoot.size(),
+                List.copyOf(buttons), List.copyOf(lines), List.copyOf(items));
+    }
+
+    /**
      * One screen of a roster: a clickable item per player, the add button,
      * back, and paging when needed. An out-of-range page index is clamped,
      * so a roster that shrank while it was open still renders.

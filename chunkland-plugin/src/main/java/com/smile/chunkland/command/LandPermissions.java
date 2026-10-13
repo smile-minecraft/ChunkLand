@@ -28,6 +28,7 @@ public final class LandPermissions {
     public static final String GROUP = "chunkland.command.land.group";
     public static final String PROFILE = "chunkland.command.land.profile";
     public static final String BINDING = "chunkland.command.land.binding";
+    public static final String RULE = "chunkland.command.land.rule";
     public static final String EXPLAIN = "chunkland.command.land.explain";
     public static final String INSPECT = "chunkland.command.land.inspect";
     public static final String LOG = "chunkland.command.land.log";
@@ -60,7 +61,7 @@ public final class LandPermissions {
     public static final String BYPASS = "chunkland.admin.bypass";
 
     public static final List<String> ALL_ORDERED = List.of(
-            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN, ORPHAN, BYPASS, SELECTION);
+            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, RULE, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN, ORPHAN, BYPASS, SELECTION);
 
     private static final Map<String, String> BY_SUBCOMMAND = Map.ofEntries(
             Map.entry("help", HELP),
@@ -81,6 +82,7 @@ public final class LandPermissions {
             Map.entry("group", GROUP),
             Map.entry("profile", PROFILE),
             Map.entry("binding", BINDING),
+            Map.entry("rule", RULE),
             Map.entry("explain", EXPLAIN),
             Map.entry("inspect", INSPECT),
             Map.entry("log", LOG),

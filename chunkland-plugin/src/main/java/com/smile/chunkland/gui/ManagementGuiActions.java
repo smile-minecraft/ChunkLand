@@ -1,6 +1,7 @@
 package com.smile.chunkland.gui;
 
 import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.api.rule.LandRuleType;
 import java.util.Objects;
 
 /**
@@ -27,6 +28,27 @@ public interface ManagementGuiActions {
      * @param action the row's action; never {@code null}
      */
     void requestChange(GuiClickContext click, ProtectionActionType action);
+
+    /**
+     * The rule-list entry was clicked: open the rule list page. Default
+     * no-op so existing seams keep compiling; production overrides it with
+     * the gated rule-list navigation.
+     */
+    default void openRuleDetails(GuiClickContext click) {
+        Objects.requireNonNull(click, "click");
+    }
+
+    /**
+     * A rule-list row was clicked. Default no-op so existing seams keep
+     * compiling; production overrides it with the gated rule confirm flow.
+     *
+     * @param click validated click; never {@code null}
+     * @param rule the row's rule; never {@code null}
+     */
+    default void requestRuleChange(GuiClickContext click, LandRuleType rule) {
+        Objects.requireNonNull(click, "click");
+        Objects.requireNonNull(rule, "rule");
+    }
 
     /** Fail-closed seam: every button is a no-op. */
     static ManagementGuiActions noop() {

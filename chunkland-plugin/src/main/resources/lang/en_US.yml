@@ -20,6 +20,7 @@ command:
       <yellow>Permissions</yellow>
       <gray>  <hover:show_text:'<gray>Trust a player on this land.</gray>'><click:suggest_command:'/land trust'>trust     </click></hover><hover:show_text:'<gray>Remove a trusted player.</gray>'><click:suggest_command:'/land untrust'>untrust  </click></hover><hover:show_text:'<gray>Change a land default permission.</gray>'><click:suggest_command:'/land default'>default  </click></hover><hover:show_text:'<gray>Bind players or groups to profiles.</gray>'><click:suggest_command:'/land binding'>binding</click></hover></gray>
       <gray>  <hover:show_text:'<gray>Ban a player from this land.</gray>'><click:suggest_command:'/land ban'>ban       </click></hover><hover:show_text:'<gray>Unban a player.</gray>'><click:suggest_command:'/land unban'>unban    </click></hover><hover:show_text:'<gray>Manage subject groups.</gray>'><click:suggest_command:'/land group'>group    </click></hover><hover:show_text:'<gray>Open the management GUI.</gray>'><click:suggest_command:'/land manage'>manage</click></hover> </gray>
+      <gray>  <hover:show_text:'<gray>Change an environment rule of this land.</gray>'><click:suggest_command:'/land rule'>rule      </click></hover>                         </gray>
       <yellow>Queries</yellow>
       <gray>  <hover:show_text:'<gray>Manage permission profiles.</gray>'><click:suggest_command:'/land profile'>profile   </click></hover><hover:show_text:'<gray>Explain one permission outcome.</gray>'><click:suggest_command:'/land explain'>explain  </click></hover><hover:show_text:'<gray>Inspect this land.</gray>'><click:suggest_command:'/land inspect'>inspect  </click></hover><hover:show_text:'<gray>Search the audit log.</gray>'><click:suggest_command:'/land log'>log</click></hover>    </gray>
       <gray>  <hover:show_text:'<gray>Show nearby block history.</gray>'><click:suggest_command:'/land history'>history   </click></hover>                         </gray>
@@ -164,6 +165,14 @@ command:
       updated: "<green>Binding updated.</green>"
       deleted: "<green>Binding removed.</green>"
       failed: "<red>Binding operation failed: <reason>.</red>"
+    rule:
+      console: "<red>Only players can change environment rules.</red>"
+      usage: "<yellow>Usage: /land rule [rule] [ALLOW|DENY|INHERIT]</yellow>"
+      success: "<green>The environment rule “<action>” is now “<state>”.</green>"
+      failed: "<red>Environment rule change failed: <reason>.</red>"
+      line: "<white><action>: own “<state>”, effective “<outcome>” (<layer>)</white>"
+      unavailable: "<yellow>Environment rules cannot be shown right now: land data is not ready yet. Please try again shortly.</yellow>"
+      degraded: "<yellow>The rule “<action>” was saved but is not live yet: <reason>. Please check again shortly.</yellow>"
     explain:
       console: "<red>Only players can explain permissions.</red>"
       usage: "<yellow>Usage: /land explain <action></yellow>"
@@ -242,6 +251,10 @@ command:
         short: "<gray>Bind players or groups to profiles.</gray>"
         detail: "<gray>Creates, updates or removes generic permission bindings on this land.</gray>"
         usage: "<yellow>Usage: /land binding (bind|unbind) player <player> <profile> | group <group> <profile> [--in-subland]</yellow>"
+      rule:
+        short: "<gray>Change an environment rule of this land.</gray>"
+        detail: "<gray>Shows or sets what the world itself may do on this land: ALLOW, DENY or INHERIT per rule.</gray>"
+        usage: "<yellow>Usage: /land rule [rule] [ALLOW|DENY|INHERIT]</yellow>"
       ban:
         short: "<gray>Ban a player from this land.</gray>"
         detail: "<gray>Denies the named player entry and access to this land.</gray>"
@@ -464,6 +477,33 @@ gui:
       back_name: "<white>Back</white>"
       target_line: "<gray>After confirming it becomes: <state></gray>"
       failed_line: "<red>The change did not go through and nothing was modified. Please try again.</red>"
+    rules:
+      entry_name: "<white>Environment rules</white>"
+      entry_hint: "<gray>View and change what the world itself may do on this land.</gray>"
+      details:
+        title: "<white>Land Rules (<deny_count> denied, <allow_count> allowed)</white>"
+      row:
+        head: "<white><action>: <state> → <outcome> (<layer>)</white>"
+        explicit: "<gray>Land override for “<action>”: <state></gray>"
+        effective: "<gray>Effective now: “<outcome>” (from <layer>)</gray>"
+        change_hint: "<yellow>Click to change this rule.</yellow>"
+        unset: "Not set (inherits the level above)"
+      confirm:
+        title: "<white>Confirm rule change: <action></white>"
+        current: "<gray>Now: own “<state>”, effective “<outcome>” (from <layer>)</gray>"
+        target: "<gray>After confirming it becomes: <state></gray>"
+        allow_name: "<green>Allow</green>"
+        deny_name: "<red>Deny</red>"
+        inherit_name: "<yellow>Inherit</yellow>"
+        cancel_name: "<red>Cancel</red>"
+        back_name: "<white>Back</white>"
+        failed_line: "<red>The change did not go through and nothing was modified. Please try again.</red>"
+      unavailable:
+        title: "<white>Land Rules (unavailable)</white>"
+        lines: |-
+          <red>Rules cannot be shown right now: land data is not ready yet.</red>
+          <gray>Please reopen this menu in a moment.</gray>
+          <gray>No setting was changed.</gray>
 ban:
   failed: "something went wrong, please try again and contact an admin if it keeps happening"
   unknown_target: "that player was not found; for an offline player use the exact name or UUID"
@@ -583,6 +623,13 @@ refund:
   unknown_provider: "no economy service is available"
   unsupported: "the economy service does not support refunds"
   validation_failed: "the check did not pass, please review and redo the action"
+rule:
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unavailable: "this feature is temporarily unavailable, please try again later"
+  unknown_rule: "that environment rule does not exist"
+  unknown_land: "there is no land you can manage here, stand inside the land and try again"
+  stale: "the data changed in the meantime, please redo the action"
+  publish_failed: "the change was saved but is not live yet, please check again shortly"
 rename:
   duplicate: "you already own a land with that name"
   failed: "something went wrong, please try again and contact an admin if it keeps happening"
@@ -655,6 +702,8 @@ permission:
     hanging_entity: "Changing paintings and hangings"
     farmland_trample: "Trampling farmland"
     fire_ignite: "Starting fires"
+    pvp: "Player versus player"
+    piston: "Piston movement"
     player_damage_player: "Player versus player combat"
     piston_move: "Piston movement"
     fluid_flow: "Fluid flow"
@@ -695,6 +744,10 @@ permission:
     subland_rule: "Sub-land rule"
     land_rule: "Land rule"
     implicit_deny: "Not set (denied by default)"
+    land: "Land"
+    world: "World"
+    global: "Global"
+    built_in: "Built-in"
   source:
     subject_permission: "Player permission"
     land_rule: "Land rule"

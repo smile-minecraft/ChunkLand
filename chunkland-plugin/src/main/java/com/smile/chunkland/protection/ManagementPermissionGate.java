@@ -71,6 +71,7 @@ public final class ManagementPermissionGate {
             Map.entry("binding", ProtectionActionType.MANAGE_PERMISSION),
             Map.entry("ban", ProtectionActionType.MANAGE_MEMBER),
             Map.entry("unban", ProtectionActionType.MANAGE_MEMBER),
+            Map.entry("rule", ProtectionActionType.MANAGE_PERMISSION),
             Map.entry("subland", ProtectionActionType.MANAGE_SUBLAND),
             Map.entry("expand", ProtectionActionType.EXPAND_LAND),
             Map.entry("shrink", ProtectionActionType.EXPAND_LAND),

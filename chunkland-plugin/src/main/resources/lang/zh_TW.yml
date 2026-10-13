@@ -20,6 +20,7 @@ command:
       <yellow>權限管理</yellow>
       <gray>  <hover:show_text:'<gray>信任玩家為領地成員。</gray>'><click:suggest_command:'/land trust'>trust     </click></hover><hover:show_text:'<gray>移除領地信任成員。</gray>'><click:suggest_command:'/land untrust'>untrust  </click></hover><hover:show_text:'<gray>變更領地預設權限。</gray>'><click:suggest_command:'/land default'>default  </click></hover><hover:show_text:'<gray>綁定玩家或群組到權限組合。</gray>'><click:suggest_command:'/land binding'>binding</click></hover></gray>
       <gray>  <hover:show_text:'<gray>封鎖玩家進入領地。</gray>'><click:suggest_command:'/land ban'>ban       </click></hover><hover:show_text:'<gray>解除玩家封鎖。</gray>'><click:suggest_command:'/land unban'>unban    </click></hover><hover:show_text:'<gray>管理主體群組。</gray>'><click:suggest_command:'/land group'>group    </click></hover><hover:show_text:'<gray>開啟管理介面。</gray>'><click:suggest_command:'/land manage'>manage</click></hover> </gray>
+      <gray>  <hover:show_text:'<gray>變更此領地的環境規則。</gray>'><click:suggest_command:'/land rule'>rule      </click></hover>                         </gray>
       <yellow>查詢</yellow>
       <gray>  <hover:show_text:'<gray>管理權限組合。</gray>'><click:suggest_command:'/land profile'>profile   </click></hover><hover:show_text:'<gray>查詢單一權限判定說明。</gray>'><click:suggest_command:'/land explain'>explain  </click></hover><hover:show_text:'<gray>查看領地資訊。</gray>'><click:suggest_command:'/land inspect'>inspect  </click></hover><hover:show_text:'<gray>查詢審計紀錄。</gray>'><click:suggest_command:'/land log'>log</click></hover>    </gray>
       <gray>  <hover:show_text:'<gray>查看附近方塊歷史。</gray>'><click:suggest_command:'/land history'>history   </click></hover>                         </gray>
@@ -164,6 +165,14 @@ command:
       updated: "<green>綁定已更新。</green>"
       deleted: "<green>綁定已移除。</green>"
       failed: "<red>綁定操作失敗：<reason>。</red>"
+    rule:
+      console: "<red>只有玩家可以變更環境規則。</red>"
+      usage: "<yellow>用法：/land rule [規則] [ALLOW|DENY|INHERIT]</yellow>"
+      success: "<green>已把環境規則「<action>」設為「<state>」。</green>"
+      failed: "<red>環境規則變更失敗：<reason>。</red>"
+      line: "<white><action>：自身「<state>」，實際「<outcome>」（<layer>）</white>"
+      unavailable: "<yellow>目前無法顯示環境規則：領地資料尚未就緒，請稍後再試。</yellow>"
+      degraded: "<yellow>規則「<action>」已存檔但尚未生效：<reason>，請稍後再確認。</yellow>"
     explain:
       console: "<red>只有玩家可以查詢權限說明。</red>"
       usage: "<yellow>用法：/land explain <action></yellow>"
@@ -242,6 +251,10 @@ command:
         short: "<gray>綁定玩家或群組到權限組合。</gray>"
         detail: "<gray>在此領地建立、更新或移除通用權限綁定。</gray>"
         usage: "<yellow>用法：/land binding (bind|unbind) player <player> <profile> | group <group> <profile> [--in-subland]</yellow>"
+      rule:
+        short: "<gray>變更此領地的環境規則。</gray>"
+        detail: "<gray>查看或設定世界在這塊領地上可以做的事：每條規則可設為允許、拒絕或沿用上層。</gray>"
+        usage: "<yellow>用法：/land rule [規則] [ALLOW|DENY|INHERIT]</yellow>"
       ban:
         short: "<gray>封鎖玩家進入領地。</gray>"
         detail: "<gray>拒絕指定玩家進入與使用此領地。</gray>"
@@ -464,6 +477,33 @@ gui:
       back_name: "<white>返回</white>"
       target_line: "<gray>確認後會變更為：<state></gray>"
       failed_line: "<red>變更沒有成功，設定維持原狀，請再試一次。</red>"
+    rules:
+      entry_name: "<white>環境規則</white>"
+      entry_hint: "<gray>查看或調整世界在這塊領地上可以做的事。</gray>"
+      details:
+        title: "<white>領地規則（拒絕 <deny_count> 項，允許 <allow_count> 項）</white>"
+      row:
+        head: "<white><action>：<state> → <outcome>（<layer>）</white>"
+        explicit: "<gray>此領地對「<action>」的設定：<state></gray>"
+        effective: "<gray>目前實際生效為「<outcome>」（來自<layer>）</gray>"
+        change_hint: "<yellow>點擊調整這條規則。</yellow>"
+        unset: "未設定（沿用上層設定）"
+      confirm:
+        title: "<white>確認規則變更：<action></white>"
+        current: "<gray>目前：自身「<state>」，實際「<outcome>」（來自<layer>）</gray>"
+        target: "<gray>確認後會變更為：<state></gray>"
+        allow_name: "<green>允許</green>"
+        deny_name: "<red>拒絕</red>"
+        inherit_name: "<yellow>沿用上層</yellow>"
+        cancel_name: "<red>取消</red>"
+        back_name: "<white>返回</white>"
+        failed_line: "<red>變更沒有成功，設定維持原狀，請再試一次。</red>"
+      unavailable:
+        title: "<white>領地規則（不可用）</white>"
+        lines: |-
+          <red>暫時無法顯示規則：領地資料還沒準備好。</red>
+          <gray>請稍後重新開啟這個畫面。</gray>
+          <gray>目前沒有任何設定被更動。</gray>
 ban:
   failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
   unknown_target: "找不到這位玩家；離線玩家請輸入完整的玩家名稱或 UUID"
@@ -583,6 +623,13 @@ refund:
   unknown_provider: "找不到可用的經濟服務"
   unsupported: "經濟系統不支援退款"
   validation_failed: "檢查沒有通過，請確認內容後重新操作"
+rule:
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
+  unknown_rule: "沒有這條環境規則"
+  unknown_land: "這裡沒有你可以操作的領地，請站在領地內再試一次"
+  stale: "資料在這段期間已經更新，請重新操作一次"
+  publish_failed: "變更已儲存，但還沒同步到遊戲中，請稍後再確認"
 rename:
   duplicate: "你已經有同名的領地了"
   failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
@@ -655,6 +702,8 @@ permission:
     hanging_entity: "動用畫與掛飾"
     farmland_trample: "踩踏耕地"
     fire_ignite: "點火"
+    pvp: "玩家對戰"
+    piston: "活塞運動"
     player_damage_player: "玩家互相攻擊"
     piston_move: "活塞推動方塊"
     fluid_flow: "液體流動"
@@ -695,6 +744,10 @@ permission:
     subland_rule: "子領地規則"
     land_rule: "領地規則"
     implicit_deny: "未設定（預設拒絕）"
+    land: "每領地"
+    world: "世界"
+    global: "全域"
+    built_in: "內建"
   source:
     subject_permission: "玩家權限"
     land_rule: "領地規則"

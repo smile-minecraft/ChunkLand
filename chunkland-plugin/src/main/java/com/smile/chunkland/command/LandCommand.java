@@ -47,7 +47,7 @@ public final class LandCommand {
     }
 
     public static final List<String> SUBCOMMANDS = List.of(
-            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile", "explain", "inspect", "log", "history", "manage", "bypass", "admin", "selection");
+            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile", "rule", "explain", "inspect", "log", "history", "manage", "bypass", "admin", "selection");
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
@@ -424,6 +424,7 @@ public final class LandCommand {
             return switch (sub) {
                 case "explain" -> ExplainCommandHandler.completeAction(typed);
                 case "default" -> matching(DEFAULT_ACTIONS, typed);
+                case "rule" -> matching(RULE_NAMES, typed);
                 case "trust", "untrust", "ban", "unban", "inspect" ->
                         matching(onlinePlayerNames(sender), typed);
                 case "help" -> matching(SUBCOMMANDS, typed);
@@ -441,6 +442,7 @@ public final class LandCommand {
         if (args.length == 3) {
             return switch (sub) {
                 case "default" -> matching(STATE_NAMES, typed);
+                case "rule" -> matching(STATE_NAMES, typed);
                 case "binding" -> matching(BINDING_SUBJECTS, typed);
                 default -> List.of();
             };
@@ -456,6 +458,12 @@ public final class LandCommand {
     private static final List<String> DEFAULT_ACTIONS = java.util.Arrays
             .stream(com.smile.chunkland.api.permission.ProtectionActionType.values())
             .filter(com.smile.chunkland.protection.DirectTrustWhitelist::isAllowed)
+            .map(Enum::name)
+            .toList();
+
+    /** Environment rules settable per land, in declaration order. */
+    private static final List<String> RULE_NAMES = java.util.Arrays
+            .stream(com.smile.chunkland.api.rule.LandRuleType.values())
             .map(Enum::name)
             .toList();
 

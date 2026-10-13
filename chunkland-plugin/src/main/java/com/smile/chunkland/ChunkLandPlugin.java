@@ -11,6 +11,7 @@ import com.smile.chunkland.adapter.AceLibBridge;
 import com.smile.chunkland.adapter.AceLibLifecycle;
 import com.smile.chunkland.adapter.gui.GuiContentRenderer;
 import com.smile.chunkland.adapter.gui.ManagementGuiTextProvider;
+import com.smile.chunkland.adapter.gui.ManagementRuleTextProvider;
 import com.smile.chunkland.api.ChunkLandApi;
 import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.api.money.Money;
@@ -44,6 +45,7 @@ import com.smile.chunkland.api.permission.PermissionDecision;
 import com.smile.chunkland.api.permission.PermissionResolver;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.api.rule.LandRuleType;
 import com.smile.chunkland.binding.LandBindingService;
 import com.smile.chunkland.command.AuditLogCommandHandler;
 import com.smile.chunkland.command.BedrockClaimFormHandler;
@@ -68,6 +70,7 @@ import com.smile.chunkland.command.ProfileCommandHandler;
 import com.smile.chunkland.command.ShrinkCommandHandler;import com.smile.chunkland.command.SelectionCommandHandler;import com.smile.chunkland.command.SelectionFormTexts;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
+import com.smile.chunkland.command.LandRuleCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.ManageGuiCommandHandler;
 import com.smile.chunkland.command.OfflinePlayerResolver;
@@ -98,6 +101,9 @@ import com.smile.chunkland.gui.ManagementGuiModel;
 import com.smile.chunkland.gui.ManagementGuiPages;
 import com.smile.chunkland.gui.ManagementGuiTexts;
 import com.smile.chunkland.gui.ManagementGuiToggle;
+import com.smile.chunkland.gui.ManagementRuleModel;
+import com.smile.chunkland.gui.ManagementRulePages;
+import com.smile.chunkland.gui.ManagementRuleTexts;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.limit.ExternalLimitProvider;
 import com.smile.chunkland.api.limit.LimitResult;
@@ -156,6 +162,7 @@ import com.smile.chunkland.protection.LandAuthorisationSnapshot;
 import com.smile.chunkland.protection.ProtectionEngine;
 import com.smile.chunkland.protection.ProtectionListener;
 import com.smile.chunkland.protection.PermissionDefaultsCache;
+import com.smile.chunkland.protection.PermissionDefaultsSnapshot;
 import com.smile.chunkland.protection.PermissionDecisionCache;
 import com.smile.chunkland.protection.PermissionDecisionEpochSource;
 import com.smile.chunkland.protection.ProtectionActionRegistry;
@@ -203,6 +210,8 @@ import com.smile.chunkland.subland.SubLandEntryLookup;
 import com.smile.chunkland.subland.SubLandMutationRunner;
 import com.smile.chunkland.rename.LandRenameService;
 import com.smile.chunkland.rule.LandRuleMutationService;
+import com.smile.chunkland.rule.LandRuleView;
+import com.smile.chunkland.rule.LandRuleViewService;
 import com.smile.chunkland.trust.LandAuthorisationService;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandFeedback;
@@ -312,6 +321,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * confirm attempt stays on the confirm page without writing.
      */
     private LandDefaultCommandHandler.DefaultMutation managementDefaultMutation;
+    /**
+     * Conditional rule mutation behind both the {@code /land rule} command
+     * and the rule GUI confirm path, wired per enable to the shared
+     * {@code LandRuleMutationService} compare-and-set entry. {@code null}
+     * (or a cleared disable) reads as fail-closed: the confirm attempt
+     * stays on the confirm page without writing.
+     */
+    private LandRuleCommandHandler.RuleMutation managementRuleMutation;
     /**
      * Region hop for management GUI async completions. Durable writes
      * finish on the persistence thread, where navigator and render work
@@ -570,15 +587,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 buildManagementGuiModel(playerUuid, landId, snapshot, contexts);
         ManagementGuiModel shared = model.available() ? model : ManagementGuiModel.unavailable();
         ManagementGuiTexts texts = managementGuiTexts(playerUuid);
-        ManagementGuiActions actions = managementGuiActions(landId, texts, shared,
+        ManagementRuleTexts ruleTexts = managementRuleTexts(playerUuid);
+        ManagementGuiActions actions = managementGuiActions(landId, texts, ruleTexts, shared,
                 snapshot, contexts);
         try {
             com.smile.chunkland.adapter.gui.ManagementRosterController roster =
                     this.managementRoster;
             GuiPage page = roster == null
-                    ? ManagementGuiPages.rootPage(actions, texts)
+                    ? ManagementRulePages.rootPage(actions, texts, ruleTexts)
                     : com.smile.chunkland.gui.ManagementRosterPages.rootPage(actions, texts,
-                            roster.actionsFor(landId), roster.textsFor(playerUuid));
+                            roster.actionsFor(landId), roster.textsFor(playerUuid), ruleTexts);
             Optional<Long> generation = navigator.open(playerUuid, page);
             if (generation.isEmpty()) {
                 getLogger().warning("ChunkLand management GUI open failed");
@@ -599,9 +617,17 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * (current land default plus toggle target); only the confirm button
      * writes, through the {@code /land default} mutation seam behind a
      * second gate check. Cancel and back never write.
+     *
+     * <p>The rule-list entry and rule rows share the same gate: opening
+     * the list re-checks {@code MANAGE_PERMISSION} over a fresh snapshot
+     * (a denied viewer gets the fail-closed unavailable page and never
+     * sees rule values), while a rule row opens a three-target confirm
+     * page pinning the observed explicit value; only the target buttons
+     * write, through the conditional rule mutation behind a second gate
+     * check plus a fresh authorisation generation.
      */
     private ManagementGuiActions managementGuiActions(LandId landId, ManagementGuiTexts texts,
-            ManagementGuiModel shared, LandRegistry snapshot,
+            ManagementRuleTexts ruleTexts, ManagementGuiModel shared, LandRegistry snapshot,
             PermissionContextProvider contexts) {
         return new ManagementGuiActions() {
             @Override
@@ -684,6 +710,88 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     }
                 } catch (RuntimeException failure) {
                     getLogger().warning("ChunkLand management GUI confirm navigation threw: "
+                            + failure.getClass().getSimpleName());
+                }
+            }
+
+            @Override
+            public void openRuleDetails(GuiClickContext click) {
+                Objects.requireNonNull(click, "click");
+                try {
+                    GuiNavigator nav = ChunkLandPlugin.this.guiNavigator;
+                    if (nav == null) {
+                        return;
+                    }
+                    Optional<GuiPage> rebuilt =
+                            buildRuleDetailsPage(click.playerUuid(), landId, texts, ruleTexts,
+                                    this);
+                    GuiPage page = rebuilt.orElseGet(() -> ManagementRulePages.rulesPage(
+                            ManagementRuleModel.unavailable(), this, ruleTexts));
+                    Optional<Long> generation = nav.push(click.playerUuid(), page);
+                    if (generation.isEmpty()) {
+                        getLogger().warning("ChunkLand rule GUI detail navigation failed");
+                    } else {
+                        renderManagementPage(click.playerUuid(), generation.orElseThrow(), page);
+                    }
+                } catch (RuntimeException failure) {
+                    getLogger().warning("ChunkLand rule GUI detail navigation threw: "
+                            + failure.getClass().getSimpleName());
+                }
+            }
+
+            @Override
+            public void requestRuleChange(GuiClickContext click, LandRuleType rule) {
+                Objects.requireNonNull(click, "click");
+                Objects.requireNonNull(rule, "rule");
+                try {
+                    UUID viewer = click.playerUuid();
+                    LandRegistryStore store = ChunkLandPlugin.this.protectionStore;
+                    PermissionDefaultsCache defaults = ChunkLandPlugin.this.permissionDefaults;
+                    LandAuthorisationCache authCache =
+                            ChunkLandPlugin.this.landAuthorisationCache;
+                    if (store == null || defaults == null || authCache == null) {
+                        return;
+                    }
+                    LandRegistry fresh;
+                    try {
+                        fresh = store.snapshot();
+                    } catch (RuntimeException unresolved) {
+                        return;
+                    }
+                    if (fresh == null) {
+                        return;
+                    }
+                    PermissionContextProvider freshContexts = defaults.provider();
+                    if (freshContexts == null) {
+                        return;
+                    }
+                    PermissionDecision gate;
+                    try {
+                        gate = ManagementPermissionGate.check(viewer, landId,
+                                ProtectionActionType.MANAGE_PERMISSION, fresh,
+                                readAdminBypass(viewer), false, freshContexts);
+                    } catch (RuntimeException denied) {
+                        return;
+                    }
+                    if (gate == null || gate.outcome() != PermissionState.ALLOW) {
+                        return;
+                    }
+                    // The pinned explicit comes from the durable authorisation
+                    // snapshot (never from the decision contexts, which carry
+                    // the effective rule): the conditional write below aborts
+                    // on any divergence, so the confirm can never silently
+                    // overwrite a newer change. An unreadable current renders
+                    // as unset and fails closed at submit time instead of
+                    // blocking navigation here.
+                    PermissionState current = readRuleBaseline(landId, rule)
+                            .map(LandRuleCommandHandler.Baseline::current)
+                            .orElse(PermissionState.INHERIT);
+                    if (!openRuleConfirmPage(viewer, landId, rule, current, texts,
+                            ruleTexts)) {
+                        getLogger().warning("ChunkLand rule GUI confirm navigation failed");
+                    }
+                } catch (RuntimeException failure) {
+                    getLogger().warning("ChunkLand rule GUI confirm navigation threw: "
                             + failure.getClass().getSimpleName());
                 }
             }
@@ -877,7 +985,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                 failConfirm(viewer, landId, action, texts);
                                 return;
                             }
-                            redrawDetails(viewer, landId, texts);
+                            redrawDetails(viewer, landId, texts,
+                                    managementRuleTexts(viewer));
                         } catch (RuntimeException terminal) {
                             getLogger().warning("ChunkLand management GUI confirm completion threw: "
                                     + terminal.getClass().getSimpleName());
@@ -978,6 +1087,419 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Rebuilt rule-list page over a fresh snapshot: every row carries its
+     * explicit, effective and source values. The viewer is re-checked
+     * against the shared {@code MANAGE_PERMISSION} gate first: a denied
+     * viewer gets the fail-closed unavailable page (the same denial
+     * feedback as every other rule-data failure) and never sees rule
+     * values. Empty only when the snapshots or the rebuild itself is
+     * unreadable.
+     */
+    private Optional<GuiPage> buildRuleDetailsPage(UUID viewer, LandId landId,
+            ManagementGuiTexts texts, ManagementRuleTexts ruleTexts,
+            ManagementGuiActions actions) {
+        if (viewer == null || landId == null || texts == null || ruleTexts == null
+                || actions == null) {
+            return Optional.empty();
+        }
+        if (!ruleListAllowed(viewer, landId)) {
+            try {
+                return Optional.of(ManagementRulePages.rulesPage(
+                        ManagementRuleModel.unavailable(), actions, ruleTexts));
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        }
+        ManagementRuleModel model = buildRuleViews(landId)
+                .map(ManagementRuleModel::fromViews)
+                .orElseGet(ManagementRuleModel::unavailable);
+        ManagementRuleModel shared =
+                model.available() ? model : ManagementRuleModel.unavailable();
+        try {
+            return Optional.of(ManagementRulePages.rulesPage(shared, actions, ruleTexts));
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Whether the viewer may currently open the rule list: the shared
+     * {@code MANAGE_PERMISSION} gate over a fresh snapshot. Any unreadable
+     * input denies (fail-closed), exactly like the row-click and confirm
+     * paths.
+     */
+    private boolean ruleListAllowed(UUID viewer, LandId landId) {
+        LandRegistryStore store = this.protectionStore;
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        if (viewer == null || landId == null || store == null || defaults == null) {
+            return false;
+        }
+        LandRegistry fresh;
+        try {
+            fresh = store.snapshot();
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+        if (fresh == null) {
+            return false;
+        }
+        PermissionContextProvider contexts;
+        try {
+            contexts = defaults.provider();
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+        if (contexts == null) {
+            return false;
+        }
+        try {
+            PermissionDecision gate = ManagementPermissionGate.check(viewer, landId,
+                    ProtectionActionType.MANAGE_PERMISSION, fresh,
+                    readAdminBypass(viewer), false, contexts);
+            return gate != null && gate.outcome() == PermissionState.ALLOW;
+        } catch (RuntimeException denied) {
+            return false;
+        }
+    }
+
+    /**
+     * Push the rule confirm page for one pending change. The pinned
+     * explicit travels from the row click; the effective value and its
+     * source are resolved best-effort for display only. When the display
+     * rows are not ready the page stays closed instead of showing a
+     * guessed triple. Cancel and back only navigate.
+     *
+     * @return true only when the page is live and rendered
+     */
+    private boolean openRuleConfirmPage(UUID viewer, LandId landId, LandRuleType rule,
+            PermissionState expectedExplicit, ManagementGuiTexts texts,
+            ManagementRuleTexts ruleTexts) {
+        if (viewer == null || landId == null || rule == null || expectedExplicit == null
+                || texts == null || ruleTexts == null) {
+            return false;
+        }
+        GuiNavigator nav = this.guiNavigator;
+        if (nav == null) {
+            return false;
+        }
+        LandRuleView displayed = buildRuleViews(landId).orElse(List.of()).stream()
+                .filter(view -> view != null && view.rule() == rule)
+                .findFirst().orElse(null);
+        if (displayed == null) {
+            return false;
+        }
+        GuiPage confirm = ruleConfirmPageOrNull(viewer, landId, rule, displayed,
+                expectedExplicit, texts, ruleTexts, false);
+        if (confirm == null) {
+            return false;
+        }
+        try {
+            Optional<Long> generation = nav.push(viewer, confirm);
+            if (generation.isEmpty()) {
+                return false;
+            }
+            renderManagementPage(viewer, generation.orElseThrow(), confirm);
+            return true;
+        } catch (RuntimeException failure) {
+            return false;
+        }
+    }
+
+    /**
+     * Rule confirm-button write: claim the in-flight guard, then re-check
+     * three things as close to the write as this thread reaches — the
+     * viewer still holds {@code MANAGE_PERMISSION} on the pinned land over
+     * a fresh snapshot, the pinned land still exists (an unknown land
+     * denies the same gate), and the durable current plus the freshly read
+     * authorisation generation still equal the pinned baseline through the
+     * conditional mutation seam. The land id travels in the closure, never
+     * re-resolved from the viewer's position, so submitting after walking
+     * to another land can never retarget the write there.
+     *
+     * <p>The durable completion runs on the persistence thread, so the
+     * redraw hops back to the player's region thread; the guard releases
+     * on completion either way. A denied gate, a missing seam, a lapsed
+     * generation or a failed write stays on the confirm page with the
+     * failure line and never throws to the caller.
+     */
+    private void confirmRuleToggle(GuiClickContext click, LandId landId,
+            LandRuleType rule, PermissionState expectedExplicit,
+            PermissionState target, ManagementGuiTexts texts,
+            ManagementRuleTexts ruleTexts) {
+        Objects.requireNonNull(click, "click");
+        try {
+            UUID viewer = click.playerUuid();
+            LandRegistryStore store = this.protectionStore;
+            PermissionDefaultsCache defaults = this.permissionDefaults;
+            if (landId == null || rule == null || expectedExplicit == null || target == null
+                    || texts == null || ruleTexts == null || store == null
+                    || defaults == null) {
+                return;
+            }
+            if (!claimConfirmFlight(viewer)) {
+                return;
+            }
+            LandRegistry fresh;
+            try {
+                fresh = store.snapshot();
+            } catch (RuntimeException unresolved) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            if (fresh == null) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            PermissionContextProvider contexts;
+            try {
+                contexts = defaults.provider();
+            } catch (RuntimeException unresolved) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            if (contexts == null) {
+                releaseConfirmFlight(viewer);
+                return;
+            }
+            PermissionDecision gate;
+            try {
+                gate = ManagementPermissionGate.check(viewer, landId,
+                        ProtectionActionType.MANAGE_PERMISSION, fresh,
+                        readAdminBypass(viewer), false, contexts);
+            } catch (RuntimeException denied) {
+                gate = null;
+            }
+            LandRuleCommandHandler.RuleMutation mutation = this.managementRuleMutation;
+            Optional<Long> expectedRevision = readAuthRevision(landId);
+            if (gate == null || gate.outcome() != PermissionState.ALLOW || mutation == null
+                    || expectedRevision.isEmpty()) {
+                releaseConfirmFlight(viewer);
+                failRuleConfirm(viewer, landId, rule, texts, ruleTexts);
+                return;
+            }
+            Player player = resolveGuiPlayer(viewer);
+            if (player == null) {
+                releaseConfirmFlight(viewer);
+                failRuleConfirm(viewer, landId, rule, texts, ruleTexts);
+                return;
+            }
+            CompletionStage<Void> stage;
+            try {
+                stage = mutation.apply(viewer, landId, rule, expectedExplicit,
+                        expectedRevision.orElseThrow(), target);
+            } catch (RuntimeException failure) {
+                stage = null;
+            }
+            if (stage == null) {
+                releaseConfirmFlight(viewer);
+                failRuleConfirm(viewer, landId, rule, texts, ruleTexts);
+                return;
+            }
+            PlayerScheduler scheduler = this.managementGuiScheduler;
+            if (scheduler == null) {
+                releaseConfirmFlight(viewer);
+                getLogger().warning(
+                        "ChunkLand rule GUI scheduler unavailable; confirm stays in place");
+                return;
+            }
+            stage.whenComplete((ignored, failure) -> {
+                releaseConfirmFlight(viewer);
+                try {
+                    scheduler.runForPlayer(player, () -> {
+                        try {
+                            if (failure != null) {
+                                failRuleConfirm(viewer, landId, rule, texts, ruleTexts);
+                                return;
+                            }
+                            redrawRuleDetails(viewer, landId, texts, ruleTexts);
+                        } catch (RuntimeException terminal) {
+                            getLogger().warning("ChunkLand rule GUI confirm completion threw: "
+                                    + terminal.getClass().getSimpleName());
+                        }
+                    });
+                } catch (RuntimeException hop) {
+                    getLogger().warning("ChunkLand rule GUI region hop failed: "
+                            + hop.getClass().getSimpleName());
+                }
+            });
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand rule GUI confirm threw: "
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Failed rule confirm: re-read the current best-effort triple and
+     * rebuild the confirm page with the failure line, so a stale confirm
+     * shows the fresh explicit value instead of the outdated transition.
+     * When the viewer already navigated away the top page is left
+     * untouched.
+     */
+    private void failRuleConfirm(UUID viewer, LandId landId, LandRuleType rule,
+            ManagementGuiTexts texts, ManagementRuleTexts ruleTexts) {
+        PermissionState current = PermissionState.INHERIT;
+        LandRuleView displayed = null;
+        if (viewer != null && landId != null && rule != null) {
+            try {
+                current = readRuleBaseline(landId, rule)
+                        .map(LandRuleCommandHandler.Baseline::current)
+                        .orElse(PermissionState.INHERIT);
+                displayed = buildRuleViews(landId).orElse(List.of()).stream()
+                        .filter(view -> view != null && view.rule() == rule)
+                        .findFirst().orElse(null);
+            } catch (RuntimeException unresolved) {
+                current = PermissionState.INHERIT;
+            }
+        }
+        if (displayed == null) {
+            displayed = new LandRuleView(rule == null ? LandRuleType.PVP : rule,
+                    current, current == PermissionState.INHERIT
+                            ? PermissionState.DENY : current,
+                    LandRuleView.Source.UNAVAILABLE);
+        }
+        if (!isOnRuleConfirmPage(viewer)) {
+            return;
+        }
+        GuiPage failed = ruleConfirmPageOrNull(viewer, landId, rule, displayed, current,
+                texts, ruleTexts, true);
+        GuiNavigator nav = this.guiNavigator;
+        if (failed == null || nav == null) {
+            getLogger().warning("ChunkLand rule GUI confirm failure render failed");
+            return;
+        }
+        Optional<Long> generation;
+        try {
+            generation = nav.replace(viewer, failed);
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand rule GUI confirm failure render threw: "
+                    + failure.getClass().getSimpleName());
+            return;
+        }
+        if (generation.isEmpty()) {
+            getLogger().warning("ChunkLand rule GUI confirm failure render failed");
+            return;
+        }
+        try {
+            renderManagementPage(viewer, generation.orElseThrow(), failed);
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand rule GUI confirm failure render threw: "
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Rule confirm page value without navigation: empty when the page
+     * cannot be composed. The three target buttons share the pinned
+     * explicit; each submits its own target through the same conditional
+     * seam.
+     */
+    private GuiPage ruleConfirmPageOrNull(UUID viewer, LandId landId, LandRuleType rule,
+            LandRuleView displayed, PermissionState expectedExplicit,
+            ManagementGuiTexts texts, ManagementRuleTexts ruleTexts, boolean failed) {
+        if (viewer == null || landId == null || rule == null || displayed == null
+                || expectedExplicit == null || texts == null || ruleTexts == null) {
+            return null;
+        }
+        String explicitName = displayed.explicit() == PermissionState.INHERIT
+                ? null : displayed.explicit().name();
+        ManagementRulePages.RuleConfirmRequest pending =
+                new ManagementRulePages.RuleConfirmRequest(
+                        rule, explicitName, displayed.effective().name(),
+                        displayed.source().name(),
+                        allowClick -> confirmRuleToggle(allowClick, landId, rule,
+                                expectedExplicit, PermissionState.ALLOW, texts, ruleTexts),
+                        denyClick -> confirmRuleToggle(denyClick, landId, rule,
+                                expectedExplicit, PermissionState.DENY, texts, ruleTexts),
+                        inheritClick -> confirmRuleToggle(inheritClick, landId, rule,
+                                expectedExplicit, PermissionState.INHERIT, texts, ruleTexts),
+                        cancelClick -> goBack(cancelClick),
+                        backClick -> goBack(backClick),
+                        failed);
+        try {
+            return ManagementRulePages.confirmPage(pending, ruleTexts);
+        } catch (RuntimeException broken) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether the viewer still sits on the rule confirm page. Async
+     * completions that arrive after the viewer navigated away must not
+     * clobber the screen they chose.
+     */
+    private boolean isOnRuleConfirmPage(UUID viewer) {
+        GuiNavigator nav = this.guiNavigator;
+        if (viewer == null || nav == null) {
+            return false;
+        }
+        try {
+            Optional<GuiPage> top = nav.currentPage(viewer);
+            return top.isPresent()
+                    && ManagementRulePages.RULE_CONFIRM_PAGE_ID.equals(top.orElseThrow().id());
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+    }
+
+    /**
+     * Success redraw: replace the rule confirm page with the rule list
+     * built over the freshest snapshot. When the viewer already navigated
+     * away, or any step fails, the current screen is left untouched.
+     */
+    private void redrawRuleDetails(UUID viewer, LandId landId, ManagementGuiTexts texts,
+            ManagementRuleTexts ruleTexts) {
+        GuiNavigator nav = this.guiNavigator;
+        if (nav == null || !isOnRuleConfirmPage(viewer)) {
+            return;
+        }
+        Optional<GuiPage> rebuilt = buildRuleDetailsPage(viewer, landId, texts, ruleTexts,
+                managementRuleActionsForRedraw(landId, texts, ruleTexts));
+        if (rebuilt.isEmpty()) {
+            getLogger().warning("ChunkLand rule GUI detail redraw failed");
+            return;
+        }
+        try {
+            Optional<Long> generation = nav.replace(viewer, rebuilt.orElseThrow());
+            if (generation.isEmpty()) {
+                getLogger().warning("ChunkLand rule GUI detail redraw failed");
+            } else {
+                renderManagementPage(viewer, generation.orElseThrow(), rebuilt.orElseThrow());
+            }
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand rule GUI detail redraw threw: "
+                    + failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Fresh button seam for a redrawn rule list, so rows stay clickable
+     * after a change without holding the previous generation's seam.
+     */
+    private ManagementGuiActions managementRuleActionsForRedraw(LandId landId,
+            ManagementGuiTexts texts, ManagementRuleTexts ruleTexts) {
+        LandRegistryStore store = this.protectionStore;
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        LandRegistry snapshot = null;
+        PermissionContextProvider contexts = null;
+        if (store != null) {
+            try {
+                snapshot = store.snapshot();
+            } catch (RuntimeException unresolved) {
+                snapshot = null;
+            }
+        }
+        if (defaults != null) {
+            try {
+                contexts = defaults.provider();
+            } catch (RuntimeException unresolved) {
+                contexts = null;
+            }
+        }
+        return managementGuiActions(landId, texts, ruleTexts,
+                ManagementGuiModel.unavailable(), snapshot, contexts);
+    }
+
+    /**
      * Whether the viewer still sits on the confirm page. Async
      * completions that arrive after the viewer navigated away must not
      * clobber the screen they chose; the next navigation rebuilds from
@@ -1003,13 +1525,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * immediately. When the viewer already navigated away, or any step
      * fails, the current screen is left untouched.
      */
-    private void redrawDetails(UUID viewer, LandId landId, ManagementGuiTexts texts) {
+    private void redrawDetails(UUID viewer, LandId landId, ManagementGuiTexts texts,
+            ManagementRuleTexts ruleTexts) {
         GuiNavigator nav = this.guiNavigator;
         if (nav == null || !isOnConfirmPage(viewer)) {
             return;
         }
         Optional<GuiPage> rebuilt = buildDetailsPage(viewer, landId, texts,
-                managementGuiActionsForRedraw(landId, texts));
+                managementGuiActionsForRedraw(landId, texts, ruleTexts));
         if (rebuilt.isEmpty()) {
             getLogger().warning("ChunkLand management GUI detail redraw failed");
             return;
@@ -1032,7 +1555,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * after a toggle without holding the previous generation's seam.
      */
     private ManagementGuiActions managementGuiActionsForRedraw(LandId landId,
-            ManagementGuiTexts texts) {
+            ManagementGuiTexts texts, ManagementRuleTexts ruleTexts) {
         LandRegistryStore store = this.protectionStore;
         PermissionDefaultsCache defaults = this.permissionDefaults;
         ManagementGuiModel fallback = ManagementGuiModel.unavailable();
@@ -1052,7 +1575,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 contexts = null;
             }
         }
-        return managementGuiActions(landId, texts, fallback, snapshot, contexts);
+        return managementGuiActions(landId, texts, ruleTexts, fallback, snapshot, contexts);
     }
 
     /**
@@ -1231,6 +1754,107 @@ public final class ChunkLandPlugin extends JavaPlugin {
         }
     }
 
+    /**
+     * Write baseline for the {@code /land rule} command path and the rule
+     * GUI confirm path: the durable explicit rule value plus the
+     * authorisation generation pinned at gate time. Both come from the
+     * published authorisation snapshot on the calling thread; the
+     * transaction aborts on any divergence, so the commit never trusts a
+     * stale read. Empty on any unreadable piece (fail-closed), including
+     * an unloaded snapshot — which answers {@code INHERIT} exactly like a
+     * land without overrides, so loaded-ness is checked first.
+     */
+    private Optional<LandRuleCommandHandler.Baseline> readRuleBaseline(LandId landId,
+            LandRuleType rule) {
+        LandAuthorisationCache authCache = this.landAuthorisationCache;
+        if (landId == null || rule == null || authCache == null) {
+            return Optional.empty();
+        }
+        LandAuthorisationSnapshot durable;
+        try {
+            durable = authCache.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (durable == null || !durable.loaded()) {
+            return Optional.empty();
+        }
+        PermissionState current;
+        try {
+            current = durable.landRule(landId, rule);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (current == null) {
+            return Optional.empty();
+        }
+        Optional<Long> revision;
+        try {
+            revision = durable.policyRevision(landId);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (revision.isEmpty() || revision.get() == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(new LandRuleCommandHandler.Baseline(current,
+                    revision.orElseThrow()));
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Display rows for the {@code /land rule} query shapes and the rule
+     * GUI list: one explicit/effective/source triple per rule. Empty when
+     * any snapshot is missing or the durable rows are not loaded, so
+     * callers show "unavailable" instead of a wrong source.
+     */
+    Optional<List<LandRuleView>> buildRuleViews(LandId landId) {
+        if (landId == null) {
+            return Optional.empty();
+        }
+        LandRegistryStore store = this.protectionStore;
+        LandAuthorisationCache authCache = this.landAuthorisationCache;
+        PermissionDefaultsCache defaults = this.permissionDefaults;
+        if (store == null || authCache == null || defaults == null) {
+            return Optional.empty();
+        }
+        LandRegistry registry;
+        try {
+            registry = store.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (registry == null) {
+            return Optional.empty();
+        }
+        LandAuthorisationSnapshot auth;
+        try {
+            auth = authCache.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (auth == null) {
+            return Optional.empty();
+        }
+        PermissionDefaultsSnapshot defaultsSnapshot;
+        try {
+            defaultsSnapshot = defaults.snapshot();
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (defaultsSnapshot == null) {
+            return Optional.empty();
+        }
+        try {
+            return LandRuleViewService.all(landId, registry, auth, defaultsSnapshot);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+    }
+
     private void renderManagementPage(UUID playerUuid, long generation, GuiPage page) {
         GuiContentRenderer renderer = this.guiContentRenderer;
         if (renderer != null) {
@@ -1266,6 +1890,37 @@ public final class ChunkLandPlugin extends JavaPlugin {
             return provider.resolve(playerUuid);
         } catch (RuntimeException ignored) {
             return ManagementGuiTextProvider.fallbackTexts();
+        }
+    }
+
+    /**
+     * Visible copy for the rule management GUI, resolved for one viewer
+     * through the message pipeline and injected into the Bukkit-free rule
+     * pages as plain text. Same locale chain and fallback contract as
+     * {@link #managementGuiTexts}: without a pipeline the bundled English
+     * fallback applies, so the rule list still opens.
+     */
+    private ManagementRuleTexts managementRuleTexts(UUID playerUuid) {
+        ChunkLandMessagePipeline pipeline =
+                landMessagePipeline == null ? null : landMessagePipeline.orElse(null);
+        PlayerPreferredLocaleService locales = this.playerLocaleService;
+        Function<UUID, Locale> lookup = uuid -> {
+            if (uuid == null || locales == null) {
+                return null;
+            }
+            try {
+                return locales.preferred(uuid).orElse(null);
+            } catch (RuntimeException ignored) {
+                return null;
+            }
+        };
+        try {
+            ManagementRuleTextProvider provider = pipeline == null
+                    ? new ManagementRuleTextProvider(null, lookup)
+                    : ManagementRuleTextProvider.withPipeline(pipeline, lookup);
+            return provider.resolve(playerUuid);
+        } catch (RuntimeException ignored) {
+            return ManagementRuleTextProvider.fallbackTexts();
         }
     }
 
@@ -1843,6 +2498,20 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 this::readDefaultBaseline);
         this.managementDefaultMutation =
                 authorisations == null ? null : authorisations::setDefaultExpected;
+        // Per-land environment rules: the same current-location resolver as
+        // the default path, the conditional rule entry on the shared rule
+        // service (expected explicit plus authorisation generation pinned),
+        // and the explicit/effective/source rows for the query shapes.
+        // Without the rule service the slot stays fail-closed on
+        // rule.unavailable instead of running half-wired.
+        LandRuleCommandHandler ruleHandler = new LandRuleCommandHandler(
+                trustLands::resolve,
+                this.landRuleMutationService == null ? null
+                        : this.landRuleMutationService::setRuleExpected,
+                this::readRuleBaseline,
+                this::buildRuleViews);
+        this.managementRuleMutation = this.landRuleMutationService == null ? null
+                : this.landRuleMutationService::setRuleExpected;
         this.managementGuiScheduler = buildPlayerScheduler(this);
         this.managementRoster = buildManagementRoster(authorisations);
         this.managementGuiPlayerLookup = uuid -> {
@@ -2059,6 +2728,12 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                 ? null : this.landMessagePipeline.orElse(null)));
         this.bedrockFormNavigator = bedrockManage == null ? null : bedrockManage.navigator();
         landHandlers.put("manage", wrapManageWithBedrock(landHandlers.get("manage"), bedrockManage));
+        // Per-land environment rules behind /land rule: the handler carries
+        // its own conditional mutation plus the display rows, so it slots
+        // straight into the map like the selection chat verbs below. The
+        // Bedrock manage menu keeps its existing unsupported-rule branch;
+        // rule forms arrive with the later Bedrock milestone.
+        landHandlers.put("rule", ruleHandler);
         // Chunk-edit selection slot: the chat verbs share one edit service
         // with the wand clicks, and Bedrock players get the same operations
         // as menu buttons. A half-wired server keeps the fail-closed chat
@@ -6082,6 +6757,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         landAuthorisationCache = null;
         landRuleMutationService = null;
         managementDefaultMutation = null;
+        managementRuleMutation = null;
         managementRoster = null;
         managementGuiScheduler = null;
         managementGuiPlayerLookup = null;

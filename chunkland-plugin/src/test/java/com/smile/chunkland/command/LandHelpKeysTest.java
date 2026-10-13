@@ -60,8 +60,8 @@ class LandHelpKeysTest {
 
     @Test
     void everySubcommandCarriesAHelpTriple() {
-        assertEquals(26, LandCommand.SUBCOMMANDS.size(),
-                "help keys must cover all 26 subcommands");
+        assertEquals(27, LandCommand.SUBCOMMANDS.size(),
+                "help keys must cover all 27 subcommands");
     }
 
     @Test
