@@ -63,8 +63,11 @@ import java.util.function.Supplier;
  * lookups that each re-read the config source, so a reload between the
  * subject read and the rule read can mix generations inside one decision.
  * Production wiring must use {@link #atomic(Supplier, Supplier)}, which
- * captures one {@link PermissionDefaultsCache.ConfigView} per
- * {@code provide()} call and derives both halves from it.
+ * captures one {@link PermissionDefaultsCache.ConfigView} plus one durable
+ * {@link LandAuthorisationSnapshot} per {@code provide()} call: the subject
+ * halves and the durable per-land rule override derive from that single
+ * pair, while the world, global and built-in rule layers come from the
+ * captured view.
  *
  * <p>The atomic provider also serves as the decision-cache epoch source
  * (see {@link #keyFor}): it captures the same one view plus one durable
@@ -110,15 +113,16 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
     }
 
     /**
-     * Atomic provider over one config view per decision.
+     * Atomic provider over one config view plus one durable snapshot per decision.
      *
-     * <p>Each {@code provide()} call reads {@code views} exactly once and
-     * derives both the subject and rule layers from that single view, paired
-     * with one durable land-layer read. A {@code null} or failing view
-     * source degrades to empty layers (fail-closed). The returned provider
-     * holds only the suppliers, so reloads apply to new decisions without
-     * rebuilding consumers and in-flight decisions finish on their captured
-     * view.
+     * <p>Each {@code provide()} call reads {@code views} and {@code landAuths}
+     * exactly once: the subject layers and the durable per-land rule override
+     * derive from that single captured pair, while the world, global and
+     * built-in rule layers come from the captured view. A {@code null} or
+     * failing view source degrades to empty layers (fail-closed). The
+     * returned provider holds only the suppliers, so reloads apply to new
+     * decisions without rebuilding consumers and in-flight decisions finish
+     * on the pair they captured.
      */
     public static SnapshotPermissionContextProvider atomic(
             Supplier<PermissionDefaultsCache.ConfigView> views,
@@ -176,10 +180,10 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
     }
 
     /**
-     * One-view decision: the volatile config view is read exactly once, then
-     * both halves derive from it. The durable land layers add one more read
-     * of an already-immutable snapshot; config reloads never interleave
-     * between the subject and rule halves.
+     * One-view, one-snapshot decision: the volatile config view and the
+     * durable authorisation snapshot are each read exactly once, then both
+     * halves derive from that captured pair. Config reloads and rule writes
+     * never interleave between the subject and rule halves.
      */
     private PermissionContext provideAtomic(UUID actor, LandId landId,
                                             ProtectionActionType action, LandRegistry snapshot) {
@@ -196,10 +200,12 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
     }
 
     /**
-     * Builds the land-chain context from one already-captured generation.
-     * Both {@link #provideAtomic} and {@link #provideAtBlockAtomic} share
-     * this so the land half and the subland half can never observe different
-     * config or durable generations inside one decision.
+     * One-view, one-snapshot decision: the volatile config view and the
+     * durable authorisation snapshot are each read exactly once, then the
+     * subject layers, the durable per-land rule override and the
+     * config world/global/built-in rule layers all derive from that single
+     * captured pair. Config reloads and rule writes never interleave between
+     * the halves.
      */
     private PermissionContext buildAtomicContext(UUID actor, LandId landId, LandSnapshot land,
             ProtectionActionType action, LandRegistry snapshot,
@@ -239,7 +245,7 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
                 .landDefault(grants.landDefault())
                 .worldDefault(ruleAction ? PermissionState.INHERIT : grants.worldDefault())
                 .globalDefault(ruleAction ? PermissionState.INHERIT : grants.globalDefault())
-                .landRule(ruleStateAtomic(rules, landId, action, snapshot))
+                .landRule(ruleStateAtomic(rules, landAuth, landId, action, snapshot))
                 .build();
     }
 
@@ -412,15 +418,34 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
                 landAuth.ownerAclEpoch(), true, owner, false);
     }
 
-    private PermissionState ruleStateAtomic(LandRuleService rules, LandId landId,
-                                            ProtectionActionType action, LandRegistry snapshot) {
+    private PermissionState ruleStateAtomic(LandRuleService rules,
+            LandAuthorisationSnapshot landAuth, LandId landId,
+            ProtectionActionType action, LandRegistry snapshot) {
         if (BOUNDARY_ACTIONS.contains(action)) {
             // A land boundary is a wall for ownerless mechanics: the in-land
             // rule decides what happens inside, never what crosses in or out.
             return PermissionState.DENY;
         }
         LandRuleType rule = RULE_BY_ACTION.get(action);
-        if (rule == null || rules == null) {
+        if (rule == null) {
+            return PermissionState.INHERIT;
+        }
+        // Durable per-land override from the same captured snapshot the
+        // subject layers came from: one decision never mixes a rule
+        // generation with an authorisation generation. Unset (or
+        // unverifiable) rules fall through to the captured config view.
+        if (landAuth != null) {
+            PermissionState durable;
+            try {
+                durable = landAuth.landRule(landId, rule);
+            } catch (RuntimeException failure) {
+                durable = PermissionState.INHERIT;
+            }
+            if (durable != null && durable != PermissionState.INHERIT) {
+                return durable;
+            }
+        }
+        if (rules == null) {
             return PermissionState.INHERIT;
         }
         Optional<PermissionState> found = rules.getRule(landId, rule, snapshot);

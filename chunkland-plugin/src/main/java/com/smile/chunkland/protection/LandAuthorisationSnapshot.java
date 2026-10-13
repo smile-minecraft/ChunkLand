@@ -5,6 +5,7 @@ import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.permission.PermissionBinding;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.api.rule.LandRuleType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -19,13 +20,22 @@ import java.util.UUID;
 
 /**
  * Immutable view of the durable land authorisation layers: direct player
- * grants per land plus the land default per action.
+ * grants per land plus the land default per action, plus the durable
+ * per-land environment rules.
  *
  * <p>The generic layers carry reusable-profile bindings: per-land and
  * per-subland {@link PermissionBinding} lists in durable-expanded form plus
  * the group membership map that decides which group bindings one actor may
  * see. Sparse subland defaults sit beside them; an unset subland default
  * reads as {@code INHERIT} so decisions fall through to the land layers.
+ *
+ * <p>Per-land environment rules travel in the same snapshot as the
+ * authorisation layers: one volatile publish carries both, so a protection
+ * decision that captures this snapshot observes one durable generation for
+ * rules and grants together. An unset rule reads as {@code INHERIT} so the
+ * decision falls through to the world, global and built-in rule layers; the
+ * subland rule layer stays a documented gap (no position travels with the
+ * rule lookup).
  *
  * <p>Instances are published through a volatile holder, so readers observe
  * one complete version and previously captured references keep answering
@@ -68,6 +78,7 @@ public final class LandAuthorisationSnapshot {
     private final Map<SubLandId, List<PermissionBinding>> genericSubland;
     private final Map<String, Set<UUID>> groupMembers;
     private final Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults;
+    private final Map<LandId, Map<LandRuleType, PermissionState>> landRules;
     private final Map<LandId, Long> landPolicyRevisions;
     private final boolean loaded;
     private final long ownerAclEpoch;
@@ -80,6 +91,7 @@ public final class LandAuthorisationSnapshot {
             Map<SubLandId, List<PermissionBinding>> genericSubland,
             Map<String, Set<UUID>> groupMembers,
             Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults,
+            Map<LandId, Map<LandRuleType, PermissionState>> landRules,
             Map<LandId, Long> landPolicyRevisions,
             boolean loaded,
             long ownerAclEpoch) {
@@ -90,6 +102,7 @@ public final class LandAuthorisationSnapshot {
         this.genericSubland = genericSubland;
         this.groupMembers = groupMembers;
         this.sublandDefaults = sublandDefaults;
+        this.landRules = landRules;
         this.landPolicyRevisions = landPolicyRevisions;
         this.loaded = loaded;
         this.ownerAclEpoch = ownerAclEpoch;
@@ -98,7 +111,7 @@ public final class LandAuthorisationSnapshot {
     /** Empty snapshot from a successful load: no bindings, every land default {@code INHERIT}, nobody banned. */
     public static LandAuthorisationSnapshot empty() {
         return new LandAuthorisationSnapshot(Map.of(), Map.of(), Map.of(),
-                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
+                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
     }
 
     /**
@@ -110,7 +123,7 @@ public final class LandAuthorisationSnapshot {
      */
     public static LandAuthorisationSnapshot unloaded() {
         return new LandAuthorisationSnapshot(Map.of(), Map.of(), Map.of(),
-                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), false, -1L);
+                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), false, -1L);
     }
 
     /**
@@ -145,7 +158,7 @@ public final class LandAuthorisationSnapshot {
         }
         return new LandAuthorisationSnapshot(direct, defaults, bans,
                 genericLand, genericSubland, groupMembers, sublandDefaults,
-                landPolicyRevisions, loaded, epoch);
+                landRules, landPolicyRevisions, loaded, epoch);
     }
 
     /**
@@ -157,7 +170,7 @@ public final class LandAuthorisationSnapshot {
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct,
             Map<LandId, Map<ProtectionActionType, PermissionState>> defaults) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults), Map.of(),
-                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
+                Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
     }
 
     /**
@@ -171,7 +184,8 @@ public final class LandAuthorisationSnapshot {
             Map<LandId, Map<ProtectionActionType, PermissionState>> defaults,
             Map<LandId, Set<UUID>> bans) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults),
-                copyBans(bans), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), true, 0L);
+                copyBans(bans), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                true, 0L);
     }
 
     /**
@@ -191,23 +205,26 @@ public final class LandAuthorisationSnapshot {
             Map<SubLandId, Map<ProtectionActionType, PermissionState>> sublandDefaults) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults),
                 copyBans(bans), copyBindingLists(genericLand), copySubBindingLists(genericSubland),
-                copyMembers(groupMembers), copySubDefaults(sublandDefaults), Map.of(), true, 0L);
+                copyMembers(groupMembers), copySubDefaults(sublandDefaults),
+                Map.of(), Map.of(), true, 0L);
     }
 
     /**
-     * Rebuild with refreshed direct layers while keeping the generic layers
-     * of this snapshot. Lets the direct-trust refresh path republish without
-     * wiping bindings it does not own. The result always reads as loaded: it
-     * carries a fresh successful direct load.
+     * Rebuild with refreshed direct layers and refreshed per-land rules while
+     * keeping the generic layers of this snapshot. Lets the direct-trust and
+     * rule refresh paths republish without wiping bindings they do not own.
+     * The result always reads as loaded: it carries a fresh successful load.
      */
     public LandAuthorisationSnapshot withDirect(
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> direct,
             Map<LandId, Map<ProtectionActionType, PermissionState>> defaults,
             Map<LandId, Set<UUID>> bans,
+            Map<LandId, Map<LandRuleType, PermissionState>> landRules,
             Map<LandId, Long> landPolicyRevisions) {
         return new LandAuthorisationSnapshot(copyDirect(direct), copyDefaults(defaults),
                 copyBans(bans), genericLand, genericSubland, groupMembers, sublandDefaults,
-                copyRevisions(landPolicyRevisions), true, nextEpoch(ownerAclEpoch));
+                copyLandRules(landRules), copyRevisions(landPolicyRevisions), true,
+                nextEpoch(ownerAclEpoch));
     }
 
     /**
@@ -226,7 +243,7 @@ public final class LandAuthorisationSnapshot {
         return new LandAuthorisationSnapshot(direct, defaults, bans,
                 copyBindingLists(genericLand), copySubBindingLists(genericSubland),
                 copyMembers(groupMembers), copySubDefaults(sublandDefaults),
-                copyRevisions(landPolicyRevisions), loaded,
+                landRules, copyRevisions(landPolicyRevisions), loaded,
                 nextEpoch(ownerAclEpoch));
     }
 
@@ -240,7 +257,7 @@ public final class LandAuthorisationSnapshot {
             Map<LandId, Long> landPolicyRevisions) {
         return new LandAuthorisationSnapshot(direct, defaults, bans,
                 genericLand, genericSubland, groupMembers, sublandDefaults,
-                copyRevisions(landPolicyRevisions), loaded, ownerAclEpoch);
+                landRules, copyRevisions(landPolicyRevisions), loaded, ownerAclEpoch);
     }
 
     /**
@@ -332,6 +349,32 @@ public final class LandAuthorisationSnapshot {
             return PermissionState.INHERIT;
         }
         return byAction.getOrDefault(action, PermissionState.INHERIT);
+    }
+
+    /**
+     * Durable per-land environment rule, or {@code INHERIT} when the land
+     * carries no override. Never null. An unset rule falls through to the
+     * world, global and built-in rule layers; callers must still check
+     * {@link #loaded()} first, because an unloaded snapshot answers
+     * {@code INHERIT} here exactly like a land without overrides.
+     */
+    public PermissionState landRule(LandId landId, LandRuleType rule) {
+        Objects.requireNonNull(landId, "landId");
+        Objects.requireNonNull(rule, "rule");
+        Map<LandRuleType, PermissionState> byRule = landRules.get(landId);
+        if (byRule == null) {
+            return PermissionState.INHERIT;
+        }
+        return byRule.getOrDefault(rule, PermissionState.INHERIT);
+    }
+
+    /**
+     * Every durable per-land rule override. Never null and unmodifiable;
+     * empty when no land overrides any rule. Callers must check
+     * {@link #loaded()} first: an unloaded snapshot also answers empty.
+     */
+    public Map<LandId, Map<LandRuleType, PermissionState>> landRules() {
+        return landRules;
     }
 
     /**
@@ -529,6 +572,26 @@ public final class LandAuthorisationSnapshot {
             for (Map.Entry<ProtectionActionType, PermissionState> state : byAction.entrySet()) {
                 states.put(Objects.requireNonNull(state.getKey(), "action key"),
                         Objects.requireNonNull(state.getValue(), "default state"));
+            }
+            copy.put(landId, Collections.unmodifiableMap(states));
+        }
+        return Collections.unmodifiableMap(copy);
+    }
+
+    private static Map<LandId, Map<LandRuleType, PermissionState>> copyLandRules(
+            Map<LandId, Map<LandRuleType, PermissionState>> source) {
+        if (source == null || source.isEmpty()) {
+            return Map.of();
+        }
+        Map<LandId, Map<LandRuleType, PermissionState>> copy = new HashMap<>(source.size());
+        for (Map.Entry<LandId, Map<LandRuleType, PermissionState>> entry : source.entrySet()) {
+            LandId landId = Objects.requireNonNull(entry.getKey(), "land key");
+            Map<LandRuleType, PermissionState> byRule = Objects.requireNonNull(
+                    entry.getValue(), "land rules for " + landId);
+            EnumMap<LandRuleType, PermissionState> states = new EnumMap<>(LandRuleType.class);
+            for (Map.Entry<LandRuleType, PermissionState> state : byRule.entrySet()) {
+                states.put(Objects.requireNonNull(state.getKey(), "rule key"),
+                        Objects.requireNonNull(state.getValue(), "rule state"));
             }
             copy.put(landId, Collections.unmodifiableMap(states));
         }

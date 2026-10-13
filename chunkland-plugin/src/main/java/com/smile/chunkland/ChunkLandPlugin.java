@@ -202,6 +202,7 @@ import com.smile.chunkland.subland.SubLandDepthSource;
 import com.smile.chunkland.subland.SubLandEntryLookup;
 import com.smile.chunkland.subland.SubLandMutationRunner;
 import com.smile.chunkland.rename.LandRenameService;
+import com.smile.chunkland.rule.LandRuleMutationService;
 import com.smile.chunkland.trust.LandAuthorisationService;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandFeedback;
@@ -423,6 +424,14 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SubLandMutationRunner subLandRunner;
     private LandAuthorisationCache landAuthorisationCache;
     private LandAuthorisationService landAuthorisationService;
+    /**
+     * Durable per-land environment rule mutations on the shared store and
+     * the shared authorisation cache. No command or GUI writes through it
+     * yet: the slot stays dormant until the management entry lands, while
+     * the startup rule preload already flows through the authorisation
+     * refresh into the same snapshot.
+     */
+    private LandRuleMutationService landRuleMutationService;
     /**
      * Shared public-event dispatch owned by this enable generation: one
      * {@link PublicEventBus} plus the Bukkit bridge, passed to every
@@ -1737,6 +1746,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.landAuthorisationCache =
                 authorisations == null ? new LandAuthorisationCache() : authorisations.cache();
         this.landAuthorisationService = authorisations;
+        this.landRuleMutationService = authorisationStore == null ? null
+                : buildLandRules(authorisationStore, this.landAuthorisationCache,
+                        this.publicEvents);
         this.permissionDefaults.attachLandAuthorisation(this.landAuthorisationCache::snapshot);
         if (authorisations != null) {
             try {
@@ -3833,6 +3845,20 @@ public final class ChunkLandPlugin extends JavaPlugin {
         return new LandAuthorisationService(
                 new LandAuthorisationRepository(store), new LandAuthorisationCache(),
                 Clock.systemUTC(), events);
+    }
+
+    /**
+     * Build the durable per-land environment rule service on the given
+     * store. It publishes into the shared authorisation cache, so rule
+     * mutations land in the same snapshot the trust path publishes into
+     * and the next decision observes one durable generation for both.
+     */
+    static LandRuleMutationService buildLandRules(PersistenceStore store,
+            LandAuthorisationCache cache, PublicEvents events) {
+        Objects.requireNonNull(store, "store");
+        Objects.requireNonNull(cache, "cache");
+        return new LandRuleMutationService(
+                new LandAuthorisationRepository(store), cache, Clock.systemUTC(), events);
     }
 
     /**
@@ -6054,6 +6080,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // repeats stay no-ops.
         landAuthorisationService = null;
         landAuthorisationCache = null;
+        landRuleMutationService = null;
         managementDefaultMutation = null;
         managementRoster = null;
         managementGuiScheduler = null;

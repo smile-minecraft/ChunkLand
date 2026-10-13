@@ -3,6 +3,7 @@ package com.smile.chunkland.persistence;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
+import com.smile.chunkland.api.rule.LandRuleType;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -43,6 +44,7 @@ public final class LandAuthorisationRepository {
         AFTER_ENTRIES,
         AFTER_BINDING,
         AFTER_DEFAULT,
+        AFTER_RULE,
         AFTER_BAN,
         AFTER_AUDIT
     }
@@ -312,6 +314,85 @@ public final class LandAuthorisationRepository {
     }
 
     /**
+     * Persist one per-land environment rule. {@code ALLOW} and {@code DENY}
+     * upsert the row; {@code INHERIT} deletes it so the world, global and
+     * built-in layers apply again. Every rule type is accepted: the closed
+     * {@link LandRuleType} enum is the whole set.
+     *
+     * <p>Player-namespace only: Server Land rows fail closed before any
+     * write (like defaults).
+     *
+     * <p>The audit before value is read from the durable rule row inside
+     * the same transaction, never from the volatile cache.
+     *
+     * @return the durable rule before this write ({@code INHERIT} when no
+     *         override existed), for the change event
+     */
+    public CompletionStage<PermissionState> setRule(LandId landId, LandRuleType rule,
+            PermissionState state, UUID actor, Instant timestamp) {
+        Objects.requireNonNull(landId, "landId");
+        Objects.requireNonNull(rule, "rule");
+        Objects.requireNonNull(state, "state");
+        Objects.requireNonNull(timestamp, "timestamp");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
+            requirePlayerLand(conn, landId);
+            PermissionState durableBefore = readRuleState(conn, landId, rule);
+            writeRuleRow(conn, landId, rule, state);
+            failureInjector.accept(Step.AFTER_RULE);
+            insertAudit(conn, ruleAudit(actor, landId, rule, durableBefore, state, timestamp));
+            failureInjector.accept(Step.AFTER_AUDIT);
+            bumpPolicyRevision(conn, landId, timestamp.toEpochMilli());
+            return durableBefore;
+        }));
+    }
+
+    /**
+     * Persist one per-land environment rule only when the durable current
+     * still equals {@code expected} (a missing row reads as {@code INHERIT})
+     * and the durable authorisation generation still equals
+     * {@code expectedRevision}. A stale value fails with
+     * {@link LandRuleConflictException}; a lapsed authorisation fails with
+     * {@link StaleAuthorisationException} — both before any row or audit
+     * change, so a confirm page built from an older read can never
+     * silently overwrite a newer change or a revoked grant. The
+     * generation check, the value check, the write, the audit and the
+     * revision bump stay in one transaction.
+     *
+     * @return the durable rule before this write ({@code INHERIT} when no
+     *         override existed), for the change event
+     */
+    public CompletionStage<PermissionState> setRuleIfCurrent(LandId landId, LandRuleType rule,
+            PermissionState expected, long expectedRevision, PermissionState state, UUID actor,
+            Instant timestamp) {
+        Objects.requireNonNull(landId, "landId");
+        Objects.requireNonNull(rule, "rule");
+        Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(state, "state");
+        Objects.requireNonNull(timestamp, "timestamp");
+        return store.submitAsync(connection -> SqlTransaction.run(connection, conn -> {
+            requirePlayerLand(conn, landId);
+            long durableRevision = readPolicyRevision(conn, landId);
+            if (durableRevision != expectedRevision) {
+                throw new StaleAuthorisationException("authorisation for " + landId
+                        + " lapsed: expected revision " + expectedRevision
+                        + ", durable " + durableRevision);
+            }
+            PermissionState durableBefore = readRuleState(conn, landId, rule);
+            if (durableBefore != expected) {
+                throw new LandRuleConflictException("land rule for " + rule
+                        + " on " + landId + " changed: expected " + expected
+                        + ", durable " + durableBefore);
+            }
+            writeRuleRow(conn, landId, rule, state);
+            failureInjector.accept(Step.AFTER_RULE);
+            insertAudit(conn, ruleAudit(actor, landId, rule, durableBefore, state, timestamp));
+            failureInjector.accept(Step.AFTER_AUDIT);
+            bumpPolicyRevision(conn, landId, timestamp.toEpochMilli());
+            return durableBefore;
+        }));
+    }
+
+    /**
      * Durable authorisation generation for one land. A missing row reads
      * as a lapsed authorisation (fail-closed) rather than zero, so a
      * deleted land can never pass the pin on a default revision.
@@ -412,6 +493,34 @@ public final class LandAuthorisationRepository {
                     }
                 }
             }
+            Map<LandId, Map<LandRuleType, PermissionState>> rules = new HashMap<>();
+            try (PreparedStatement landRules = connection.prepareStatement(
+                    "SELECT land_id, rule_type, state FROM land_rules")) {
+                try (ResultSet rows = landRules.executeQuery()) {
+                    while (rows.next()) {
+                        LandRuleType rule = parseRule(rows.getString(2));
+                        PermissionState state = parseState(rows.getString(3));
+                        if (rule == null || state == null
+                                || state == PermissionState.INHERIT) {
+                            continue;
+                        }
+                        LandId landId;
+                        try {
+                            landId = new LandId(UuidBlob.decode(rows.getBytes(1)));
+                        } catch (RuntimeException corrupt) {
+                            LOG.warning("Skipping land rule with malformed id");
+                            continue;
+                        }
+                        if (landId == null) {
+                            LOG.warning("Skipping land rule with malformed id");
+                            continue;
+                        }
+                        rules.computeIfAbsent(landId,
+                                        ignored -> new EnumMap<>(LandRuleType.class))
+                                .put(rule, state);
+                    }
+                }
+            }
             try (PreparedStatement entryBans = connection.prepareStatement(
                     "SELECT land_id, player_uuid FROM land_entry_bans")) {
                 try (ResultSet rows = entryBans.executeQuery()) {
@@ -433,7 +542,8 @@ public final class LandAuthorisationRepository {
                     }
                 }
             }
-            return new SnapshotData(direct, defaults, bans, readPolicyRevisions(connection));
+            return new SnapshotData(direct, defaults, bans, rules,
+                    readPolicyRevisions(connection));
         });
     }
 
@@ -473,11 +583,13 @@ public final class LandAuthorisationRepository {
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
             Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults,
             Map<LandId, Set<UUID>> entryBans,
+            Map<LandId, Map<LandRuleType, PermissionState>> landRules,
             Map<LandId, Long> landPolicyRevisions) {
         public SnapshotData {
             directAllows = copyDirect(directAllows);
             landDefaults = copyDefaults(landDefaults);
             entryBans = copyBans(entryBans);
+            landRules = copyLandRules(landRules);
             landPolicyRevisions = copyRevisions(landPolicyRevisions);
         }
 
@@ -485,7 +597,7 @@ public final class LandAuthorisationRepository {
         public SnapshotData(
                 Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
                 Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults) {
-            this(directAllows, landDefaults, Map.of());
+            this(directAllows, landDefaults, Map.of(), Map.of(), Map.of());
         }
 
         /** Compatibility: loads that predate revision publishing carry none. */
@@ -493,7 +605,16 @@ public final class LandAuthorisationRepository {
                 Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
                 Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults,
                 Map<LandId, Set<UUID>> entryBans) {
-            this(directAllows, landDefaults, entryBans, Map.of());
+            this(directAllows, landDefaults, entryBans, Map.of(), Map.of());
+        }
+
+        /** Compatibility: loads that predate rule publishing carry no rules. */
+        public SnapshotData(
+                Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
+                Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults,
+                Map<LandId, Set<UUID>> entryBans,
+                Map<LandId, Long> landPolicyRevisions) {
+            this(directAllows, landDefaults, entryBans, Map.of(), landPolicyRevisions);
         }
 
         private static Map<LandId, Long> copyRevisions(Map<LandId, Long> source) {
@@ -542,6 +663,20 @@ public final class LandAuthorisationRepository {
             }
             Map<LandId, Map<ProtectionActionType, PermissionState>> copy = new HashMap<>(source.size());
             for (Map.Entry<LandId, Map<ProtectionActionType, PermissionState>> entry
+                    : source.entrySet()) {
+                copy.put(entry.getKey(),
+                        Map.copyOf(new EnumMap<>(entry.getValue())));
+            }
+            return Map.copyOf(copy);
+        }
+
+        private static Map<LandId, Map<LandRuleType, PermissionState>> copyLandRules(
+                Map<LandId, Map<LandRuleType, PermissionState>> source) {
+            if (source == null || source.isEmpty()) {
+                return Map.of();
+            }
+            Map<LandId, Map<LandRuleType, PermissionState>> copy = new HashMap<>(source.size());
+            for (Map.Entry<LandId, Map<LandRuleType, PermissionState>> entry
                     : source.entrySet()) {
                 copy.put(entry.getKey(),
                         Map.copyOf(new EnumMap<>(entry.getValue())));
@@ -693,6 +828,43 @@ public final class LandAuthorisationRepository {
         }
     }
 
+    private static PermissionState readRuleState(Connection conn, LandId landId,
+            LandRuleType rule) throws SQLException {
+        try (PreparedStatement query = conn.prepareStatement(
+                "SELECT state FROM land_rules WHERE land_id = ? AND rule_type = ? LIMIT 1")) {
+            query.setBytes(1, UuidBlob.encode(landId.value()));
+            query.setString(2, rule.name());
+            try (ResultSet rows = query.executeQuery()) {
+                if (!rows.next()) {
+                    return PermissionState.INHERIT;
+                }
+                PermissionState stored = parseState(rows.getString(1));
+                return stored == null ? PermissionState.INHERIT : stored;
+            }
+        }
+    }
+
+    private static void writeRuleRow(Connection conn, LandId landId,
+            LandRuleType rule, PermissionState state) throws SQLException {
+        if (state == PermissionState.INHERIT) {
+            try (PreparedStatement delete = conn.prepareStatement(
+                    "DELETE FROM land_rules WHERE land_id = ? AND rule_type = ?")) {
+                delete.setBytes(1, UuidBlob.encode(landId.value()));
+                delete.setString(2, rule.name());
+                delete.executeUpdate();
+            }
+        } else {
+            try (PreparedStatement upsert = conn.prepareStatement(
+                    "INSERT INTO land_rules (land_id, rule_type, state) VALUES (?, ?, ?)"
+                            + " ON CONFLICT(land_id, rule_type) DO UPDATE SET state=excluded.state")) {
+                upsert.setBytes(1, UuidBlob.encode(landId.value()));
+                upsert.setString(2, rule.name());
+                upsert.setString(3, state.name());
+                upsert.executeUpdate();
+            }
+        }
+    }
+
     private static String requireKnownLandOwner(Connection conn, LandId landId)
             throws SQLException {
         try (PreparedStatement query = conn.prepareStatement(
@@ -781,6 +953,15 @@ public final class LandAuthorisationRepository {
                 "{\"kind\":\"land-default\"}", List.of());
     }
 
+    private static AuditEntry ruleAudit(UUID actor, LandId landId, LandRuleType rule,
+            PermissionState before, PermissionState state, Instant timestamp) {
+        return new AuditEntry(0L, timestamp, actor, "RULE_CHANGE", landId, null, null,
+                AUDIT_METADATA_VERSION,
+                "{\"rule\":\"" + rule.name() + "\",\"state\":\"" + before.name() + "\"}",
+                "{\"rule\":\"" + rule.name() + "\",\"state\":\"" + state.name() + "\"}",
+                "{\"kind\":\"land-rule\"}", List.of());
+    }
+
     private static void replaceBinding(Connection conn, LandId landId, UUID target, UUID profileId)
             throws SQLException {
         try (PreparedStatement delete = conn.prepareStatement(
@@ -839,6 +1020,17 @@ public final class LandAuthorisationRepository {
         }
         try {
             return ProtectionActionType.valueOf(name);
+        } catch (IllegalArgumentException unknown) {
+            return null;
+        }
+    }
+
+    private static LandRuleType parseRule(String name) {
+        if (name == null) {
+            return null;
+        }
+        try {
+            return LandRuleType.valueOf(name);
         } catch (IllegalArgumentException unknown) {
             return null;
         }

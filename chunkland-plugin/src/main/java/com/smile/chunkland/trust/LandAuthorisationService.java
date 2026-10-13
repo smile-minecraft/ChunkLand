@@ -291,10 +291,12 @@ public final class LandAuthorisationService {
                     // another refresh path published. The freshly loaded
                     // authorisation generations travel with the load, so pins
                     // taken from the published snapshot can never permanently
-                    // lag the durable rows.
+                    // lag the durable rows. Durable per-land rules travel in
+                    // the same load and publish, so rules and grants always
+                    // share one generation.
                     cache.publish(cache.snapshot().withDirect(
                             data.directAllows(), data.landDefaults(), data.entryBans(),
-                            data.landPolicyRevisions()));
+                            data.landRules(), data.landPolicyRevisions()));
                 })
                 .whenComplete((ignored, failure) -> {
                     if (failure != null) {

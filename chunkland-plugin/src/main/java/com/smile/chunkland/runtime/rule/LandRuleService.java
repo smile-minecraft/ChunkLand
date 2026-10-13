@@ -66,9 +66,12 @@ public final class LandRuleService implements LandRuleLookup {
 
     /**
      * Service whose world/global layers come from the config defaults
-     * snapshot. Land rules stay empty (no durable rule source is wired yet),
-     * so unknown lands still resolve through world/global/built-in defaults
-     * and missing lands still yield {@code Optional.empty()}.
+     * snapshot. The land layer stays empty here by construction: durable
+     * per-land overrides arrive through the authorisation snapshot published
+     * by the authorisation refresh, and the atomic protection provider
+     * consults that snapshot first before falling back to this service's
+     * world/global/built-in chain. Unknown lands still yield
+     * {@code Optional.empty()}.
      *
      * @param snapshot UUID-keyed config defaults; {@code null} behaves like
      *                 {@link #defaults()}

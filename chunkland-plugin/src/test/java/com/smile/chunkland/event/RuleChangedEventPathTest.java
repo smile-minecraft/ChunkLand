@@ -2,60 +2,44 @@ package com.smile.chunkland.event;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
-import com.smile.chunkland.api.event.PermissionChangedEvent;
 import com.smile.chunkland.api.event.RuleChangedEvent;
+import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
+import com.smile.chunkland.api.land.LandSnapshot;
+import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.rule.LandRuleType;
 import com.smile.chunkland.event.bukkit.RuleChangedBukkitEvent;
-import java.io.IOException;
-import java.nio.file.Files;
+import com.smile.chunkland.persistence.LandAuthorisationRepository;
+import com.smile.chunkland.persistence.PersistenceStore;
+import com.smile.chunkland.persistence.SqliteLandRepository;
+import com.smile.chunkland.protection.LandAuthorisationCache;
+import com.smile.chunkland.rule.LandRuleMutationService;
 import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import org.bukkit.event.Event;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * RuleChanged path status: the event contract, bus dispatch and Bukkit
- * bridge are fully wired and covered here, but production currently has no
- * durable per-land rule mutation to fire from — every {@code
- * LandRuleService} is built with empty per-land overrides and rule state
- * comes from config defaults. Fabricating a firing point (or a schemaless
- * mutation) would invent product behaviour, so this test pins the
- * non-applicable state instead:
- *
- * <p>If a durable per-land rule writer is ever added (a new {@code
- * setRule/putRule/saveRule/updateRule} method in main sources), this test
- * fails on purpose: the author must fire {@link RuleChangedEvent} after the
- * durable commit plus the runtime publish and update this guard.
+ * bridge are fully wired and covered here, and the durable per-land rule
+ * writer fires {@link RuleChangedEvent} exactly once after the durable
+ * commit plus the runtime publish.
  */
 class RuleChangedEventPathTest {
 
-    private static final Path MAIN_SRC = Paths.get("src/main/java/com/smile/chunkland");
+    private static final Instant NOW = Instant.parse("2026-03-01T00:00:00Z");
 
-    /** Writer-shaped method names for durable per-land rule state. */
-    private static final Pattern RULE_WRITER = Pattern.compile(
-            "\\b(setRule|putRule|saveRule|updateRule|setLandRule|putLandRule)\\s*\\(");
-
-    private static List<Path> sources() throws IOException {
-        if (!Files.isDirectory(MAIN_SRC)) {
-            return List.of();
-        }
-        try (Stream<Path> walk = Files.walk(MAIN_SRC)) {
-            return walk.filter(Files::isRegularFile)
-                    .filter(p -> p.toString().endsWith(".java"))
-                    .collect(Collectors.toList());
-        }
-    }
+    @TempDir Path tmp;
 
     @Test
     void ruleChangedContractDispatchesOnBothChannels() {
@@ -93,17 +77,32 @@ class RuleChangedEventPathTest {
     }
 
     @Test
-    void noDurablePerLandRuleWriterExistsYet() throws IOException {
-        List<Path> files = sources();
-        assertTrue(!files.isEmpty(), "plugin sources must exist when run from the module dir");
-        for (Path file : files) {
-            String source = Files.readString(file);
-            if (RULE_WRITER.matcher(source).find()) {
-                fail("A durable per-land rule writer appeared in " + file.getFileName()
-                        + ": wire RuleChangedEvent after commit+publish and update this guard. "
-                        + "See " + PermissionChangedEvent.class.getSimpleName()
-                        + " emission in LandAuthorisationService for the pattern.");
-            }
+    void durableWriterFiresRuleChangedOnceAfterCommitAndPublish() {
+        Path path = tmp.resolve(UUID.randomUUID() + ".db");
+        UUID world = UUID.randomUUID();
+        UUID actor = UUID.randomUUID();
+        LandId land = new LandId(UUID.randomUUID());
+        PublicEventBus bus = new PublicEventBus();
+        AtomicInteger apiCalls = new AtomicInteger();
+        List<Event> bukkitCalls = new ArrayList<>();
+        bus.register(RuleChangedEvent.class, event -> apiCalls.incrementAndGet());
+        try (PersistenceStore store = PersistenceStore.open(path)) {
+            new SqliteLandRepository(store).save(new LandSnapshot(land, "Home", "home",
+                    OwnerRef.player(actor), world, Set.of(new ChunkKey(world, 0, 0)),
+                    List.of(), 0, 0, NOW, NOW)).toCompletableFuture().join();
+            LandRuleMutationService service = new LandRuleMutationService(
+                    new LandAuthorisationRepository(store), new LandAuthorisationCache(),
+                    Clock.fixed(NOW, ZoneOffset.UTC),
+                    PublicEvents.create(bus, bukkitCalls::add));
+
+            service.setRule(actor, land, LandRuleType.PVP, PermissionState.DENY)
+                    .toCompletableFuture().join();
+
+            assertEquals(1, apiCalls.get(),
+                    "one durable rule mutation fires exactly one API event");
+            assertEquals(1, bukkitCalls.size(),
+                    "one durable rule mutation fires exactly one Bukkit event");
+            assertTrue(bukkitCalls.get(0) instanceof RuleChangedBukkitEvent);
         }
     }
 }
