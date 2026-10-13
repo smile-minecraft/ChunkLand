@@ -15,9 +15,7 @@ import org.bukkit.event.Listener;
 
 /**
  * Test-only {@link GuiService} stand-in. Configurable to return either an accepted or rejected
- * {@link GuiResult} from {@link #openInventory(GuiArgument)}, tracks every call for assertions,
- * and exposes {@link #shutdownCount()} so tests can assert ChunkLand does NOT call shutdown on
- * the shared GuiService during cleanup.
+ * {@link GuiResult} from {@link #openInventory(GuiArgument)}, and tracks every call for assertions.
  */
 final class StubGuiService implements GuiService {
 
@@ -25,7 +23,6 @@ final class StubGuiService implements GuiService {
     private final AtomicReference<GuiSession> activeSession = new AtomicReference<>();
     private final AtomicLong openCount = new AtomicLong();
     private final AtomicLong closeCount = new AtomicLong();
-    private final AtomicLong shutdownCount = new AtomicLong();
     private final CopyOnWriteArrayList<GuiArgument> seenArgs = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<UUID> closeUuids = new CopyOnWriteArrayList<>();
 
@@ -43,10 +40,6 @@ final class StubGuiService implements GuiService {
 
     long closeCount() {
         return closeCount.get();
-    }
-
-    long shutdownCount() {
-        return shutdownCount.get();
     }
 
     GuiArgument lastArg() {
@@ -130,10 +123,5 @@ final class StubGuiService implements GuiService {
     @Override
     public String getModuleStatus() {
         return "stub-gui";
-    }
-
-    @Override
-    public void shutdown() {
-        shutdownCount.incrementAndGet();
     }
 }

@@ -51,7 +51,6 @@ final class FakeGuiService implements GuiService {
     private final List<BeginCall> beginCalls = new CopyOnWriteArrayList<>();
     private final List<ApplyCall> applyCalls = new CopyOnWriteArrayList<>();
     private final List<String> validateCalls = new CopyOnWriteArrayList<>();
-    private final AtomicLong shutdownCount = new AtomicLong();
     private final AtomicLong rendererCalls = new AtomicLong();
     private volatile boolean rejectNextOpen;
     private volatile boolean rejectAllClicks;
@@ -82,10 +81,6 @@ final class FakeGuiService implements GuiService {
 
     void rejectNextAsyncApply() {
         rejectNextAsyncApply = true;
-    }
-
-    long shutdownCount() {
-        return shutdownCount.get();
     }
 
     List<CloseCall> closeCalls() {
@@ -262,10 +257,5 @@ final class FakeGuiService implements GuiService {
         } catch (ReflectiveOperationException failure) {
             throw new IllegalStateException("fake async request construction failed", failure);
         }
-    }
-
-    @Override
-    public void shutdown() {
-        shutdownCount.incrementAndGet();
     }
 }

@@ -228,7 +228,6 @@ class ManagementGuiTest {
         FakeGuiService gui = new FakeGuiService();
         GuiNavigator navigator = new GuiNavigator(gui);
         navigator.open(ALICE, unavailable).orElseThrow();
-        assertEquals(0, gui.shutdownCount());
     }
 
     @Test

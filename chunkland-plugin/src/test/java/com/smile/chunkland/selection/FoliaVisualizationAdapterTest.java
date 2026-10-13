@@ -187,6 +187,16 @@ class FoliaVisualizationAdapterTest {
         }
 
         @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(Player player) {
+            throw new UnsupportedOperationException("FakeSafeScheduler does not support scopeFor(Player)");
+        }
+
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity entity) {
+            throw new UnsupportedOperationException("FakeSafeScheduler does not support scopeFor(Entity)");
+        }
+
+        @Override
         public void cancelAll() {
         }
     }

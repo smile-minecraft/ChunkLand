@@ -320,6 +320,16 @@ class BedrockClaimFormHandlerTest {
         }
 
         @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(Player player) {
+            throw new UnsupportedOperationException("ImmediateScheduler does not support scopeFor(Player)");
+        }
+
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity entity) {
+            throw new UnsupportedOperationException("ImmediateScheduler does not support scopeFor(Entity)");
+        }
+
+        @Override
         public void cancelAll() {
         }
     }
@@ -1065,6 +1075,16 @@ class BedrockClaimFormHandlerTest {
         @Override
         public java.util.List<com.smile.acelib.scheduler.TaskErrorRecord> getRecorderErrors(int limit) {
             return java.util.List.of();
+        }
+
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(Player player) {
+            throw new UnsupportedOperationException("CapturingScheduler does not support scopeFor(Player)");
+        }
+
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity entity) {
+            throw new UnsupportedOperationException("CapturingScheduler does not support scopeFor(Entity)");
         }
 
         @Override

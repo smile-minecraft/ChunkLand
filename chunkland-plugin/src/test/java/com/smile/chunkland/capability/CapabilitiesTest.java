@@ -1,5 +1,6 @@
 package com.smile.chunkland.capability;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -129,10 +130,23 @@ class CapabilitiesTest {
             .build();
 
         caps.release();
-        assertEquals(0L, gui.shutdownCount(),
-            "release() must NOT shut down the shared GuiService");
+        // GuiService in AceLib 1.5.0 no longer defines a shutdown() method (removed in 1.4.0),
+        // so provider shutdown is impossible by type contract; release() only touches SafeScheduler.
+        assertEquals(0L, gui.openCount(),
+            "release() must NOT invoke openInventory on GuiService");
+        assertEquals(0L, gui.closeCount(),
+            "release() must NOT invoke closeInventory on GuiService");
+        assertNull(gui.lastArg(),
+            "release() must NOT pass any GuiArgument to GuiService");
         assertEquals(0L, bedrock.shutdownCount(),
             "release() must NOT shut down the shared BedrockService");
+
+        // Positive control: directly invoking GuiService methods mutates these exact counters,
+        // proving the zero-invocation assertions above are alive and observing real interactions.
+        gui.openInventory(null);
+        gui.closeInventory(java.util.UUID.randomUUID(), 1L);
+        assertEquals(1L, gui.openCount(), "positive control: openCount must increment on direct invocation");
+        assertEquals(1L, gui.closeCount(), "positive control: closeCount must increment on direct invocation");
     }
 
     @Test
@@ -171,6 +185,34 @@ class CapabilitiesTest {
         caps.release();
         assertEquals(1, stub.cancelAttempts, "the throwing scheduler must still receive the call");
         // No exception means the fail-closed contract held.
+    }
+
+    @Test
+    void releaseWithMissingProvidersDoesNotThrowAndTouchesOnlyScheduler() {
+        StubSafeScheduler scheduler = new StubSafeScheduler();
+        Capabilities caps = Capabilities.builder()
+            .scheduler(scheduler)
+            .guiService(null)
+            .bedrockService(null)
+            .platform(Platform.PAPER)
+            .capability(capability())
+            .build();
+
+        caps.release();
+        assertEquals(1L, scheduler.cancelAllCount(),
+            "scheduler must still receive cancelAll when other providers are absent");
+
+        Capabilities nullSchedulerCaps = Capabilities.builder()
+            .scheduler(null)
+            .guiService(new StubGuiService(com.smile.acelib.gui.GuiResult.failed("x", "y")))
+            .bedrockService(new StubBedrockService(
+                new StubFormService(com.smile.acelib.form.FormSendResult.REJECTED, "x")))
+            .platform(Platform.PAPER)
+            .capability(capability())
+            .build();
+
+        assertDoesNotThrow(() -> nullSchedulerCaps.release(),
+            "release with null scheduler must be safe and no-op without mutating providers");
     }
 
     @Test
@@ -246,6 +288,16 @@ class CapabilitiesTest {
         @Override
         public java.util.List<com.smile.acelib.scheduler.TaskErrorRecord> getRecorderErrors(int limit) {
             return java.util.List.of();
+        }
+
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Player player) {
+            throw new UnsupportedOperationException("SafeSchedulerThrowing does not support scopeFor(Player)");
+        }
+
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity entity) {
+            throw new UnsupportedOperationException("SafeSchedulerThrowing does not support scopeFor(Entity)");
         }
     }
 }

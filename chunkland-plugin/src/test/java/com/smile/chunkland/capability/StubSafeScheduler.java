@@ -106,6 +106,16 @@ final class StubSafeScheduler implements SafeScheduler {
     }
 
     @Override
+    public com.smile.acelib.scheduler.TaskScope scopeFor(Player player) {
+        throw new UnsupportedOperationException("StubSafeScheduler does not support scopeFor(Player)");
+    }
+
+    @Override
+    public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity entity) {
+        throw new UnsupportedOperationException("StubSafeScheduler does not support scopeFor(Entity)");
+    }
+
+    @Override
     public void cancelAll() {
         cancelAllCount.incrementAndGet();
         for (TrackedTask t : tracked) {

@@ -90,10 +90,6 @@ class M0CapabilityProbeTest {
             public String getModuleStatus() {
                 return "test-gui";
             }
-            @Override
-            public void shutdown() {
-                // no-op; release() must not drive this counter.
-            }
         };
     }
 
@@ -189,6 +185,12 @@ class M0CapabilityProbeTest {
             @Override public ScheduledTask runForPlayerLater(org.bukkit.entity.Player p, Runnable r, long delay) { return null; }
             @Override public ScheduledTask runForEntity(org.bukkit.entity.Entity e, Runnable r) { return null; }
             @Override public ScheduledTask runAtLocation(org.bukkit.Location l, Runnable r) { return null; }
+            @Override public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Player p) {
+                throw new UnsupportedOperationException("anonymous SafeScheduler does not support scopeFor(Player)");
+            }
+            @Override public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity e) {
+                throw new UnsupportedOperationException("anonymous SafeScheduler does not support scopeFor(Entity)");
+            }
             @Override public List<com.smile.acelib.scheduler.TaskErrorRecord> getRecorderErrors(int limit) {
                 throw new RuntimeException("recorder boom");
             }
@@ -472,5 +474,13 @@ class M0CapabilityProbeTest {
         public ScheduledTask runAtLocation(org.bukkit.Location l, Runnable r) { throw new RuntimeException("unused"); }
         @Override
         public List<com.smile.acelib.scheduler.TaskErrorRecord> getRecorderErrors(int limit) { return List.of(); }
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Player p) {
+            throw new UnsupportedOperationException("SafeSchedulerThrowing does not support scopeFor(Player)");
+        }
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity e) {
+            throw new UnsupportedOperationException("SafeSchedulerThrowing does not support scopeFor(Entity)");
+        }
     }
 }

@@ -198,6 +198,16 @@ class BedrockManageWiringTest {
         }
 
         @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(Player player) {
+            throw new UnsupportedOperationException("InlineScheduler does not support scopeFor(Player)");
+        }
+
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity entity) {
+            throw new UnsupportedOperationException("InlineScheduler does not support scopeFor(Entity)");
+        }
+
+        @Override
         public void cancelAll() {
         }
     }

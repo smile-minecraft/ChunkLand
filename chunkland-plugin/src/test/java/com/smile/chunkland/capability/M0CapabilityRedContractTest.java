@@ -467,5 +467,13 @@ class M0CapabilityRedContractTest {
         public ScheduledTask runAtLocation(Location l, Runnable r) { throw new RuntimeException("unused"); }
         @Override
         public List<com.smile.acelib.scheduler.TaskErrorRecord> getRecorderErrors(int limit) { return List.of(); }
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(Player p) {
+            throw new UnsupportedOperationException("SafeSchedulerThrowing does not support scopeFor(Player)");
+        }
+        @Override
+        public com.smile.acelib.scheduler.TaskScope scopeFor(org.bukkit.entity.Entity e) {
+            throw new UnsupportedOperationException("SafeSchedulerThrowing does not support scopeFor(Entity)");
+        }
     }
 }

@@ -439,7 +439,7 @@ class GuiNavigatorTest {
         assertTrue(navigator.trackedPlayers().isEmpty());
         assertTrue(gui.closeCalls().contains(new FakeGuiService.CloseCall(ALICE, aliceGen)));
         assertTrue(gui.closeCalls().contains(new FakeGuiService.CloseCall(BOB, bobGen)));
-        assertEquals(0L, gui.shutdownCount(), "disable must never shut down the shared provider");
+        // GuiService in AceLib 1.5.0 does not expose shutdown(); closeAll() closes only ChunkLand sessions.
 
         int closesAfterFirst = gui.closeCalls().size();
         navigator.closeAll();
@@ -528,10 +528,6 @@ class GuiNavigatorTest {
         @Override
         public String getModuleStatus() {
             return "slot-protected-stub";
-        }
-
-        @Override
-        public void shutdown() {
         }
     }
 }
