@@ -568,7 +568,7 @@ public final class LandAuthorisationRepository {
             case BLOCK_BREAK, BLOCK_PLACE, CONTAINER_OPEN, WORKSTATION_USE, DOOR_USE,
                     BUTTON_USE, LEVER_USE, REDSTONE_USE, BUCKET_USE, ENTRY, VEHICLE_USE,
                     ENTITY_INTERACT, ENTITY_DAMAGE, ITEM_FRAME, ARMOR_STAND, HANGING_ENTITY,
-                    FARMLAND_TRAMPLE ->
+                    FARMLAND_TRAMPLE, FIRE_IGNITE ->
                 true;
             case PLAYER_DAMAGE_PLAYER, PISTON_MOVE, FLUID_FLOW, HOPPER_TRANSFER, FIRE_SPREAD,
                     FIRE_BURN, EXPLOSION_TERRAIN, EXPLOSION_ENTITY, MOB_GRIEFING,
@@ -622,7 +622,7 @@ public final class LandAuthorisationRepository {
             "BLOCK_BREAK", "BLOCK_PLACE", "CONTAINER_OPEN", "WORKSTATION_USE", "DOOR_USE",
             "BUTTON_USE", "LEVER_USE", "REDSTONE_USE", "BUCKET_USE", "ENTRY", "VEHICLE_USE",
             "ENTITY_INTERACT", "ENTITY_DAMAGE", "ITEM_FRAME", "ARMOR_STAND", "HANGING_ENTITY",
-            "FARMLAND_TRAMPLE");
+            "FARMLAND_TRAMPLE", "FIRE_IGNITE");
 
     private static void upsertWhitelistEntries(Connection conn, UUID profileId) throws SQLException {
         try (PreparedStatement upsert = conn.prepareStatement(

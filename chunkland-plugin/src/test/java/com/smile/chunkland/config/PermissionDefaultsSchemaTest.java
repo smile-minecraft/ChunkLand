@@ -194,4 +194,30 @@ class PermissionDefaultsSchemaTest {
                 config.withEpochsBumped(config.worlds()).subjectDefaults().global()
                         .get(ProtectionActionType.BLOCK_BREAK));
     }
+
+    @Test
+    void fireIgniteParsesUnderSubjectDefaults() {
+        ChunkLandConfig config = assertDoesNotThrow(() -> ConfigSchema.parseYamlText(""
+                + "subject-defaults:\n"
+                + "  global:\n"
+                + "    FIRE_IGNITE: DENY\n"
+                + "  worlds:\n"
+                + "    world:\n"
+                + "      FIRE_IGNITE: ALLOW\n"));
+        assertEquals(PermissionState.DENY, config.subjectDefaults().global()
+                .get(ProtectionActionType.FIRE_IGNITE));
+        assertEquals(PermissionState.ALLOW, config.subjectDefaults().worlds()
+                .get("world").get(ProtectionActionType.FIRE_IGNITE));
+    }
+
+    @Test
+    void unknownSubjectActionNamesItsPath() {
+        ConfigValidationException ex = assertThrows(ConfigValidationException.class,
+                () -> ConfigSchema.parseYamlText(""
+                        + "subject-defaults:\n"
+                        + "  global:\n"
+                        + "    FIRE_IGNIT: ALLOW\n"));
+        assertTrue(ex.getMessage().contains("subject-defaults.global.FIRE_IGNIT"),
+                "got: " + ex.getMessage());
+    }
 }

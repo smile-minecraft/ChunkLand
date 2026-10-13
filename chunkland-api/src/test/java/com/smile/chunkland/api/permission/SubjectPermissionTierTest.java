@@ -19,7 +19,7 @@ class SubjectPermissionTierTest {
                 assertEquals(null, tiers.put(action, tier), action + " must have one tier");
             }
         }
-        assertEquals(22, tiers.size());
+        assertEquals(23, tiers.size());
         assertEquals(Set.of(ProtectionActionType.ENTRY), actionsIn(tiers, SubjectPermissionTier.FIRST));
         assertEquals(Set.of(
                         ProtectionActionType.CONTAINER_OPEN,
@@ -39,7 +39,8 @@ class SubjectPermissionTierTest {
                         ProtectionActionType.ITEM_FRAME,
                         ProtectionActionType.ARMOR_STAND,
                         ProtectionActionType.HANGING_ENTITY,
-                        ProtectionActionType.FARMLAND_TRAMPLE),
+                        ProtectionActionType.FARMLAND_TRAMPLE,
+                        ProtectionActionType.FIRE_IGNITE),
                 actionsIn(tiers, SubjectPermissionTier.THIRD));
         assertEquals(Set.of(
                         ProtectionActionType.MANAGE_MEMBER,

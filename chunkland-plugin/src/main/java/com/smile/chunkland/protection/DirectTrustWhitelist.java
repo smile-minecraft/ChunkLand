@@ -33,7 +33,8 @@ public final class DirectTrustWhitelist {
             ProtectionActionType.ITEM_FRAME,
             ProtectionActionType.ARMOR_STAND,
             ProtectionActionType.HANGING_ENTITY,
-            ProtectionActionType.FARMLAND_TRAMPLE);
+            ProtectionActionType.FARMLAND_TRAMPLE,
+            ProtectionActionType.FIRE_IGNITE);
 
     private DirectTrustWhitelist() {
     }

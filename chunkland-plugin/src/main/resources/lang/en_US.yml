@@ -628,6 +628,7 @@ permission:
     armor_stand: "Changing armor stands"
     hanging_entity: "Changing paintings and hangings"
     farmland_trample: "Trampling farmland"
+    fire_ignite: "Starting fires"
     player_damage_player: "Player versus player combat"
     piston_move: "Piston movement"
     fluid_flow: "Fluid flow"

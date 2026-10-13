@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Test;
 class DirectTrustWhitelistTest {
 
     @Test
-    void allowedSetIsExactlyTheSeventeenSubjectActions() {
-        assertEquals(17, DirectTrustWhitelist.ALLOWED.size());
+    void allowedSetIsExactlyTheEighteenSubjectActions() {
+        assertEquals(18, DirectTrustWhitelist.ALLOWED.size());
         for (ProtectionActionType action : new ProtectionActionType[] {
                 ProtectionActionType.BLOCK_BREAK,
                 ProtectionActionType.BLOCK_PLACE,
@@ -38,7 +38,8 @@ class DirectTrustWhitelistTest {
                 ProtectionActionType.ITEM_FRAME,
                 ProtectionActionType.ARMOR_STAND,
                 ProtectionActionType.HANGING_ENTITY,
-                ProtectionActionType.FARMLAND_TRAMPLE}) {
+                ProtectionActionType.FARMLAND_TRAMPLE,
+                ProtectionActionType.FIRE_IGNITE}) {
             assertTrue(DirectTrustWhitelist.isAllowed(action), action + " must be whitelisted");
             assertEquals(DecisionSource.SUBJECT_PERMISSION, action.decisionSource(),
                     action + " must resolve from the subject chain");

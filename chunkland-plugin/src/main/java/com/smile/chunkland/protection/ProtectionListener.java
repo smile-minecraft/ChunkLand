@@ -44,6 +44,7 @@ import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
@@ -1677,6 +1678,92 @@ public final class ProtectionListener implements Listener {
             } catch (RuntimeException ignored) {
             }
         }
+    }
+
+    /**
+     * The moment a block catches fire. Routing is by attributable player
+     * identity, never by cause name: a player lighting the fire (flint and
+     * steel in hand, or a projectile whose shooter is a player) decides as
+     * {@code FIRE_IGNITE} at the ignited block, while every ownerless
+     * ignition (lava, lightning, spread, dispenser steel, mob-shot or
+     * ownerless projectiles) decides as {@code FIRE_SPREAD} at the ignited
+     * block and, when a source block is known, at that block too, so fire
+     * can neither start nor escape where the rule denies. Shooter identity
+     * comes from the owner UUID first with the shooter wrapper as fallback;
+     * neither the shooter's location nor its online state is read, so this
+     * stays on the event's own region thread on Folia.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockIgnite(BlockIgniteEvent event) {
+        try {
+            Block block = event.getBlock();
+            if (block == null || block.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            Player player = event.getPlayer();
+            UUID subject = null;
+            if (player != null) {
+                subject = player.getUniqueId();
+            } else if (event.getIgnitingEntity() instanceof Projectile projectile) {
+                subject = igniteShooter(projectile);
+            }
+            if (subject != null) {
+                var igniteDecision = decideAtBlock(subject, block,
+                        ProtectionActionType.FIRE_IGNITE);
+                if (igniteDecision.outcome() == PermissionState.DENY) {
+                    event.setCancelled(true);
+                    if (player != null) {
+                        rejectAtBlock(player, ProtectionActionType.FIRE_IGNITE,
+                                igniteDecision, block);
+                    }
+                }
+                return;
+            }
+            if (deniedAtBlock(ENVIRONMENT_ACTOR, block, ProtectionActionType.FIRE_SPREAD)
+                    || ignitingBlockDenied(event)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    /**
+     * Player behind an igniting projectile: the shooting player when one is
+     * identifiable, {@code null} for identifiable non-player sources and for
+     * sources that cannot be identified at all. Identity only, never
+     * position: an offline-but-identifiable shooter is still judged by UUID.
+     */
+    private static UUID igniteShooter(Projectile projectile) {
+        ProjectileSource shooter;
+        try {
+            shooter = projectile.getShooter();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+        if (shooter instanceof Player player) {
+            UUID ownerId = ownerUniqueId(projectile);
+            return ownerId != null ? ownerId : player.getUniqueId();
+        }
+        return null;
+    }
+
+    /**
+     * Either-end deny for an ownerless ignition whose source block is known:
+     * the igniting block (lava, spreading fire, dispenser) answers the same
+     * {@code FIRE_SPREAD} rule as the ignited block. An unknown source
+     * answers {@code false} so the ignited block alone decides.
+     */
+    private boolean ignitingBlockDenied(BlockIgniteEvent event) {
+        Block igniting = event.getIgnitingBlock();
+        if (igniting == null || igniting.getWorld() == null) {
+            return false;
+        }
+        return deniedAtBlock(ENVIRONMENT_ACTOR, igniting, ProtectionActionType.FIRE_SPREAD);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)

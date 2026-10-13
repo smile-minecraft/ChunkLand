@@ -200,7 +200,7 @@ class LandAuthorisationTrustRepairTest {
     }
 
     @Test
-    void trustCleansNonWhitelistEntriesLeavingOnlySeventeen() throws Exception {
+    void trustCleansNonWhitelistEntriesLeavingOnlyWhitelist() throws Exception {
         Path path = tmp.resolve("cleanup.db");
         UUID world = UUID.randomUUID();
         UUID owner = UUID.randomUUID();
@@ -245,7 +245,7 @@ class LandAuthorisationTrustRepairTest {
                 }
             });
             assertEquals(0, bad, "non-whitelist durable entries must be removed on trust");
-            assertEquals(17, total, "direct profile must hold exactly the whitelist after trust");
+            assertEquals(18, total, "direct profile must hold exactly the whitelist after trust");
             // Other profiles keep their rows: cleanup is scoped to the direct profile.
             UUID otherProfile = UUID.randomUUID();
             store.execute(conn -> {

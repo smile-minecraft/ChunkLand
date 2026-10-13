@@ -102,7 +102,7 @@ class LandAuthorisationRepositoryTest {
                             }
                         }
                     }));
-            assertEquals(17, count(store,
+            assertEquals(18, count(store,
                     "SELECT COUNT(*) FROM permission_profile_entries WHERE profile_id = ?", profileId));
             assertEquals(1, count(store,
                     "SELECT COUNT(*) FROM land_bindings WHERE land_id = ? AND subject_type = 'PLAYER'",
@@ -139,7 +139,7 @@ class LandAuthorisationRepositoryTest {
             UUID other = repo.trust(second, target, owner, now())
                     .toCompletableFuture().join();
             assertEquals(once, other, "one player reuses one implicit direct profile across lands");
-            assertEquals(17, count(store,
+            assertEquals(18, count(store,
                     "SELECT COUNT(*) FROM permission_profile_entries WHERE profile_id = ?", once));
             assertEquals(1, count(store, "SELECT COUNT(*) FROM permission_profiles"));
         }
@@ -163,7 +163,7 @@ class LandAuthorisationRepositoryTest {
             assertEquals(0, count(store,
                     "SELECT COUNT(*) FROM land_bindings WHERE land_id = ?", land.value()));
             assertEquals(1, count(store, "SELECT COUNT(*) FROM permission_profiles"));
-            assertEquals(17, count(store,
+            assertEquals(18, count(store,
                     "SELECT COUNT(*) FROM permission_profile_entries WHERE profile_id = ?", profile));
 
             // Resending untrust stays successful and safe.
@@ -300,6 +300,70 @@ class LandAuthorisationRepositoryTest {
                     .getOrDefault(target, Set.of()).contains(ProtectionActionType.BLOCK_BREAK));
             assertEquals(PermissionState.DENY, data.landDefaults().getOrDefault(land, Map.of())
                     .getOrDefault(ProtectionActionType.CONTAINER_OPEN, PermissionState.INHERIT));
+        }
+    }
+
+    @Test
+    void fireIgniteLandDefaultPersistsAndReloads() throws Exception {
+        Path path = db();
+        UUID world = UUID.randomUUID();
+        UUID owner = UUID.randomUUID();
+        LandId land = new LandId(UUID.randomUUID());
+        try (PersistenceStore store = PersistenceStore.open(path)) {
+            new SqliteLandRepository(store).save(land(world, land, OwnerRef.player(owner)))
+                    .toCompletableFuture().join();
+            new LandAuthorisationRepository(store).setDefault(land,
+                    ProtectionActionType.FIRE_IGNITE, PermissionState.ALLOW,
+                    owner, now()).toCompletableFuture().join();
+        }
+        try (PersistenceStore store = PersistenceStore.open(path)) {
+            LandAuthorisationRepository.SnapshotData data =
+                    new LandAuthorisationRepository(store).loadSnapshotData()
+                            .toCompletableFuture().join();
+            assertEquals(PermissionState.ALLOW, data.landDefaults().getOrDefault(land, Map.of())
+                    .getOrDefault(ProtectionActionType.FIRE_IGNITE, PermissionState.INHERIT));
+        }
+    }
+
+    @Test
+    void legacyProfileWithoutFireIgniteLoadsAndHealsOnTrust() {
+        try (PersistenceStore store = PersistenceStore.open(db())) {
+            SqliteLandRepository lands = new SqliteLandRepository(store);
+            LandAuthorisationRepository repo = new LandAuthorisationRepository(store);
+            UUID world = UUID.randomUUID();
+            UUID owner = UUID.randomUUID();
+            UUID target = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            lands.save(land(world, land, OwnerRef.player(owner))).toCompletableFuture().join();
+
+            UUID profile = repo.trust(land, target, owner, now())
+                    .toCompletableFuture().join();
+            // Simulate a database written before the ignition action existed.
+            store.execute(conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "DELETE FROM permission_profile_entries"
+                                + " WHERE profile_id = ? AND permission = 'FIRE_IGNITE'")) {
+                    ps.setBytes(1, UuidBlob.encode(profile));
+                    assertEquals(1, ps.executeUpdate());
+                }
+                return null;
+            });
+
+            LandAuthorisationRepository.SnapshotData legacy =
+                    repo.loadSnapshotData().toCompletableFuture().join();
+            Set<ProtectionActionType> allows = legacy.directAllows()
+                    .getOrDefault(land, Map.of()).getOrDefault(target, Set.of());
+            assertTrue(allows.contains(ProtectionActionType.BLOCK_BREAK),
+                    "legacy rows must keep loading");
+            assertFalse(allows.contains(ProtectionActionType.FIRE_IGNITE),
+                    "a missing ignition row reads as absent (INHERIT), never as an error");
+
+            repo.trust(land, target, owner, now()).toCompletableFuture().join();
+            assertEquals(18, count(store,
+                    "SELECT COUNT(*) FROM permission_profile_entries WHERE profile_id = ?", profile));
+            assertTrue(repo.loadSnapshotData().toCompletableFuture().join().directAllows()
+                    .getOrDefault(land, Map.of()).getOrDefault(target, Set.of())
+                    .contains(ProtectionActionType.FIRE_IGNITE));
         }
     }
 }

@@ -20,6 +20,8 @@ import java.util.Objects;
   *       and the five paths added here (redstone use, generic entity
   *       interaction, mob griefing, hostile and passive natural spawns), plus
   *       the projectile-landing extension of the dispense crossing, plus the
+  *       ignition split (player fire-starting answered directly, ownerless
+  *       ignition answered by the fire-spread rule), plus the
   *       five management actions enforced by the shared domain gate (no Bukkit
   *       block listener; command and future GUI/Form entry points resolve the
   *       gate before touching the mutation pipeline), plus the six
@@ -125,6 +127,10 @@ public final class ProtectionCoverage {
                 "onFireSpread for flame spreading (grass and vines stay vanilla)");
         put(table, ProtectionActionType.FIRE_BURN, Tier.P0_ENFORCED,
                 "onFireBurn at the burning block");
+        put(table, ProtectionActionType.FIRE_IGNITE, Tier.P1_ENFORCED,
+                "onBlockIgnite at the ignited block for player fire-starting; "
+                        + "ownerless ignition answers FIRE_SPREAD at the ignited "
+                        + "and igniting blocks");
         // --- P1: live listener paths (earlier milestones plus this one) ---
         put(table, ProtectionActionType.EXPLOSION_TERRAIN, Tier.P1_ENFORCED,
                 "onEntityExplode/onBlockExplode per-block filtering (cross-boundary milestone)");

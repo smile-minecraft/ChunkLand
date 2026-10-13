@@ -30,7 +30,8 @@ public enum SubjectPermissionTier {
             ProtectionActionType.ITEM_FRAME,
             ProtectionActionType.ARMOR_STAND,
             ProtectionActionType.HANGING_ENTITY,
-            ProtectionActionType.FARMLAND_TRAMPLE)),
+            ProtectionActionType.FARMLAND_TRAMPLE,
+            ProtectionActionType.FIRE_IGNITE)),
     FOURTH(4, List.of(
             ProtectionActionType.MANAGE_MEMBER,
             ProtectionActionType.MANAGE_PERMISSION,

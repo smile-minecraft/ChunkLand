@@ -628,6 +628,7 @@ permission:
     armor_stand: "動用盔甲座"
     hanging_entity: "動用畫與掛飾"
     farmland_trample: "踩踏耕地"
+    fire_ignite: "點火"
     player_damage_player: "玩家互相攻擊"
     piston_move: "活塞推動方塊"
     fluid_flow: "液體流動"
