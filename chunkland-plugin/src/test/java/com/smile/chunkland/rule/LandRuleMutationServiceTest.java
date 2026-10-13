@@ -1,6 +1,7 @@
 package com.smile.chunkland.rule;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -62,6 +63,11 @@ class LandRuleMutationServiceTest {
         final LandId land = new LandId(UUID.randomUUID());
 
         Env(Path db) {
+            this(db, null);
+        }
+
+        Env(Path db,
+                java.util.function.Supplier<java.util.concurrent.CompletionStage<SnapshotData>> loader) {
             store = PersistenceStore.open(db);
             new SqliteLandRepository(store).save(new LandSnapshot(land, "Home", "home",
                     OwnerRef.player(owner), world, Set.of(new ChunkKey(world, 0, 0)),
@@ -70,9 +76,14 @@ class LandRuleMutationServiceTest {
                 calls.incrementAndGet();
                 events.add(event);
             });
-            service = new LandRuleMutationService(new LandAuthorisationRepository(store),
-                    cache, Clock.fixed(NOW, ZoneOffset.UTC),
-                    PublicEvents.create(bus, bukkitCalls::add));
+            LandAuthorisationRepository repository = new LandAuthorisationRepository(store);
+            service = loader == null
+                    ? new LandRuleMutationService(repository,
+                            cache, Clock.fixed(NOW, ZoneOffset.UTC),
+                            PublicEvents.create(bus, bukkitCalls::add))
+                    : new LandRuleMutationService(repository,
+                            cache, Clock.fixed(NOW, ZoneOffset.UTC),
+                            PublicEvents.create(bus, bukkitCalls::add), loader);
         }
 
         private long revision() {
@@ -295,6 +306,76 @@ class LandRuleMutationServiceTest {
             assertTrue(!env.cache.snapshot().loaded(),
                     "failed reload must replace the stale snapshot with unloaded, not keep it");
             assertEquals(0, env.calls.get(), "a failed reload writes nothing, so no event fires");
+        }
+    }
+
+    @Test
+    void committedButUnpublishedYieldsIdentifiableResult() {
+        java.util.concurrent.CompletableFuture<SnapshotData> brokenRefresh =
+                new java.util.concurrent.CompletableFuture<>();
+        brokenRefresh.completeExceptionally(
+                new java.sql.SQLException("simulated publish-load failure"));
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"), () -> brokenRefresh)) {
+            CompletionException failure = assertThrows(CompletionException.class, () ->
+                    env.service.setRule(env.owner, env.land, LandRuleType.PVP,
+                            PermissionState.DENY).toCompletableFuture().join());
+            assertTrue(failure.getCause() instanceof RulePublishException,
+                    "a committed write with a failed publish must surface as a "
+                            + "RulePublishException, got: " + failure.getCause());
+            RulePublishException committed = (RulePublishException) failure.getCause();
+            assertEquals(env.owner, committed.actorUuid());
+            assertEquals(env.land, committed.landId());
+            assertEquals(LandRuleType.PVP, committed.rule());
+            assertEquals(PermissionState.INHERIT, committed.before(),
+                    "no override existed before the committed write");
+            assertEquals(PermissionState.DENY, committed.after());
+            assertEquals(0, env.calls.get(),
+                    "a publish that never happened fires no event");
+            assertEquals(0, env.bukkitCalls.size(),
+                    "a publish that never happened fires no event");
+            assertEquals(PermissionState.DENY, env.durableRule(LandRuleType.PVP),
+                    "the durable row stands even though the publish failed");
+            assertTrue(!env.cache.snapshot().loaded(),
+                    "the failed publish still fails the snapshot closed");
+        }
+    }
+
+    @Test
+    void expectedWriteCommittedButUnpublishedYieldsIdentifiableResult() {
+        java.util.concurrent.CompletableFuture<SnapshotData> brokenRefresh =
+                new java.util.concurrent.CompletableFuture<>();
+        brokenRefresh.completeExceptionally(
+                new java.sql.SQLException("simulated publish-load failure"));
+        try (Env env = new Env(tmp.resolve(UUID.randomUUID() + ".db"), () -> brokenRefresh)) {
+            // Seed one committed rule through the repository so the expected
+            // value and generation pins exist before the failing publish.
+            LandAuthorisationRepository seeding = new LandAuthorisationRepository(env.store);
+            assertEquals(PermissionState.INHERIT,
+                    seeding.setRule(env.land, LandRuleType.PVP, PermissionState.ALLOW,
+                            env.owner, NOW).toCompletableFuture().join());
+            Long pinned = seeding.loadSnapshotData().toCompletableFuture().join()
+                    .landPolicyRevisions().get(env.land);
+            assertNotNull(pinned, "the seeded land must carry a durable generation");
+
+            CompletionException failure = assertThrows(CompletionException.class, () ->
+                    env.service.setRuleExpected(env.owner, env.land, LandRuleType.PVP,
+                            PermissionState.ALLOW, pinned, PermissionState.DENY)
+                            .toCompletableFuture().join());
+            assertTrue(failure.getCause() instanceof RulePublishException,
+                    "a committed expected-write with a failed publish must surface as a "
+                            + "RulePublishException, got: " + failure.getCause());
+            RulePublishException committed = (RulePublishException) failure.getCause();
+            assertEquals(env.owner, committed.actorUuid());
+            assertEquals(env.land, committed.landId());
+            assertEquals(LandRuleType.PVP, committed.rule());
+            assertEquals(PermissionState.ALLOW, committed.before());
+            assertEquals(PermissionState.DENY, committed.after());
+            assertEquals(0, env.calls.get(),
+                    "a publish that never happened fires no event");
+            assertEquals(PermissionState.DENY, env.durableRule(LandRuleType.PVP),
+                    "the durable row stands even though the publish failed");
+            assertTrue(!env.cache.snapshot().loaded(),
+                    "the failed publish still fails the snapshot closed");
         }
     }
 

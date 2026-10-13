@@ -14,12 +14,17 @@ import java.nio.file.Path;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -328,6 +333,72 @@ class LandRuleRepositoryTest {
             assertTrue(!data.landRules().getOrDefault(land, Map.of())
                     .containsKey(LandRuleType.FIRE_SPREAD),
                     "a stored INHERIT must read as unset, never as a stored value");
+        }
+    }
+
+    @Test
+    void skippedRowsAreCountedAndWarned() {
+        try (PersistenceStore store = PersistenceStore.open(db())) {
+            SqliteLandRepository lands = new SqliteLandRepository(store);
+            UUID world = UUID.randomUUID();
+            UUID owner = UUID.randomUUID();
+            LandId land = new LandId(UUID.randomUUID());
+            lands.save(land(world, land, OwnerRef.player(owner))).toCompletableFuture().join();
+            store.execute(conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "INSERT INTO land_rules (land_id, rule_type, state) VALUES (?, ?, ?)")) {
+                    ps.setBytes(1, UuidBlob.encode(land.value()));
+                    ps.setString(2, "PVP");
+                    ps.setString(3, "DENY");
+                    ps.executeUpdate();
+                    ps.setBytes(1, UuidBlob.encode(land.value()));
+                    ps.setString(2, "BOGUS_RULE");
+                    ps.setString(3, "ALLOW");
+                    ps.executeUpdate();
+                    ps.setBytes(1, UuidBlob.encode(land.value()));
+                    ps.setString(2, "PISTON");
+                    ps.setString(3, "BOGUS_STATE");
+                    ps.executeUpdate();
+                }
+                return null;
+            });
+
+            Logger repositoryLog =
+                    Logger.getLogger(LandAuthorisationRepository.class.getName());
+            List<LogRecord> captured = Collections.synchronizedList(new ArrayList<>());
+            Handler handler = new Handler() {
+                @Override
+                public void publish(LogRecord record) {
+                    captured.add(record);
+                }
+
+                @Override
+                public void flush() {
+                }
+
+                @Override
+                public void close() {
+                }
+            };
+            repositoryLog.addHandler(handler);
+            LandAuthorisationRepository.SnapshotData data;
+            try {
+                data = new LandAuthorisationRepository(store).loadSnapshotData()
+                        .toCompletableFuture().join();
+            } finally {
+                repositoryLog.removeHandler(handler);
+            }
+
+            assertEquals(PermissionState.DENY, data.landRules().getOrDefault(land, Map.of())
+                    .getOrDefault(LandRuleType.PVP, PermissionState.INHERIT),
+                    "the valid row must keep loading");
+            assertEquals(2, data.skippedLandRules(),
+                    "both corrupt rows must be counted as skipped");
+            assertTrue(captured.stream().anyMatch(record ->
+                            record.getLevel() == java.util.logging.Level.WARNING
+                                    && record.getMessage().contains("2")
+                                    && record.getMessage().contains("land_rules")),
+                    "a load that skips rows must log one warning carrying the count");
         }
     }
 

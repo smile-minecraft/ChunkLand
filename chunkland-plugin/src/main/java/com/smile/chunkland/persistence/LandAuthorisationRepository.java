@@ -494,6 +494,7 @@ public final class LandAuthorisationRepository {
                 }
             }
             Map<LandId, Map<LandRuleType, PermissionState>> rules = new HashMap<>();
+            int skippedRules = 0;
             try (PreparedStatement landRules = connection.prepareStatement(
                     "SELECT land_id, rule_type, state FROM land_rules")) {
                 try (ResultSet rows = landRules.executeQuery()) {
@@ -502,6 +503,7 @@ public final class LandAuthorisationRepository {
                         PermissionState state = parseState(rows.getString(3));
                         if (rule == null || state == null
                                 || state == PermissionState.INHERIT) {
+                            skippedRules++;
                             continue;
                         }
                         LandId landId;
@@ -509,10 +511,12 @@ public final class LandAuthorisationRepository {
                             landId = new LandId(UuidBlob.decode(rows.getBytes(1)));
                         } catch (RuntimeException corrupt) {
                             LOG.warning("Skipping land rule with malformed id");
+                            skippedRules++;
                             continue;
                         }
                         if (landId == null) {
                             LOG.warning("Skipping land rule with malformed id");
+                            skippedRules++;
                             continue;
                         }
                         rules.computeIfAbsent(landId,
@@ -520,6 +524,10 @@ public final class LandAuthorisationRepository {
                                 .put(rule, state);
                     }
                 }
+            }
+            if (skippedRules > 0) {
+                LOG.warning("Skipping " + skippedRules
+                        + " land_rules row(s) with unknown rule type, state or id");
             }
             try (PreparedStatement entryBans = connection.prepareStatement(
                     "SELECT land_id, player_uuid FROM land_entry_bans")) {
@@ -543,7 +551,7 @@ public final class LandAuthorisationRepository {
                 }
             }
             return new SnapshotData(direct, defaults, bans, rules,
-                    readPolicyRevisions(connection));
+                    readPolicyRevisions(connection), skippedRules);
         });
     }
 
@@ -578,26 +586,37 @@ public final class LandAuthorisationRepository {
     /**
      * Plain durable maps for one runtime snapshot publish. The maps are
      * already defensively copied and unmodifiable.
+     *
+     * <p>{@code skippedLandRules} counts the {@code land_rules} rows left
+     * out of this load (unknown rule type, unknown state, stored
+     * {@code INHERIT}, or malformed id); the load also logs one warning
+     * carrying that count. Row-wise skipping stays: one corrupt row never
+     * breaks the publish.
      */
     public record SnapshotData(
             Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
             Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults,
             Map<LandId, Set<UUID>> entryBans,
             Map<LandId, Map<LandRuleType, PermissionState>> landRules,
-            Map<LandId, Long> landPolicyRevisions) {
+            Map<LandId, Long> landPolicyRevisions,
+            int skippedLandRules) {
         public SnapshotData {
             directAllows = copyDirect(directAllows);
             landDefaults = copyDefaults(landDefaults);
             entryBans = copyBans(entryBans);
             landRules = copyLandRules(landRules);
             landPolicyRevisions = copyRevisions(landPolicyRevisions);
+            if (skippedLandRules < 0) {
+                throw new IllegalArgumentException(
+                        "skippedLandRules must be >= 0: " + skippedLandRules);
+            }
         }
 
         /** Compatibility: no bans loaded yet reads as nobody banned. */
         public SnapshotData(
                 Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
                 Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults) {
-            this(directAllows, landDefaults, Map.of(), Map.of(), Map.of());
+            this(directAllows, landDefaults, Map.of(), Map.of(), Map.of(), 0);
         }
 
         /** Compatibility: loads that predate revision publishing carry none. */
@@ -605,7 +624,7 @@ public final class LandAuthorisationRepository {
                 Map<LandId, Map<UUID, Set<ProtectionActionType>>> directAllows,
                 Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults,
                 Map<LandId, Set<UUID>> entryBans) {
-            this(directAllows, landDefaults, entryBans, Map.of(), Map.of());
+            this(directAllows, landDefaults, entryBans, Map.of(), Map.of(), 0);
         }
 
         /** Compatibility: loads that predate rule publishing carry no rules. */
@@ -614,7 +633,7 @@ public final class LandAuthorisationRepository {
                 Map<LandId, Map<ProtectionActionType, PermissionState>> landDefaults,
                 Map<LandId, Set<UUID>> entryBans,
                 Map<LandId, Long> landPolicyRevisions) {
-            this(directAllows, landDefaults, entryBans, Map.of(), landPolicyRevisions);
+            this(directAllows, landDefaults, entryBans, Map.of(), landPolicyRevisions, 0);
         }
 
         private static Map<LandId, Long> copyRevisions(Map<LandId, Long> source) {

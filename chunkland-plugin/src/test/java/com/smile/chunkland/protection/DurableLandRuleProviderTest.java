@@ -200,14 +200,84 @@ class DurableLandRuleProviderTest {
     }
 
     @Test
-    void unloadedSnapshotKeepsConfigChain() {
-        var engine = engine(
-                configView(Map.of(LandRuleType.PVP, PermissionState.ALLOW), Map.of()),
-                LandAuthorisationSnapshot.unloaded());
+    void nullAuthorisationReadsAsUnloadedOnBothAtomicPaths() {
+        // A null durable source must mean "unloaded" — like the subject
+        // query treats it — never "loaded but empty". Both atomic paths
+        // used to substitute the empty (loaded) snapshot here, so the rule
+        // fell through to the world ALLOW below.
+        LandRegistryStore store = new LandRegistryStore();
+        store.publish(registry);
+        var provider = SnapshotPermissionContextProvider.atomic(
+                () -> configView(Map.of(),
+                        Map.of(worldId, Map.of(LandRuleType.PVP, PermissionState.ALLOW))),
+                () -> null);
+        var engine = new ProtectionEngine(store::snapshot, provider);
+        ProtectionActionType ruleAction = ProtectionActionType.PLAYER_DAMAGE_PLAYER;
+        assertEquals(PermissionState.DENY,
+                engine.decide(UUID.randomUUID(), landId, ruleAction).outcome(),
+                "null durable source must fail the rule layer closed on the land path");
+        assertEquals(PermissionState.DENY,
+                engine.decideAtBlock(UUID.randomUUID(), worldId, 5, 64, 5, ruleAction).outcome(),
+                "null durable source must fail the rule layer closed on the block path");
+    }
+
+    @Test
+    void loadedEmptyStillFallsThroughOnBothAtomicPaths() {
+        // Companion: a loaded snapshot without overrides keeps falling
+        // through to the world default on both atomic paths.
+        LandRegistryStore store = new LandRegistryStore();
+        store.publish(registry);
+        var provider = SnapshotPermissionContextProvider.atomic(
+                () -> configView(Map.of(),
+                        Map.of(worldId, Map.of(LandRuleType.PVP, PermissionState.ALLOW))),
+                () -> authWithRules(Map.of()));
+        var engine = new ProtectionEngine(store::snapshot, provider);
+        ProtectionActionType ruleAction = ProtectionActionType.PLAYER_DAMAGE_PLAYER;
         assertEquals(PermissionState.ALLOW,
+                engine.decide(UUID.randomUUID(), landId, ruleAction).outcome());
+        assertEquals(PermissionState.ALLOW,
+                engine.decideAtBlock(UUID.randomUUID(), worldId, 5, 64, 5, ruleAction).outcome());
+    }
+
+    @Test
+    void unloadedSnapshotDeniesRuleActions() {
+        // Changed from "keeps the config chain" (2026-10-14 review fix):
+        // that expectation predates the durable rule source, when no
+        // per-land rule could be unverifiable. Now an unloaded snapshot
+        // means the land's own DENY may be sitting unread in the database,
+        // so falling through to a world/global ALLOW would silently widen
+        // protection. Unverifiable durable rules fail closed instead.
+        var engine = engine(
+                configView(Map.of(LandRuleType.PVP, PermissionState.ALLOW),
+                        Map.of(worldId, Map.of(LandRuleType.PVP, PermissionState.ALLOW))),
+                LandAuthorisationSnapshot.unloaded());
+        assertEquals(PermissionState.DENY,
                 engine.decide(UUID.randomUUID(), landId,
                         ProtectionActionType.PLAYER_DAMAGE_PLAYER).outcome(),
-                "rule actions stay on their own chain when durable rules are unverifiable");
+                "unverifiable durable rules must deny even when the world "
+                        + "and global defaults allow");
+        assertEquals(PermissionState.DENY,
+                engine.decide(owner, landId,
+                        ProtectionActionType.PLAYER_DAMAGE_PLAYER).outcome(),
+                "the owner stays bound by the fail-closed rule too");
+    }
+
+    @Test
+    void wildernessStaysVanillaWhileUnloaded() {
+        LandRegistryStore store = new LandRegistryStore();
+        store.publish(registry);
+        var engine = new ProtectionEngine(store::snapshot,
+                SnapshotPermissionContextProvider.atomic(
+                        () -> configView(Map.of(), Map.of()),
+                        LandAuthorisationSnapshot::unloaded));
+        assertEquals(PermissionState.ALLOW,
+                engine.decideAt(UUID.randomUUID(), worldId, 9, 9,
+                        ProtectionActionType.FIRE_SPREAD).outcome(),
+                "fail-closed applies inside lands; wilderness keeps vanilla");
+        assertEquals(PermissionState.ALLOW,
+                engine.decideAt(UUID.randomUUID(), worldId, 9, 9,
+                        ProtectionActionType.ENTRY).outcome(),
+                "fail-closed applies inside lands; wilderness keeps vanilla");
     }
 
     @Test

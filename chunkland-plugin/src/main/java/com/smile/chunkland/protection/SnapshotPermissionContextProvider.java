@@ -118,7 +118,9 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
      * <p>Each {@code provide()} call reads {@code views} and {@code landAuths}
      * exactly once: the subject layers and the durable per-land rule override
      * derive from that single captured pair, while the world, global and
-     * built-in rule layers come from the captured view. A {@code null} or
+     * built-in rule layers come from the captured view. An unloaded durable
+     * snapshot fails the rule layer closed instead of falling through, so
+     * unverifiable land rules can never widen protection. A {@code null} or
      * failing view source degrades to empty layers (fail-closed). The
      * returned provider holds only the suppliers, so reloads apply to new
      * decisions without rebuilding consumers and in-flight decisions finish
@@ -194,7 +196,9 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         PermissionDefaultsCache.ConfigView view = capturedView();
         LandAuthorisationSnapshot landAuth = capturedLandAuth();
         if (landAuth == null) {
-            landAuth = LandAuthorisationSnapshot.empty();
+            // A null durable source means "unloaded", like the subject
+            // query treats it — never "loaded but empty".
+            landAuth = LandAuthorisationSnapshot.unloaded();
         }
         return buildAtomicContext(actor, landId, land, action, snapshot, view, landAuth);
     }
@@ -302,7 +306,8 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         PermissionDefaultsCache.ConfigView view = capturedView();
         LandAuthorisationSnapshot landAuth = capturedLandAuth();
         if (landAuth == null) {
-            landAuth = LandAuthorisationSnapshot.empty();
+            // Same "null means unloaded" rule as the land path above.
+            landAuth = LandAuthorisationSnapshot.unloaded();
         }
         PermissionContext landOnly = buildAtomicContext(actor, landId, land, action, snapshot, view, landAuth);
         PermissionDefaultsSnapshot fixedDefaults;
@@ -430,10 +435,20 @@ public final class SnapshotPermissionContextProvider implements PermissionContex
         if (rule == null) {
             return PermissionState.INHERIT;
         }
+        if (landAuth == null || !landAuth.loaded()) {
+            // Unverifiable durable rules fail closed: the land may carry a
+            // DENY that is sitting unread in the database, so falling
+            // through to a world/global ALLOW would silently widen
+            // protection. Wilderness never reaches here (unknown lands
+            // return before this), and subject actions never read this
+            // layer, so only in-land rule decisions are affected.
+            return PermissionState.DENY;
+        }
         // Durable per-land override from the same captured snapshot the
         // subject layers came from: one decision never mixes a rule
-        // generation with an authorisation generation. Unset (or
-        // unverifiable) rules fall through to the captured config view.
+        // generation with an authorisation generation. An unset rule falls
+        // through to the captured config view below; an unloaded snapshot
+        // never reaches this read (it fails closed above).
         if (landAuth != null) {
             PermissionState durable;
             try {

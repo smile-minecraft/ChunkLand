@@ -39,6 +39,9 @@ public final class LandRuleMutationService {
     private final LandAuthorisationCache cache;
     private final Clock clock;
     private final PublicEvents events;
+    private final java.util.function.Supplier<
+            java.util.concurrent.CompletionStage<
+                    LandAuthorisationRepository.SnapshotData>> reloader;
 
     public LandRuleMutationService(LandAuthorisationRepository repository,
             LandAuthorisationCache cache) {
@@ -57,10 +60,24 @@ public final class LandRuleMutationService {
      */
     public LandRuleMutationService(LandAuthorisationRepository repository,
             LandAuthorisationCache cache, Clock clock, PublicEvents events) {
+        this(repository, cache, clock, events, repository::loadSnapshotData);
+    }
+
+    /**
+     * Reload seam behind {@link #refresh}: production passes the
+     * repository load, tests substitute a failing load to prove a committed
+     * write with a failed publish surfaces distinctly.
+     */
+    LandRuleMutationService(LandAuthorisationRepository repository,
+            LandAuthorisationCache cache, Clock clock, PublicEvents events,
+            java.util.function.Supplier<
+                    java.util.concurrent.CompletionStage<
+                            LandAuthorisationRepository.SnapshotData>> reloader) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.cache = Objects.requireNonNull(cache, "cache");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.events = events == null ? PublicEvents.noop() : events;
+        this.reloader = Objects.requireNonNull(reloader, "reloader");
     }
 
     /** Live runtime snapshot holder fed by every publish here. */
@@ -88,13 +105,16 @@ public final class LandRuleMutationService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("rule repository returned null"));
         }
-        return committed.thenCompose(before -> refresh().thenApply(ignored -> {
-            // Public Post: exactly once, after the durable commit plus the
-            // snapshot publish. Listener failures are isolated and never
-            // roll back the committed rule.
-            fireRuleChanged(actor, landId, rule, before, state);
-            return null;
-        }));
+        return committed.thenCompose(before -> refresh()
+                .thenAccept(ignored -> fireRuleChanged(actor, landId, rule, before, state))
+                .<Void>exceptionally(publishFailure -> {
+                    // The commit stands but the publish failed (the snapshot went
+                    // fail-closed inside refresh, and no event fired): surface a
+                    // distinct result carrying the committed transition so callers
+                    // can tell this apart from a write that never happened.
+                    throw new RulePublishException(actor, landId, rule, before, state,
+                            publishFailure);
+                }));
     }
 
     /**
@@ -126,10 +146,13 @@ public final class LandRuleMutationService {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("rule repository returned null"));
         }
-        return committed.thenCompose(before -> refresh().thenApply(ignored -> {
-            fireRuleChanged(actor, landId, rule, before, state);
-            return null;
-        }));
+        return committed.thenCompose(before -> refresh()
+                .thenAccept(ignored -> fireRuleChanged(actor, landId, rule, before, state))
+                .<Void>exceptionally(publishFailure -> {
+                    // Same committed-but-unpublished distinction as above.
+                    throw new RulePublishException(actor, landId, rule, before, state,
+                            publishFailure);
+                }));
     }
 
     /**
@@ -158,7 +181,7 @@ public final class LandRuleMutationService {
     public CompletionStage<Void> refresh() {
         CompletionStage<LandAuthorisationRepository.SnapshotData> loaded;
         try {
-            loaded = repository.loadSnapshotData();
+            loaded = reloader.get();
         } catch (RuntimeException failure) {
             cache.publish(LandAuthorisationSnapshot.unloaded());
             return CompletableFuture.failedFuture(failure);
