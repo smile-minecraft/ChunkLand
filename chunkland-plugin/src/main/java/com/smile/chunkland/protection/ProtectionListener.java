@@ -1688,9 +1688,11 @@ public final class ProtectionListener implements Listener {
      * ignition (lava, lightning, spread, dispenser steel, mob-shot or
      * ownerless projectiles) decides as {@code FIRE_SPREAD} at the ignited
      * block and, when a source block is known, at that block too, so fire
-     * can neither start nor escape where the rule denies. Shooter identity
-     * comes from the owner UUID first with the shooter wrapper as fallback;
-     * neither the shooter's location nor its online state is read, so this
+     * can neither start nor escape where the rule denies. A projectile's
+     * owner UUID is read only when its shooter wrapper is itself a player;
+     * if the wrapper is unavailable, the projectile is treated as ownerless
+     * and follows {@code FIRE_SPREAD} even if it still carries an owner UUID.
+     * Neither the shooter's location nor its online state is read, so this
      * stays on the event's own region thread on Folia.
      */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -1956,9 +1958,11 @@ public final class ProtectionListener implements Listener {
      * on touches that were never regulated before this change.
      *
      * <p>Regulated touches (plates) keep the pre-change arrow verdict for
-     * non-player sources. Identity only, never position: the player identity
-     * comes from the owner UUID first with the shooter wrapper as fallback,
-     * and neither the shooter's location nor its online state is read, so
+     * non-player sources. Identity only, never position: the owner UUID is
+     * read only when the shooter wrapper is itself a player; an unavailable
+     * wrapper makes the projectile an environmental actor even if it still
+     * carries an owner UUID. Neither the shooter's location nor its online
+     * state is read, so
      * this stays on the event's own region thread on Folia and an
      * offline-but-identifiable shooter is still judged by UUID. An
      * unidentifiable source could be an offline player, so waving it through
