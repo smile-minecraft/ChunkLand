@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# build-acelib.sh — 從 GitHub Release 固定附件取得已驗證的 AceLib server JAR。
+# build-acelib.sh — 從 GitHub Release 固定附件取得已驗證的 AceLib server 與 test-fixtures JAR。
 #
 # 來源與版本皆寫死，不使用 mavenLocal() / SNAPSHOT / latest / 浮動下載：
-#   - 來源：GitHub Release v1.3.0 固定附件 AceLib-1.3.0.jar（固定 HTTPS URL）
-#   - 標籤：v1.3.0（annotated tag，見 acelib-common.sh provenance sidecar）
-#   - 產物：AceLib-1.3.0.jar（plugin JAR，供 Folia plugins/ 使用）
-#   - 完整性：下載後以固定 SHA-256、plugin.yml 版本、AceLibVersion.class 驗證
+#   - 來源：GitHub Release v1.5.0 固定附件 AceLib-1.5.0.jar 與 AceLib-1.5.0-test-fixtures.jar（固定 HTTPS URL）
+#   - 標籤：v1.5.0（annotated tag，見 acelib-common.sh provenance sidecar）
+#   - 產物：AceLib-1.5.0.jar 與 AceLib-test-fixtures-1.5.0.jar
+#   - 完整性：下載後以固定 SHA-256、plugin.yml 版本、class entry 驗證
 #
 # 失敗語意（安全失敗，非零離開，暫存目錄清理）：
 #   - 下載失敗（curl 非零、網路錯誤、非 200、非 JAR/HTML 回應）
 #   - 下載內容為空或非預期檔案類型
-#   - plugin.yml 版本不是 1.3.0（錯版本）
-#   - 缺少 com/smile/acelib/AceLibVersion.class
+#   - plugin.yml 版本不是 1.5.0（錯版本）
+#   - 缺少必要 class entry（AceLibVersion.class 或 FakeSafeScheduler.class）
 #   - 產物 SHA-256 與預期不符（checksum 不符）
 #
 # 用法：
@@ -49,8 +49,9 @@ cleanup() {
     rm -rf "$STAGING_DIR"
   fi
   if [[ $exit_code -ne 0 ]]; then
-    # 失敗時只清理三個已知產物，保留 OUTPUT_DIR 其他檔案。
-    rm -f "$OUTPUT_DIR/$OUT_NAME" "$OUTPUT_DIR/$OUT_NAME.sha256" "$OUTPUT_DIR/$OUT_NAME.meta"
+    # 失敗時只清理六個已知產物，保留 OUTPUT_DIR 其他檔案。
+    rm -f "$OUTPUT_DIR/$OUT_NAME" "$OUTPUT_DIR/$OUT_NAME.sha256" "$OUTPUT_DIR/$OUT_NAME.meta" \
+          "$OUTPUT_DIR/$FIXTURES_OUT_NAME" "$OUTPUT_DIR/$FIXTURES_OUT_NAME.sha256" "$OUTPUT_DIR/$FIXTURES_OUT_NAME.meta"
   fi
 }
 trap cleanup EXIT
@@ -62,22 +63,26 @@ RELEASE_URL="$ACE_RELEASE_URL_FIXED"
 ASSET_NAME="$ACE_ASSET_NAME_FIXED"
 EXPECTED_SHA256="$ACE_EXPECTED_SHA256_FIXED"
 
-if [[ -z "$RELEASE_URL" ]]; then
+FIXTURES_RELEASE_URL="$ACE_FIXTURES_RELEASE_URL_FIXED"
+FIXTURES_ASSET_NAME="$ACE_FIXTURES_ASSET_NAME_FIXED"
+FIXTURES_EXPECTED_SHA256="$ACE_FIXTURES_EXPECTED_SHA256_FIXED"
+
+if [[ -z "$RELEASE_URL" || -z "$FIXTURES_RELEASE_URL" ]]; then
   echo "build-acelib: 固定 release URL 為空（安全失敗）" >&2
   exit 1
 fi
-if [[ -z "$EXPECTED_SHA256" ]]; then
+if [[ -z "$EXPECTED_SHA256" || -z "$FIXTURES_EXPECTED_SHA256" ]]; then
   echo "build-acelib: 固定預期 checksum 為空（安全失敗，不允許跳過驗證）" >&2
   exit 1
 fi
 
-# ---- 1. 下載固定 release asset（fail closed：非 200、非 JAR、網路錯誤皆非零） ----
-# 下載前先清理已知的舊產物（避免已有 stale artifact 被下游誤用）
-rm -f "$OUTPUT_DIR/$OUT_NAME" "$OUTPUT_DIR/$OUT_NAME.sha256" "$OUTPUT_DIR/$OUT_NAME.meta"
+# ---- 下載前先清理六個已知的舊產物（避免已有 stale artifact 被下游誤用） ----
+rm -f "$OUTPUT_DIR/$OUT_NAME" "$OUTPUT_DIR/$OUT_NAME.sha256" "$OUTPUT_DIR/$OUT_NAME.meta" \
+      "$OUTPUT_DIR/$FIXTURES_OUT_NAME" "$OUTPUT_DIR/$FIXTURES_OUT_NAME.sha256" "$OUTPUT_DIR/$FIXTURES_OUT_NAME.meta"
 
+# ---- 1. 下載固定 runtime release asset ----
 log "下載 $RELEASE_URL"
 STAGED_JAR="$STAGING_DIR/$ASSET_NAME"
-
 # 使用 curl -L 允許 GitHub HTTPS redirect，但限制協議與 redirect 皆為 HTTPS（--proto '=https' --proto-redir '=https'）；
 # -f 讓 HTTP 錯誤（4xx/5xx）直接非零退出；-s 靜默；-S 顯示錯誤；-o 寫入檔案。
 # 固定 URL 與固定 asset 名稱仍為 gate；非 HTTPS URL 或 redirect 直接失敗。
@@ -86,42 +91,66 @@ if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$STAGED_JAR" "$RELEA
   exit 1
 fi
 
-# 下載後立即檢查：非空、非 HTML、檔名與預期一致
 if [[ ! -s "$STAGED_JAR" ]]; then
   echo "build-acelib: 下載內容為空（$STAGED_JAR）" >&2
   exit 1
 fi
 
-# 簡易結構檢查：必須為 ZIP/JAR（unzip -t 可驗證），拒絕純文字/HTML 回應
 if ! unzip -t "$STAGED_JAR" >/dev/null 2>&1; then
   echo "build-acelib: 下載內容非有效 JAR/ZIP（$STAGED_JAR）" >&2
   exit 1
 fi
 
-# 檔名必須與固定 asset 名稱一致（防止 redirect 到錯誤檔案）
 local_basename="$(basename "$STAGED_JAR")"
 if [[ "$local_basename" != "$ASSET_NAME" ]]; then
   echo "build-acelib: 下載檔名不符 — 預期 $ASSET_NAME，實際 $local_basename" >&2
   exit 1
 fi
 
-log "已下載 $STAGED_JAR (${ASSET_NAME})"
-
-# ---- 2. 驗證（版本 / 類別 / checksum）——必須全部通過才輸出 ----
-# 使用固定 digest（不可由環境覆寫），確保 checksum 驗證不被跳過。
 if ! verify_acelib_jar "$STAGED_JAR" "$EXPECTED_SHA256"; then
-  echo "build-acelib: 產物驗證失敗（版本 / class / checksum 不符）" >&2
+  echo "build-acelib: runtime 產物驗證失敗（版本 / class / checksum 不符）" >&2
   exit 1
 fi
 
-# ---- 3. 輸出（僅寫入 OUTPUT_DIR，不觸及工作樹範圍外檔案） ----
+# ---- 2. 下載固定 test-fixtures release asset ----
+log "下載 $FIXTURES_RELEASE_URL"
+STAGED_FIXTURES_JAR="$STAGING_DIR/$FIXTURES_ASSET_NAME"
+if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$STAGED_FIXTURES_JAR" "$FIXTURES_RELEASE_URL"; then
+  echo "build-acelib: test-fixtures 下載失敗（curl 非零退出，URL=$FIXTURES_RELEASE_URL）" >&2
+  exit 1
+fi
+
+if [[ ! -s "$STAGED_FIXTURES_JAR" ]]; then
+  echo "build-acelib: test-fixtures 下載內容為空（$STAGED_FIXTURES_JAR）" >&2
+  exit 1
+fi
+
+if ! unzip -t "$STAGED_FIXTURES_JAR" >/dev/null 2>&1; then
+  echo "build-acelib: test-fixtures 下載內容非有效 JAR/ZIP（$STAGED_FIXTURES_JAR）" >&2
+  exit 1
+fi
+
+fix_local_basename="$(basename "$STAGED_FIXTURES_JAR")"
+if [[ "$fix_local_basename" != "$FIXTURES_ASSET_NAME" ]]; then
+  echo "build-acelib: test-fixtures 下載檔名不符 — 預期 $FIXTURES_ASSET_NAME，實際 $fix_local_basename" >&2
+  exit 1
+fi
+
+if ! verify_acelib_fixtures_jar "$STAGED_FIXTURES_JAR" "$FIXTURES_EXPECTED_SHA256"; then
+  echo "build-acelib: test-fixtures 產物驗證失敗（class / checksum 不符）" >&2
+  exit 1
+fi
+
+# ---- 3. 輸出 runtime 與 test-fixtures ----
 mkdir -p "$OUTPUT_DIR"
+
+# (a) Runtime
 cp -f "$STAGED_JAR" "$OUTPUT_DIR/$OUT_NAME"
 # Post-copy 驗證：最終寫入 OUTPUT 的 bytes 必須仍通過固定 digest / 版本 / 精確 entry 驗證。
 # 若複製途中或複製後內容被竄改（例如 caller-owned staging 在驗證後被覆寫、或 cp 本身被挾持），
 # 此處重新以固定 digest 對最終 output 驗證，確保 sidecar 建立前 output 未被竄改。
 if ! verify_acelib_jar "$OUTPUT_DIR/$OUT_NAME" "$EXPECTED_SHA256"; then
-  echo "build-acelib: 輸出驗證失敗（output bytes 驗證不符／可能被竄改）" >&2
+  echo "build-acelib: runtime 輸出驗證失敗（output bytes 驗證不符／可能被竄改）" >&2
   exit 1
 fi
 SHA="$(shasum -a 256 "$OUTPUT_DIR/$OUT_NAME" | awk '{print $1}')"
@@ -130,6 +159,7 @@ cat > "$OUTPUT_DIR/$OUT_NAME.meta" <<EOF
 source=release_asset
 repo=$ACE_REPO_URL_DEFAULT
 tag=$ACE_TAG
+tag_object=$ACE_TAG_OBJECT
 commit=$ACE_COMMIT
 release_url=$ACE_RELEASE_URL_FIXED
 asset=$ACE_ASSET_NAME_FIXED
@@ -139,8 +169,37 @@ downloaded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 # 二次輸出驗證：確保 sidecar 建立後最終 output 仍通過同一固定驗證（縮小「驗證後、sidecar 後」竄改窗口）。
 if ! verify_acelib_jar "$OUTPUT_DIR/$OUT_NAME" "$EXPECTED_SHA256"; then
-  echo "build-acelib: 輸出二次驗證失敗（sidecar 建立後驗證不符／可能被竄改）" >&2
+  echo "build-acelib: runtime 輸出二次驗證失敗（sidecar 建立後驗證不符／可能被竄改）" >&2
   exit 1
 fi
+
+# (b) Test Fixtures
+# Post-copy 驗證：與 runtime 相同，複製到 OUTPUT 之後必須再以 fixtures 的固定驗證確認 bytes 未被竄改。
+cp -f "$STAGED_FIXTURES_JAR" "$OUTPUT_DIR/$FIXTURES_OUT_NAME"
+if ! verify_acelib_fixtures_jar "$OUTPUT_DIR/$FIXTURES_OUT_NAME" "$FIXTURES_EXPECTED_SHA256"; then
+  echo "build-acelib: test-fixtures 輸出驗證失敗（output bytes 驗證不符／可能被竄改）" >&2
+  exit 1
+fi
+FIXTURES_SHA="$(shasum -a 256 "$OUTPUT_DIR/$FIXTURES_OUT_NAME" | awk '{print $1}')"
+printf '%s  %s\n' "$FIXTURES_SHA" "$FIXTURES_OUT_NAME" > "$OUTPUT_DIR/$FIXTURES_OUT_NAME.sha256"
+cat > "$OUTPUT_DIR/$FIXTURES_OUT_NAME.meta" <<EOF
+source=release_asset
+repo=$ACE_REPO_URL_DEFAULT
+tag=$ACE_TAG
+tag_object=$ACE_TAG_OBJECT
+commit=$ACE_COMMIT
+release_url=$ACE_FIXTURES_RELEASE_URL_FIXED
+asset=$ACE_FIXTURES_ASSET_NAME_FIXED
+version=$ACE_VERSION
+sha256=$FIXTURES_SHA
+downloaded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+# 二次輸出驗證：確保 fixtures 的 sidecar 建立後最終 output 仍通過同一固定驗證。
+if ! verify_acelib_fixtures_jar "$OUTPUT_DIR/$FIXTURES_OUT_NAME" "$FIXTURES_EXPECTED_SHA256"; then
+  echo "build-acelib: test-fixtures 輸出二次驗證失敗（sidecar 建立後驗證不符／可能被竄改）" >&2
+  exit 1
+fi
+
 log "產出 $OUTPUT_DIR/$OUT_NAME (sha256 $SHA)"
+log "產出 $OUTPUT_DIR/$FIXTURES_OUT_NAME (sha256 $FIXTURES_SHA)"
 log "完成"

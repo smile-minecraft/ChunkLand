@@ -2,6 +2,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.Task
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.tasks.bundling.Jar
+import java.util.jar.JarFile
 
 plugins {
     id("java-library")
@@ -17,7 +18,7 @@ dependencies {
     compileOnly(libs.paper.api)
     // Compile-only: AceLib is a server-provided plugin (depend: [AceLib] in plugin.yml).
     // Resolved from the locally built jar via the flatDir repo; never embedded.
-    compileOnly("com.smile.acelib:AceLib:1.3.0")
+    compileOnly("com.smile.acelib:AceLib:1.5.0")
     // Compile-only: Vault Legacy Economy boundary (net.milkbowl.vault.economy).
     // Provided by the Vault plugin at runtime (softdepend: [Vault]); never embedded.
     compileOnly(libs.vault.api)
@@ -30,7 +31,8 @@ dependencies {
     // so both must be available on the test classpath. testImplementation does not
     // affect the plugin jar (only main sources are packaged).
     testImplementation(libs.paper.api)
-    testImplementation("com.smile.acelib:AceLib:1.3.0")
+    testImplementation("com.smile.acelib:AceLib:1.5.0")
+    testImplementation("com.smile.acelib:AceLib-test-fixtures:1.5.0")
     testImplementation(libs.vault.api)
 }
 
@@ -90,3 +92,34 @@ val checkPluginJarBundlesApiJar by tasks.registering {
     }
 }
 tasks.named("check") { dependsOn(checkPluginJarBundlesApiJar) }
+
+// Mechanical check: chunkland-plugin jar must never embed any com/smile/acelib/ classes.
+val checkPluginJarDoesNotEmbedAceLib by tasks.registering {
+    group = "verification"
+    description = "Verifies that the plugin jar does not embed any AceLib classes."
+    dependsOn("jar")
+
+    val jarFile = tasks.named<Jar>("jar").flatMap { it.archiveFile }
+    inputs.file(jarFile)
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val violations = mutableListOf<String>()
+        JarFile(jarFile.get().asFile).use { archive ->
+            for (entry in archive.entries().toList()) {
+                val name = entry.name
+                if (name.startsWith("com/smile/acelib/")) {
+                    violations.add("plugin jar entry '$name' matches forbidden prefix 'com/smile/acelib/'")
+                }
+            }
+        }
+        if (violations.isNotEmpty()) {
+            throw GradleException(
+                "chunkland-plugin jar must never embed AceLib classes (AceLib is server-provided at runtime). " +
+                    "Violations:\n  " + violations.joinToString("\n  ")
+            )
+        }
+        logger.lifecycle("checkPluginJarDoesNotEmbedAceLib: verified plugin jar carries zero com/smile/acelib/ classes")
+    }
+}
+tasks.named("check") { dependsOn(checkPluginJarDoesNotEmbedAceLib) }
