@@ -2,6 +2,7 @@ package com.smile.chunkland.gui;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -205,6 +206,36 @@ class GuiNavigatorTest {
         assertTrue(gui.closeCalls().isEmpty(), "a foreign session must never be closed");
         assertEquals(foreignGeneration, gui.activeSessionOf(BOB).generation());
         assertEquals(0, navigator.depth(BOB));
+    }
+
+    @Test
+    void closeAllNeverClosesUntrackedForeignSession() {
+        FakeGuiService gui = new FakeGuiService();
+        // External plugin opens an untracked session for BOB
+        gui.openInventory(page("foreign", 1).toArgument(BOB));
+        long foreignGeneration = gui.activeSessionOf(BOB).generation();
+
+        // ChunkLand navigator opens a tracked session for ALICE
+        GuiNavigator navigator = new GuiNavigator(gui);
+        long aliceGen = navigator.open(ALICE, page("main", 1)).orElseThrow();
+
+        // Disable or closeAll() triggers
+        navigator.closeAll();
+
+        // Exactly ChunkLand's tracked session was closed; foreign session was never touched
+        assertEquals(List.of(new FakeGuiService.CloseCall(ALICE, aliceGen)), gui.closeCalls(),
+            "closeAll must close exactly ChunkLand's own session and leave foreign session untouched");
+        assertNotNull(gui.activeSessionOf(BOB),
+            "foreign session for BOB must still be active on upstream provider");
+        assertEquals(foreignGeneration, gui.activeSessionOf(BOB).generation(),
+            "foreign session generation must not be altered by closeAll");
+        assertEquals(0, navigator.depth(ALICE));
+        assertEquals(0, navigator.depth(BOB));
+
+        // Repeated closeAll is idempotent and still does not touch foreign session
+        navigator.closeAll();
+        assertEquals(1, gui.closeCalls().size(), "repeated closeAll must remain idempotent");
+        assertEquals(foreignGeneration, gui.activeSessionOf(BOB).generation());
     }
 
     @Test

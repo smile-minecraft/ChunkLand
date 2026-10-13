@@ -143,10 +143,13 @@ class CapabilitiesTest {
 
         // Positive control: directly invoking GuiService methods mutates these exact counters,
         // proving the zero-invocation assertions above are alive and observing real interactions.
-        gui.openInventory(null);
+        com.smile.acelib.gui.GuiArgument realArg = com.smile.acelib.gui.GuiArgument.of(
+            java.util.UUID.randomUUID(), "title", 9, java.util.List.of());
+        gui.openInventory(realArg);
         gui.closeInventory(java.util.UUID.randomUUID(), 1L);
         assertEquals(1L, gui.openCount(), "positive control: openCount must increment on direct invocation");
         assertEquals(1L, gui.closeCount(), "positive control: closeCount must increment on direct invocation");
+        assertSame(realArg, gui.lastArg(), "positive control: lastArg must record the passed argument");
     }
 
     @Test
