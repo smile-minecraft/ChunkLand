@@ -32,7 +32,11 @@ class SelectionMessageTest {
             "selection.wand.unavailable",
             "selection.wand.reset",
             "selection.wand.abandoned",
-            "selection.wand.cancelled");
+            "selection.wand.cancelled",
+            "selection.wand.chunk_added",
+            "selection.wand.chunk_removed",
+            "selection.wand.chunk_split",
+            "selection.wand.chunk_limit");
 
     /** Keys that announce the accepted rectangle size A×B to the player. */
     private static final Set<String> DIMENSION_KEYS = Set.of(

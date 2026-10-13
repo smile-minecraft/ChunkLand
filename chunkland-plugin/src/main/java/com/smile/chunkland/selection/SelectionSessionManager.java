@@ -25,6 +25,13 @@ import java.util.function.Supplier;
  * generation token, so a cancelled or replaced timeout can never expire a newer
  * session. Runtime collaborators are kept in entries, never in
  * {@link SelectionSession}.</p>
+ *
+ * <p>The manager also owns the per-player chunk-edit geometry flag: while set,
+ * wand clicks add or remove single chunks instead of resizing a rectangle.
+ * The flag is geometry only — it never changes the session workflow mode, the
+ * target land, the chunks or the revision — and it lives and dies with the
+ * session, so any teardown (timeout, quit, replacement, invalidation) resets
+ * the player to rectangle clicks.</p>
  */
 public final class SelectionSessionManager implements ConfigReloadListener {
     private final Object monitor = new Object();
@@ -40,6 +47,8 @@ public final class SelectionSessionManager implements ConfigReloadListener {
     private final SelectionStructureRevisionLookup structureRevisions;
     private final Map<UUID, Long> nextGenerations = new LinkedHashMap<>();
     private boolean disabled;
+    /** Players currently clicking single chunks instead of resizing a rectangle. */
+    private final Set<UUID> chunkEditPlayers = new HashSet<>();
 
     public SelectionSessionManager(
             SelectionTimeoutScheduler timeoutScheduler,
@@ -292,6 +301,39 @@ public final class SelectionSessionManager implements ConfigReloadListener {
                 && current.getAsLong() == entry.session.baseStructureRevision());
     }
 
+    public boolean isChunkEdit(UUID playerId) {
+        Objects.requireNonNull(playerId, "playerId");
+        synchronized (monitor) {
+            Entry entry = sessions.get(playerId);
+            return entry != null && !entry.cleaning && chunkEditPlayers.contains(playerId);
+        }
+    }
+
+    /**
+     * Switch one player's wand geometry between rectangle resizing and
+     * single-chunk edits. Returns false — and changes nothing — when the
+     * player holds no live session, so a toggle can never arm an edit mode
+     * without a selection to edit. Toggling never touches the session
+     * itself: workflow mode, target, chunks and revision all stay as they
+     * are, which is why enabling chunk edits on a fresh claim cannot turn
+     * it into an expansion of an existing land.
+     */
+    public boolean setChunkEdit(UUID playerId, boolean enabled) {
+        Objects.requireNonNull(playerId, "playerId");
+        synchronized (monitor) {
+            Entry entry = sessions.get(playerId);
+            if (entry == null || entry.cleaning) {
+                return false;
+            }
+            if (enabled) {
+                chunkEditPlayers.add(playerId);
+            } else {
+                chunkEditPlayers.remove(playerId);
+            }
+            return true;
+        }
+    }
+
     public boolean cancel(UUID playerId) {
         return clear(playerId, SelectionEndReason.CANCELLED);
     }
@@ -479,6 +521,7 @@ public final class SelectionSessionManager implements ConfigReloadListener {
         }
         entry.cleaning = true;
         cleaningPlayers.add(entry.session.playerId());
+        chunkEditPlayers.remove(entry.session.playerId());
         entry.timeoutToken = new Object();
         SelectionTimeoutScheduler.Cancellable handle = entry.timeoutHandle;
         entry.timeoutHandle = SelectionTimeoutScheduler.Cancellable.noop();

@@ -47,10 +47,18 @@ import org.bukkit.entity.Player;
  * <p>The first corner is context-aware: wilderness opens a new {@code
  * CREATE_LAND} claim, the actor's own Player Land opens an {@code
  * EDIT_SELECTION} that targets it so expand/shrink can read the target, and
- * any other land is refused before a session exists. A candidate rectangle
+ * any other land is refused before a session exists. The edit session starts
+ * from the target land's full current chunks with no pending changes, so
+ * later single-chunk edits reconcile against durable state. A candidate rectangle
  * that would cover a land other than the session target is refused by the edit
  * service's collision guard and reported once as occupied; while a player
  * keeps hitting a blocked area the prompt is not repeated.
+ *
+ * <p>Chunk-edit geometry is a per-player flag owned by the session manager:
+ * while set, the left button adds the pointed chunk and the right button
+ * removes it through the shared edit service, for both new claims and edits
+ * of existing lands. Rectangle clicks keep their replace semantics whenever
+ * the flag is off, and SubLand point sessions never enter chunk edits.
  *
  * <p>Only identifiers and block coordinates cross into the session; no
  * Bukkit object is retained. Reads stay on the event thread and touch no
@@ -150,12 +158,12 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             // recorded this hit, so handling both would echo the same corner.
             return;
         }
-        handleClick(context.player(), context.block());
+        handleClick(context.player(), context.block(), true);
     }
 
     @Override
     public void onWandRightClick(Player player, Block block, BlockFace face) {
-        handleClick(player, block);
+        handleClick(player, block, false);
     }
 
     @Override
@@ -205,7 +213,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         previewedLand.remove(playerId);
     }
 
-    private void handleClick(Player player, Block block) {
+    private void handleClick(Player player, Block block, boolean leftButton) {
         try {
             UUID playerId;
             try {
@@ -287,7 +295,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
                 openSession(playerId, player, worldId, point, now, current);
                 return;
             }
-            extendSession(playerId, player, current, edits, point);
+            extendSession(playerId, player, current, edits, point, leftButton);
         } catch (RuntimeException ex) {
             // Selection must never throw back onto the event thread.
         }
@@ -311,18 +319,38 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             return;
         }
         if (firstPoint.kind() == SelectionWandGuard.FirstPointKind.EDIT_SELECTION) {
-            // Own land: open the edit context and keep the existing boundary as
-            // the baseline until the player accepts a new selection.
+            // Own land: open the edit context from the land's full current
+            // chunks, so single-chunk edits and expand/shrink deltas all read
+            // one baseline until the player accepts a new selection. A land
+            // whose chunks cannot be resolved fails closed instead of opening
+            // an empty edit that would misread every later delta.
+            Optional<LandId> target = firstPoint.targetLandId();
+            if (target.isEmpty()) {
+                notifyUnavailable(playerId, player);
+                return;
+            }
+            Optional<Set<ChunkKey>> baseline;
+            try {
+                baseline = boundaryLookup.chunksOf(target.get());
+            } catch (RuntimeException ex) {
+                notifyUnavailable(playerId, player);
+                return;
+            }
+            if (baseline == null || baseline.isEmpty() || baseline.get().isEmpty()) {
+                notifyUnavailable(playerId, player);
+                return;
+            }
             startSession(playerId, player, worldId, point, now, SelectionMode.EDIT_SELECTION,
-                    firstPoint.targetLandId(), firstPoint.baseStructureRevision(), WandFeedback.Kind.EDIT_TARGET);
-            showPreview(playerId, firstPoint.targetLandId(), point, point.blockY() + 1.0,
+                    target, firstPoint.baseStructureRevision(), WandFeedback.Kind.EDIT_TARGET,
+                    baseline.get());
+            showPreview(playerId, target, point, point.blockY() + 1.0,
                     SelectionPreviewColor.OWN);
             return;
         }
         // Wilderness first point: no existing boundary to preview.
         stopPreview(playerId);
         startSession(playerId, player, worldId, point, now, SelectionMode.CREATE_LAND,
-                Optional.empty(), 0L, WandFeedback.Kind.FIRST_POINT);
+                Optional.empty(), 0L, WandFeedback.Kind.FIRST_POINT, Set.of());
     }
 
     private void startSession(
@@ -334,9 +362,10 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             SelectionMode mode,
             Optional<LandId> targetLandId,
             long baseStructureRevision,
-            WandFeedback.Kind opening) {
-        SelectionSession stamped = startEmptySession(
-                playerId, worldId, mode, targetLandId, baseStructureRevision, now);
+            WandFeedback.Kind opening,
+            Set<ChunkKey> baselineChunks) {
+        SelectionSession stamped = startBaselineSession(
+                playerId, worldId, mode, targetLandId, baseStructureRevision, baselineChunks, now);
         if (stamped == null) {
             return;
         }
@@ -363,16 +392,17 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         }
     }
 
-    private SelectionSession startEmptySession(
+    private SelectionSession startBaselineSession(
             UUID playerId,
             UUID worldId,
             SelectionMode mode,
             Optional<LandId> targetLandId,
             long baseStructureRevision,
+            Set<ChunkKey> baselineChunks,
             Instant now) {
         SelectionSession initial;
         try {
-            initial = SelectionSession.initial(
+            initial = SelectionSession.initialWithChunks(
                     playerId,
                     worldId,
                     mode,
@@ -380,6 +410,7 @@ public final class SelectionWandClickHandler implements WandClickHandler {
                     Optional.empty(),
                     Optional.empty(),
                     Optional.empty(),
+                    baselineChunks == null ? Set.of() : baselineChunks,
                     baseStructureRevision,
                     now);
         } catch (RuntimeException ex) {
@@ -452,9 +483,18 @@ public final class SelectionWandClickHandler implements WandClickHandler {
             Player player,
             SelectionSession current,
             SelectionEditService edits,
-            SelectionPoint point) {
+            SelectionPoint point,
+            boolean leftButton) {
         // Only the wand-owned claim/edit modes use the rectangle editor.
         // CREATE_SUBLAND is routed above and never reinterpreted as a claim/edit.
+        if (current.mode() != SelectionMode.CREATE_SUBLAND && manager.isChunkEdit(playerId)) {
+            // Chunk geometry: the left button adds the pointed chunk, the
+            // right button removes it. The shared edit service still owns
+            // range, collision and connectivity, so every rejection below
+            // keeps the session untouched exactly like a rejected rectangle.
+            editSingleChunk(playerId, player, current, edits, point, leftButton);
+            return;
+        }
         // The first corner always stays; the new click moves the second corner.
         // A session that holds only the second corner is repaired the same way.
         boolean resize = current.pointA().isPresent() && current.pointB().isPresent();
@@ -518,6 +558,69 @@ public final class SelectionWandClickHandler implements WandClickHandler {
         if (updated != null && updated.isPresent()) {
             clearBlockedNotice(playerId);
             feedback.send(player, WandFeedback.Kind.FIRST_POINT, Map.of());
+        }
+    }
+
+    /**
+     * Apply one pointed chunk through the shared edit service. Accepted edits
+     * announce the actual chunk count the irregular selection is priced and
+     * previewed by, never the bounding size. A refused edit keeps the session
+     * untouched: collisions reuse the once-per-attempt occupied prompt with
+     * the blocking land's real boundary, a split chunk explains why the
+     * bridge must stay, and limits stay quiet except for one size prompt.
+     * Duplicate clicks stay silent.
+     */
+    private void editSingleChunk(
+            UUID playerId,
+            Player player,
+            SelectionSession current,
+            SelectionEditService edits,
+            SelectionPoint point,
+            boolean add) {
+        ChunkKey chunk;
+        try {
+            chunk = new ChunkKey(
+                    point.worldId(),
+                    Math.floorDiv(point.blockX(), 16),
+                    Math.floorDiv(point.blockZ(), 16));
+        } catch (RuntimeException ex) {
+            return;
+        }
+        SelectionEditOutcome outcome;
+        try {
+            outcome = add ? edits.addChunk(current, chunk) : edits.removeChunk(current, chunk);
+        } catch (RuntimeException ex) {
+            return;
+        }
+        if (outcome == null || outcome.expectedSession() != current) {
+            return;
+        }
+        if (!outcome.accepted() || outcome.update().isEmpty()) {
+            if (outcome.reason() == SelectionEditReason.COLLISION) {
+                notifyBlocked(playerId, player, current);
+                showPreview(playerId, occupiedLandAt(outcome.conflictChunk()), point,
+                        point.blockY() + 1.0);
+            } else if (outcome.reason() == SelectionEditReason.DISCONNECTED) {
+                feedback.send(player, WandFeedback.Kind.CHUNK_SPLIT, Map.of());
+            } else if (outcome.reason() == SelectionEditReason.SIDE_LIMIT_EXCEEDED
+                    || outcome.reason() == SelectionEditReason.CHUNK_LIMIT_EXCEEDED) {
+                feedback.send(player, WandFeedback.Kind.CHUNK_LIMIT, Map.of());
+            }
+            return;
+        }
+        Optional<SelectionSession> updated;
+        try {
+            updated = manager.updateSelection(playerId, outcome.expectedSession(), outcome.update().get());
+        } catch (RuntimeException ex) {
+            // A stale or disabled session simply keeps its previous chunks.
+            return;
+        }
+        if (updated != null && updated.isPresent()) {
+            clearBlockedNotice(playerId);
+            stopPreview(playerId);
+            feedback.send(player,
+                    add ? WandFeedback.Kind.CHUNK_ADDED : WandFeedback.Kind.CHUNK_REMOVED,
+                    Map.of("chunk_count", updated.get().selectedChunks().size()));
         }
     }
 

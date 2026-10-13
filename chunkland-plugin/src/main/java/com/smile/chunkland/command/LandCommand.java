@@ -47,7 +47,7 @@ public final class LandCommand {
     }
 
     public static final List<String> SUBCOMMANDS = List.of(
-            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile", "explain", "inspect", "log", "history", "manage", "bypass", "admin");
+            "help", "confirm", "wand", "claim", "trust", "untrust", "default", "binding", "ban", "unban", "subland", "expand", "shrink", "unclaim", "rename", "delete", "group", "profile", "explain", "inspect", "log", "history", "manage", "bypass", "admin", "selection");
 
     private final Map<String, Handler> handlers;
     private final BiFunction<CommandSender, ChunkLandMessagePipeline, ReplySink> sinkFactory;
@@ -428,6 +428,7 @@ public final class LandCommand {
                         matching(onlinePlayerNames(sender), typed);
                 case "help" -> matching(SUBCOMMANDS, typed);
                 case "subland" -> matching(SUBLAND_MODES, typed);
+                case "selection" -> matching(SELECTION_MODES, typed);
                 case "group" -> matching(GROUP_MODES, typed);
                 case "profile" -> matching(PROFILE_MODES, typed);
                 case "binding" -> matching(BINDING_MODES, typed);
@@ -461,6 +462,8 @@ public final class LandCommand {
     private static final List<String> STATE_NAMES = List.of("ALLOW", "DENY", "INHERIT");
     private static final List<String> SUBLAND_MODES =
             List.of("select", "create", "update", "delete", "extend");
+    private static final List<String> SELECTION_MODES =
+            List.of("chunk", "rectangle", "toggle", "add", "remove", "info");
     private static final List<String> GROUP_MODES =
             List.of("create", "list", "add", "remove", "delete");
     private static final List<String> PROFILE_MODES = List.of("create", "list", "set", "delete");

@@ -98,6 +98,41 @@ public record SelectionSession(
                 now);
     }
 
+    /**
+     * Create a new session at revision zero that already holds a baseline
+     * chunk set, used when an edit session opens on an existing land: the
+     * session starts from the land's full current chunks with no pending
+     * changes, so later single-chunk edits reconcile against durable state
+     * instead of an empty set.
+     */
+    public static SelectionSession initialWithChunks(
+            UUID playerId,
+            UUID worldId,
+            SelectionMode mode,
+            Optional<LandId> targetLandId,
+            Optional<SubLandId> targetSubLandId,
+            Optional<SelectionPoint> pointA,
+            Optional<SelectionPoint> pointB,
+            Set<ChunkKey> selectedChunks,
+            long baseStructureRevision,
+            Instant now) {
+        return new SelectionSession(
+                playerId,
+                worldId,
+                mode,
+                targetLandId,
+                targetSubLandId,
+                pointA,
+                pointB,
+                selectedChunks == null ? Set.of() : selectedChunks,
+                Map.of(),
+                0,
+                0,
+                baseStructureRevision,
+                now,
+                now);
+    }
+
     /** Return a copy with a new mode; useful when the workflow changes ownership. */
     public SelectionSession withMode(SelectionMode newMode) {
         return new SelectionSession(

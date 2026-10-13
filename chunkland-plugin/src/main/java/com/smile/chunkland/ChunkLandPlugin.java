@@ -33,6 +33,7 @@ import com.smile.chunkland.claim.SnapshotDeleteValidator;
 import com.smile.chunkland.claim.SnapshotExpandValidator;
 import com.smile.chunkland.claim.SnapshotShrinkValidator;
 import com.smile.chunkland.claim.WorldClaimPolicy;
+import com.smile.chunkland.api.land.ChunkKey;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.land.SubLandId;
@@ -45,7 +46,8 @@ import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.binding.LandBindingService;
 import com.smile.chunkland.command.AuditLogCommandHandler;
-import com.smile.chunkland.command.BedrockClaimFormHandler;import com.smile.chunkland.command.BedrockManageFormHandler;import com.smile.chunkland.command.BindingCommandHandler;
+import com.smile.chunkland.command.BedrockClaimFormHandler;
+import com.smile.chunkland.command.BedrockSelectionFormHandler;import com.smile.chunkland.command.BedrockManageFormHandler;import com.smile.chunkland.command.BindingCommandHandler;
 import com.smile.chunkland.command.ClaimCommandHandler;
 import com.smile.chunkland.command.ClaimFormTexts;
 import com.smile.chunkland.command.ConfirmCommandHandler;
@@ -63,7 +65,7 @@ import com.smile.chunkland.command.AdminBypassState;
 import com.smile.chunkland.command.LedgerAdminCommandHandler;
 import com.smile.chunkland.command.OrphanAdminCommandHandler;
 import com.smile.chunkland.command.ProfileCommandHandler;
-import com.smile.chunkland.command.ShrinkCommandHandler;
+import com.smile.chunkland.command.ShrinkCommandHandler;import com.smile.chunkland.command.SelectionCommandHandler;import com.smile.chunkland.command.SelectionFormTexts;
 import com.smile.chunkland.command.LandCommand;
 import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
@@ -2045,6 +2047,23 @@ public final class ChunkLandPlugin extends JavaPlugin {
                                 ? null : this.landMessagePipeline.orElse(null)));
         this.bedrockFormNavigator = bedrockManage == null ? null : bedrockManage.navigator();
         landHandlers.put("manage", wrapManageWithBedrock(landHandlers.get("manage"), bedrockManage));
+        // Chunk-edit selection slot: the chat verbs share one edit service
+        // with the wand clicks, and Bedrock players get the same operations
+        // as menu buttons. A half-wired server keeps the fail-closed chat
+        // path instead of pretending the menu exists.
+        java.util.function.Supplier<SelectionEditService> selectionEdits =
+                () -> new SelectionEditService(
+                        activeConfig.current().limits(),
+                        wandCollisionIndex(this.protectionStore, registryReadiness));
+        SelectionCommandHandler selectionChat = new SelectionCommandHandler(
+                this.selectionSessionManager, selectionEdits, ChunkLandPlugin::standingChunkOf);
+        BedrockSelectionFormHandler selectionForms = buildBedrockSelectionForms(
+                this.capabilities.orElse(null), selectionChat, this.selectionSessionManager);
+        landHandlers.put("selection", selectionForms == null
+                ? selectionChat
+                : new SelectionCommandHandler(
+                        this.selectionSessionManager, selectionEdits,
+                        ChunkLandPlugin::standingChunkOf, selectionForms));
         // Admin bypass toggle: the node only allows attempting the switch;
         // every attempt is audited before the actor-scoped memory flips,
         // then closed by a committed or aborted terminal with the same
@@ -2692,7 +2711,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         if (shrink != null && selections != null) {
             LandCommand.Handler shrinkHandler = new ShrinkCommandHandler(selections, shrink,
                     recoveryScan, shrinkCurrentLand, shrinkTargetOwner, "shrink",
-                    shrinkRefundCurrency);
+                    shrinkRefundCurrency, targetChunks);
             base.put("shrink", shrinkHandler);
             base.put("unclaim", shrinkHandler);
         }
@@ -3969,6 +3988,73 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 confirm,
                 ClaimFormTexts::forLocale,
                 capabilities.scheduler());
+    }
+
+    /**
+     * {@code /land selection} Bedrock branch assembly: one menu button per
+     * chunk-edit operation, each re-entering the shared chat handler verbs.
+     * Any missing seam returns null so the slot keeps the chat path for
+     * every sender instead of pretending a menu exists.
+     */
+    static BedrockSelectionFormHandler buildBedrockSelectionForms(
+            Capabilities capabilities, LandCommand.Handler selection,
+            SelectionSessionManager selections) {
+        if (capabilities == null || selection == null || selections == null) {
+            return null;
+        }
+        return new BedrockSelectionFormHandler(
+                playerId -> {
+                    BedrockService bedrock;
+                    try {
+                        bedrock = capabilities.bedrockService();
+                    } catch (RuntimeException failure) {
+                        throw new IllegalStateException("BedrockService unavailable", failure);
+                    }
+                    return bedrock != null && bedrock.isBedrockPlayer(playerId);
+                },
+                (playerId, spec, callback) -> {
+                    FormService forms;
+                    try {
+                        forms = capabilities.formService();
+                    } catch (RuntimeException failure) {
+                        throw new IllegalStateException("FormService unavailable", failure);
+                    }
+                    if (forms == null) {
+                        throw new IllegalStateException("FormService unavailable");
+                    }
+                    return forms.sendForm(playerId, spec, callback);
+                },
+                selection,
+                selections,
+                SelectionFormTexts::forLocale,
+                capabilities.scheduler());
+    }
+
+    /**
+     * Standing chunk for the {@code /land selection} chat verbs: the chunk
+     * under the player's feet, converted with floor division so negative
+     * positions land in the right chunk. Unknown or unreadable positions
+     * stay empty and fail the single verb closed.
+     */
+    static Optional<ChunkKey> standingChunkOf(Player player) {
+        if (player == null) {
+            return Optional.empty();
+        }
+        try {
+            Location location = player.getLocation();
+            if (location == null || location.getWorld() == null) {
+                return Optional.empty();
+            }
+            UUID worldId = location.getWorld().getUID();
+            if (worldId == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new ChunkKey(worldId,
+                    Math.floorDiv(location.getBlockX(), 16),
+                    Math.floorDiv(location.getBlockZ(), 16)));
+        } catch (RuntimeException failure) {
+            return Optional.empty();
+        }
     }
 
     /**

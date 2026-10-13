@@ -9,6 +9,7 @@ import com.smile.chunkland.claim.ShrinkOutcome;
 import com.smile.chunkland.claim.ShrinkRequest;
 import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -73,6 +74,12 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
     private final Function<LandId, Optional<OwnerRef>> targetOwner;
     private final String subcommand;
     private final Currency refundCurrency;
+    /**
+     * Owned-chunk view for chunk-edit selections; null keeps the legacy
+     * selection-is-the-removal path. Production wires the same immutable
+     * snapshot lookup the expand delta uses.
+     */
+    private final ExpandCommandHandler.TargetChunkLookup targetChunks;
 
     /**
      * @param selections live selection registry; never null
@@ -94,6 +101,35 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
             Function<CommandSender, Optional<LandId>> currentLand,
             Function<LandId, Optional<OwnerRef>> targetOwner,
             String subcommand, Currency refundCurrency) {
+        this(selections, runner, recoveryScan, currentLand, targetOwner, subcommand, refundCurrency, null);
+    }
+
+    /**
+     * Chunk-edit-aware constructor: while the actor's chunk-edit geometry is
+     * armed, the selection reads as the desired remaining shape and the
+     * removal becomes the owned chunks minus the selection. Rectangle
+     * selections keep the legacy selection-is-the-removal meaning.
+     *
+     * @param targetChunks owned-chunk view over the immutable snapshot; null
+     *        keeps the legacy path for every mode (direct-token tests)
+     */
+    public ShrinkCommandHandler(SelectionSessionManager selections, ShrinkRunner runner,
+            Supplier<CompletionStage<?>> recoveryScan,
+            Function<CommandSender, Optional<LandId>> currentLand,
+            Function<LandId, Optional<OwnerRef>> targetOwner,
+            ExpandCommandHandler.TargetChunkLookup targetChunks) {
+        this(selections, runner, recoveryScan, currentLand, targetOwner, "shrink", null, targetChunks);
+    }
+
+    /**
+     * Full constructor with the chunk-edit owned-chunk view.
+     */
+    public ShrinkCommandHandler(SelectionSessionManager selections, ShrinkRunner runner,
+            Supplier<CompletionStage<?>> recoveryScan,
+            Function<CommandSender, Optional<LandId>> currentLand,
+            Function<LandId, Optional<OwnerRef>> targetOwner,
+            String subcommand, Currency refundCurrency,
+            ExpandCommandHandler.TargetChunkLookup targetChunks) {
         this.selections = Objects.requireNonNull(selections, "selections");
         this.runner = runner;
         this.recoveryScan = recoveryScan;
@@ -101,6 +137,7 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
         this.targetOwner = targetOwner;
         this.subcommand = subcommand == null || subcommand.isBlank() ? "shrink" : subcommand;
         this.refundCurrency = refundCurrency;
+        this.targetChunks = targetChunks;
     }
 
     /**
@@ -215,6 +252,15 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
                 return;
             }
         }
+        Set<ChunkKey> removal = removalOf(session, target.get(), actor, sink);
+        if (removal == null) {
+            return;
+        }
+        if (removal.isEmpty()) {
+            sink.reply("command.land.shrink.no_selection", Map.of());
+            return;
+        }
+        delta = removal;
         ShrinkRequest request;
         try {
             request = new ShrinkRequest(resolveRequestOwner(target.get(), actor), actor,
@@ -261,6 +307,49 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
             return OwnerRef.player(actor);
         }
         throw new IllegalStateException("shrink target owner unavailable");
+    }
+
+    /**
+     * Resolve the chunks to remove for one live session.
+     *
+     * <p>While the actor's chunk-edit geometry is armed, the selection reads
+     * as the desired remaining shape, so the removal is the owned chunks
+     * minus the selection: handing the shape itself to the saga would remove
+     * almost the whole land. That path needs the owned-chunk view; without
+     * it the verb fails closed instead of guessing. Rectangle selections
+     * keep the legacy meaning where the selection itself is the removal.
+     *
+     * @return the removal, an empty set when chunk edits removed nothing, or
+     *         null when the verb already replied fail-closed
+     */
+    private Set<ChunkKey> removalOf(SelectionSession session, LandId target, UUID actor, ReplySink sink) {
+        Set<ChunkKey> selected = session.selectedChunks();
+        boolean chunkEdit;
+        try {
+            chunkEdit = selections.isChunkEdit(actor);
+        } catch (RuntimeException failure) {
+            chunkEdit = false;
+        }
+        if (!chunkEdit) {
+            return selected;
+        }
+        if (targetChunks == null) {
+            sink.reply("command.land." + subcommand + ".failed", Map.of("reason", subcommand + ".failed"));
+            return null;
+        }
+        Optional<Set<ChunkKey>> owned;
+        try {
+            owned = targetChunks.chunksOf(target);
+        } catch (RuntimeException failure) {
+            owned = Optional.empty();
+        }
+        if (owned == null || owned.isEmpty() || owned.get().isEmpty()) {
+            sink.reply("command.land." + subcommand + ".failed", Map.of("reason", subcommand + ".unknown_land"));
+            return null;
+        }
+        Set<ChunkKey> removal = new LinkedHashSet<>(owned.get());
+        removal.removeAll(selected);
+        return removal;
     }
 
     private static void replyOutcome(ReplySink sink, int chunkCount,

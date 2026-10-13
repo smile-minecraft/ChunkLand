@@ -86,13 +86,29 @@ public final class SelectionEditService {
         return evaluate(session, update, false);
     }
 
-    /** Analyze a single-chunk add or remove in EDIT_SELECTION mode. */
+    /**
+     * Analyze a single-chunk add or remove in {@code EDIT_SELECTION} or
+     * {@code CREATE_LAND} mode.
+     *
+     * <p>Both modes share the same range, collision and connectivity checks:
+     * a fresh claim ({@code CREATE_LAND}, no target) only accepts wilderness
+     * chunks because the collision guard rejects every occupied chunk when no
+     * target is set, while an edit session ({@code EDIT_SELECTION}) also
+     * accepts its own target land. Sub-land sessions ({@code
+     * CREATE_SUBLAND}) keep their own point-based flow and stay rejected
+     * here.
+     *
+     * <p>Connectivity is checked on every edit on purpose: removing a bridge
+     * chunk and reconnecting afterwards is rejected midway, so the player
+     * must grow around the bridge instead of cutting through it.
+     */
     public SelectionEditOutcome editChunk(
             SelectionSession session, ChunkKey chunk, PendingChange operation) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(chunk, "chunk");
         Objects.requireNonNull(operation, "operation");
-        if (session.mode() != SelectionMode.EDIT_SELECTION) {
+        if (session.mode() != SelectionMode.EDIT_SELECTION
+                && session.mode() != SelectionMode.CREATE_LAND) {
             return rejectedWithoutCandidate(session, SelectionEditReason.WRONG_MODE);
         }
         if (!session.worldId().equals(chunk.worldId())) {

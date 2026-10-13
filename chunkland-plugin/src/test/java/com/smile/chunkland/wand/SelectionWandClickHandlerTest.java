@@ -1126,7 +1126,8 @@ class SelectionWandClickHandlerTest {
         assertEquals(SelectionMode.EDIT_SELECTION, session.mode());
         assertEquals(Optional.of(OWN_LAND), session.targetLandId());
         assertTrue(session.pointB().isEmpty(), "a foreign chunk inside the candidate must reject the corner");
-        assertTrue(session.selectedChunks().isEmpty());
+        assertEquals(Set.of(new ChunkKey(WORLD_ID, 0, 0)), session.selectedChunks(),
+                "a rejected rectangle keeps the edit baseline instead of clearing it");
         assertEquals(List.of(WandFeedback.Kind.EDIT_TARGET, WandFeedback.Kind.BLOCKED), harness.feedbackKinds());
     }
 

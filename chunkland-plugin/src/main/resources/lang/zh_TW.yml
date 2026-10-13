@@ -16,7 +16,7 @@ command:
       <yellow>領地操作</yellow>
       <gray>  <hover:show_text:'<gray>顯示指令總覽。</gray>'><click:suggest_command:'/land help'>help      </click></hover><hover:show_text:'<gray>領取選區魔杖。</gray>'><click:suggest_command:'/land wand'>wand     </click></hover><hover:show_text:'<gray>圈選範圍並建立領地。</gray>'><click:suggest_command:'/land claim'>claim    </click></hover><hover:show_text:'<gray>確認待處理的圈地。</gray>'><click:suggest_command:'/land confirm'>confirm</click></hover></gray>
       <gray>  <hover:show_text:'<gray>擴張領地。</gray>'><click:suggest_command:'/land expand'>expand    </click></hover><hover:show_text:'<gray>縮減領地。</gray>'><click:suggest_command:'/land shrink'>shrink   </click></hover><hover:show_text:'<gray>放棄選取範圍的領地。</gray>'><click:suggest_command:'/land unclaim'>unclaim  </click></hover><hover:show_text:'<gray>重新命名領地。</gray>'><click:suggest_command:'/land rename'>rename</click></hover> </gray>
-      <gray>  <hover:show_text:'<gray>刪除領地。</gray>'><click:suggest_command:'/land delete'>delete    </click></hover><hover:show_text:'<gray>管理子領地。</gray>'><click:suggest_command:'/land subland'>subland  </click></hover>                </gray>
+      <gray>  <hover:show_text:'<gray>刪除領地。</gray>'><click:suggest_command:'/land delete'>delete    </click></hover><hover:show_text:'<gray>管理子領地。</gray>'><click:suggest_command:'/land subland'>subland  </click></hover><hover:show_text:'<gray>逐塊修剪選取範圍。</gray>'><click:suggest_command:'/land selection'>selection</click></hover>       </gray>
       <yellow>權限管理</yellow>
       <gray>  <hover:show_text:'<gray>信任玩家為領地成員。</gray>'><click:suggest_command:'/land trust'>trust     </click></hover><hover:show_text:'<gray>移除領地信任成員。</gray>'><click:suggest_command:'/land untrust'>untrust  </click></hover><hover:show_text:'<gray>變更領地預設權限。</gray>'><click:suggest_command:'/land default'>default  </click></hover><hover:show_text:'<gray>綁定玩家或群組到權限組合。</gray>'><click:suggest_command:'/land binding'>binding</click></hover></gray>
       <gray>  <hover:show_text:'<gray>封鎖玩家進入領地。</gray>'><click:suggest_command:'/land ban'>ban       </click></hover><hover:show_text:'<gray>解除玩家封鎖。</gray>'><click:suggest_command:'/land unban'>unban    </click></hover><hover:show_text:'<gray>管理主體群組。</gray>'><click:suggest_command:'/land group'>group    </click></hover><hover:show_text:'<gray>開啟管理介面。</gray>'><click:suggest_command:'/land manage'>manage</click></hover> </gray>
@@ -72,6 +72,22 @@ command:
       rejected: "<red>圈地被拒絕：<reason>。</red>"
       failed: "<red>圈地失敗：<reason>。</red>"
       cancelled: "<yellow>已取消圈地確認，未建立領地。</yellow>"
+    selection:
+      console: "<red>只有玩家可以調整選取範圍。</red>"
+      usage: "<yellow>用法：/land selection (chunk|rectangle|toggle|add|remove|info) [x z]</yellow>"
+      no_selection: "<yellow>目前沒有選取範圍。請先選取區塊，再重新調整。</yellow>"
+      wrong_mode: "<yellow>子領地選取有自己的定點流程，不能逐塊編輯。</yellow>"
+      stale: "<yellow>選取範圍剛剛被更動過。請查看最新內容後重試。</yellow>"
+      mode_chunk: "<green>逐塊編輯模式：目前選取 <chunk_count> 個區塊，一次加入或移除一個區塊。</green>"
+      mode_rectangle: "<green>矩形模式：目前選取 <chunk_count> 個區塊，點擊兩個角可調整大小。</green>"
+      added: "<green>已加入區塊：目前選取 <chunk_count> 個區塊。</green>"
+      removed: "<yellow>已移除區塊：目前選取 <chunk_count> 個區塊。</yellow>"
+      no_change: "<yellow>沒有變化：選取範圍本來就是這樣。</yellow>"
+      rejected: "<red>選區編輯被拒絕：<reason>。</red>"
+      failed: "<red>選區編輯失敗：<reason>。</red>"
+      unavailable: "<yellow>目前無法確認該區塊，請稍後再試。</yellow>"
+      cancelled: "<yellow>已關閉選區選單，未更動任何內容。</yellow>"
+      info: "<green>選取範圍：<chunk_count> 個區塊（模式：<state>）。</green>"
     subland:
       console: "<red>只有玩家可以管理子領地。</red>"
       usage: "<yellow>用法：/land subland (select|create|update|delete|extend) [generation revision] [名稱]</yellow>"
@@ -294,6 +310,10 @@ command:
         short: "<gray>管理員工具。</gray>"
         detail: "<gray>供伺服器管理員使用的帳本與孤兒世界管理。</gray>"
         usage: "<yellow>用法：/land admin (ledger|orphan) ...</yellow>"
+      selection:
+        short: "<gray>逐塊修剪選取範圍。</gray>"
+        detail: "<gray>切換魔杖操作方式，不用角點也能一次加入或移除一個區塊。</gray>"
+        usage: "<yellow>用法：/land selection (chunk|rectangle|toggle|add|remove|info) [x z]</yellow>"
     admin:
       ledger:
         usage: "<yellow>用法：/land admin ledger list [狀態] | show [操作編號] | resolve [操作編號] [RESOLVED|REFUNDED|IGNORED]</yellow>"
@@ -361,6 +381,8 @@ economy:
 selection:
   disconnected: "選取的區塊必須彼此相連"
   stale: "選取範圍已經過期，請重新選取"
+  failed: "發生了未預期的問題，請稍後再試；若持續發生請聯繫管理員"
+  unavailable: "這個功能暫時無法使用，請稍後再試"
   wand:
     first_point: "<yellow>已設定第一角。請再點擊一個方塊設定第二角。</yellow>"
     edit_target: "<yellow>正在編輯你的領地：已設定第一角。請選取要擴張或縮小的區塊。</yellow>"
@@ -372,6 +394,10 @@ selection:
     reset: "<yellow>選取範圍已重置。請點擊方塊設定第一角。</yellow>"
     abandoned: "<yellow>你已切換離開魔杖，選取範圍與粒子已清除。</yellow>"
     cancelled: "<yellow>已取消選取範圍。</yellow>"
+    chunk_added: "<green>已加入區塊：目前選取 <chunk_count> 個區塊。</green>"
+    chunk_removed: "<yellow>已移除區塊：目前選取 <chunk_count> 個區塊。</yellow>"
+    chunk_split: "<yellow>該區塊是選取範圍的連接橋。請先補上相連的區塊，不要直接切斷它。</yellow>"
+    chunk_limit: "<yellow>選取範圍已達大小上限。</yellow>"
 gui:
   manage:
     roster:

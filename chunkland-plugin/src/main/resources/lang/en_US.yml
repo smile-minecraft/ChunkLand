@@ -16,7 +16,7 @@ command:
       <yellow>Land actions</yellow>
       <gray>  <hover:show_text:'<gray>Show the command overview.</gray>'><click:suggest_command:'/land help'>help      </click></hover><hover:show_text:'<gray>Receive the selection wand.</gray>'><click:suggest_command:'/land wand'>wand     </click></hover><hover:show_text:'<gray>Claim the selected chunks.</gray>'><click:suggest_command:'/land claim'>claim    </click></hover><hover:show_text:'<gray>Confirm a pending claim.</gray>'><click:suggest_command:'/land confirm'>confirm</click></hover></gray>
       <gray>  <hover:show_text:'<gray>Expand this land.</gray>'><click:suggest_command:'/land expand'>expand    </click></hover><hover:show_text:'<gray>Shrink this land.</gray>'><click:suggest_command:'/land shrink'>shrink   </click></hover><hover:show_text:'<gray>Unclaim selected chunks.</gray>'><click:suggest_command:'/land unclaim'>unclaim  </click></hover><hover:show_text:'<gray>Rename this land.</gray>'><click:suggest_command:'/land rename'>rename</click></hover> </gray>
-      <gray>  <hover:show_text:'<gray>Delete this land.</gray>'><click:suggest_command:'/land delete'>delete    </click></hover><hover:show_text:'<gray>Manage sublands.</gray>'><click:suggest_command:'/land subland'>subland  </click></hover>                </gray>
+      <gray>  <hover:show_text:'<gray>Delete this land.</gray>'><click:suggest_command:'/land delete'>delete    </click></hover><hover:show_text:'<gray>Manage sublands.</gray>'><click:suggest_command:'/land subland'>subland  </click></hover><hover:show_text:'<gray>Trim the selection chunk by chunk.</gray>'><click:suggest_command:'/land selection'>selection</click></hover>       </gray>
       <yellow>Permissions</yellow>
       <gray>  <hover:show_text:'<gray>Trust a player on this land.</gray>'><click:suggest_command:'/land trust'>trust     </click></hover><hover:show_text:'<gray>Remove a trusted player.</gray>'><click:suggest_command:'/land untrust'>untrust  </click></hover><hover:show_text:'<gray>Change a land default permission.</gray>'><click:suggest_command:'/land default'>default  </click></hover><hover:show_text:'<gray>Bind players or groups to profiles.</gray>'><click:suggest_command:'/land binding'>binding</click></hover></gray>
       <gray>  <hover:show_text:'<gray>Ban a player from this land.</gray>'><click:suggest_command:'/land ban'>ban       </click></hover><hover:show_text:'<gray>Unban a player.</gray>'><click:suggest_command:'/land unban'>unban    </click></hover><hover:show_text:'<gray>Manage subject groups.</gray>'><click:suggest_command:'/land group'>group    </click></hover><hover:show_text:'<gray>Open the management GUI.</gray>'><click:suggest_command:'/land manage'>manage</click></hover> </gray>
@@ -72,6 +72,22 @@ command:
       rejected: "<red>Claim rejected: <reason>.</red>"
       failed: "<red>Claim failed: <reason>.</red>"
       cancelled: "<yellow>Claim confirmation cancelled — nothing was claimed.</yellow>"
+    selection:
+      console: "<red>Only players can adjust a selection.</red>"
+      usage: "<yellow>Usage: /land selection (chunk|rectangle|toggle|add|remove|info) [x z]</yellow>"
+      no_selection: "<yellow>No active selection. Select chunks first, then adjust it again.</yellow>"
+      wrong_mode: "<yellow>Subland selections use their own point flow and cannot be chunk-edited.</yellow>"
+      stale: "<yellow>That selection changed in the meantime. Please review it and try again.</yellow>"
+      mode_chunk: "<green>Chunk-edit mode: <chunk_count> chunks selected. Add or remove one chunk at a time.</green>"
+      mode_rectangle: "<green>Rectangle mode: <chunk_count> chunks selected. Click two corners to resize.</green>"
+      added: "<green>Chunk added: <chunk_count> chunks selected.</green>"
+      removed: "<yellow>Chunk removed: <chunk_count> chunks selected.</yellow>"
+      no_change: "<yellow>Nothing changed: the selection already looks like that.</yellow>"
+      rejected: "<red>Selection edit rejected: <reason>.</red>"
+      failed: "<red>Selection edit failed: <reason>.</red>"
+      unavailable: "<yellow>That chunk cannot be resolved right now. Please try again.</yellow>"
+      cancelled: "<yellow>Selection menu closed — nothing was changed.</yellow>"
+      info: "<green>Selection: <chunk_count> chunks (mode: <state>).</green>"
     subland:
       console: "<red>Only players can manage sublands.</red>"
       usage: "<yellow>Usage: /land subland (select|create|update|delete|extend) [generation revision] [name]</yellow>"
@@ -294,6 +310,10 @@ command:
         short: "<gray>Administration tools.</gray>"
         detail: "<gray>Ledger and orphan-world administration for server operators.</gray>"
         usage: "<yellow>Usage: /land admin (ledger|orphan) ...</yellow>"
+      selection:
+        short: "<gray>Trim the selection chunk by chunk.</gray>"
+        detail: "<gray>Switches wand geometry and adds or removes single chunks without using corners.</gray>"
+        usage: "<yellow>Usage: /land selection (chunk|rectangle|toggle|add|remove|info) [x z]</yellow>"
     admin:
       ledger:
         usage: "<yellow>Usage: /land admin ledger list [state] | show [operation] | resolve [operation] [RESOLVED|REFUNDED|IGNORED]</yellow>"
@@ -361,6 +381,8 @@ economy:
 selection:
   disconnected: "the selected chunks must be connected"
   stale: "the selection expired, please select again"
+  failed: "something went wrong, please try again and contact an admin if it keeps happening"
+  unavailable: "this feature is temporarily unavailable, please try again later"
   wand:
     first_point: "<yellow>First corner set. Click another block to pick the second corner.</yellow>"
     edit_target: "<yellow>Editing your land: first corner set. Select chunks to expand or shrink it.</yellow>"
@@ -372,6 +394,10 @@ selection:
     reset: "<yellow>Selection reset. Click a block to set the first corner.</yellow>"
     abandoned: "<yellow>Selection cleared because you switched away from the wand.</yellow>"
     cancelled: "<yellow>Selection cancelled.</yellow>"
+    chunk_added: "<green>Chunk added: <chunk_count> chunks selected.</green>"
+    chunk_removed: "<yellow>Chunk removed: <chunk_count> chunks selected.</yellow>"
+    chunk_split: "<yellow>That chunk holds the selection together. Add the joining chunks first instead of cutting through it.</yellow>"
+    chunk_limit: "<yellow>The selection is at its size limit.</yellow>"
 gui:
   manage:
     roster:
