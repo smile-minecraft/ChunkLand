@@ -10,6 +10,7 @@ import com.smile.chunkland.message.rejection.RejectionNotifier;
 import com.smile.chunkland.message.rejection.RejectionSite;
 import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.SubLandIndex;
+import io.papermc.paper.event.block.TargetHitEvent;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import java.util.EnumSet;
 import java.util.List;
@@ -1590,12 +1591,20 @@ public final class ProtectionListener implements Listener {
             ProtectionActionType action;
             if (block.getType() == Material.FARMLAND) {
                 action = ProtectionActionType.FARMLAND_TRAMPLE;
-            } else if (PLATE_TYPES.contains(block.getType())) {
-                action = ProtectionActionType.REDSTONE_USE;
             } else {
-                return;
+                action = interactAction(block.getType());
+                if (action != ProtectionActionType.BUTTON_USE
+                        && action != ProtectionActionType.REDSTONE_USE) {
+                    return;
+                }
             }
-            if (deniedAtBlock(entity.getUniqueId(), block, action)) {
+            UUID actor = entity.getUniqueId();
+            if (entity instanceof Projectile projectile
+                    && (action == ProtectionActionType.BUTTON_USE
+                        || action == ProtectionActionType.REDSTONE_USE)) {
+                actor = projectileActor(projectile, actor);
+            }
+            if (deniedAtBlock(actor, block, action)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {
@@ -1764,6 +1773,35 @@ public final class ProtectionListener implements Listener {
     }
 
     /**
+     * Arrow lighting a target block: the verdict belongs to the shooting
+     * player at the target block ({@code REDSTONE_USE}), resolved from
+     * shooter identity only, like the button and plate touch above. Cancelling
+     * here stops the target from emitting its redstone signal, with no pulse:
+     * the signal is produced from this event, so a denied event produces no
+     * output at all.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onTargetHit(TargetHitEvent event) {
+        try {
+            Projectile projectile = event.getEntity();
+            Block hitBlock = event.getHitBlock();
+            if (projectile == null || hitBlock == null || hitBlock.getWorld() == null) {
+                event.setCancelled(true);
+                return;
+            }
+            UUID actor = projectileActor(projectile, projectile.getUniqueId());
+            if (deniedAtBlock(actor, hitBlock, ProtectionActionType.REDSTONE_USE)) {
+                event.setCancelled(true);
+            }
+        } catch (RuntimeException ex) {
+            try {
+                event.setCancelled(true);
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    /**
      * Block-plane origin of a projectile: the shooting player or mob at its
      * current position, or the dispensing block. {@code null} when the
      * shooter is gone or untracked. Coordinates only, so no chunk loads.
@@ -1804,6 +1842,36 @@ public final class ProtectionListener implements Listener {
             return new int[]{at.getBlockX(), at.getBlockZ()};
         }
         return null;
+    }
+
+    /**
+     * Actor behind a projectile touching a button, plate, or target: the
+     * shooting player when one is identifiable, the untouched arrow verdict
+     * for identifiable non-player sources (dispensers, mobs), and the fixed
+     * environmental actor when no source can be identified at all.
+     *
+     * <p>Identity only, never position: neither the shooter's location nor
+     * its online state is read, so this stays on the event's own region
+     * thread on Folia and an offline-but-identifiable shooter is still
+     * judged by UUID. An unidentifiable source could be an offline player,
+     * so waving it through as environment would let a player action hide
+     * behind an ownerless mechanic: it denies in a land instead. Where no
+     * land exists the wilderness short-circuit still leaves it vanilla.
+     */
+    private static UUID projectileActor(Projectile projectile, UUID touchUuid) {
+        ProjectileSource shooter;
+        try {
+            shooter = projectile.getShooter();
+        } catch (RuntimeException ex) {
+            return ENVIRONMENT_ACTOR;
+        }
+        if (shooter instanceof Player player) {
+            return player.getUniqueId();
+        }
+        if (shooter == null) {
+            return ENVIRONMENT_ACTOR;
+        }
+        return touchUuid;
     }
 
     private static Location safeLocation(Entity entity) {
