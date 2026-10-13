@@ -33,6 +33,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * Durable commit path for SubLand create/update/delete.
@@ -125,7 +126,7 @@ public final class SubLandMutationRunner {
     private final DepthExtensionPort depthPort;
     private final SubLandDepthExtendPort depthExtender;
     private final SubLandDepthConfirmations depthConfirmations;
-    private final LimitSettings limits;
+    private final Supplier<LimitSettings> limits;
     private final Clock clock;
     private final PublicEvents events;
     private final RuntimePublisher publisher;
@@ -211,6 +212,8 @@ public final class SubLandMutationRunner {
     /**
      * Full production constructor with the existing durable depth store seam
      * and the actor-scoped confirmation set shared with the command handler.
+     * The limits snapshot is captured once; use the
+     * {@link Supplier}-overload below for reload-following wiring.
      */
     public SubLandMutationRunner(
             LandRepository lands,
@@ -226,6 +229,31 @@ public final class SubLandMutationRunner {
             RuntimePublisher publisher,
             SubLandDepthExtendPort depthExtender,
             SubLandDepthConfirmations depthConfirmations) {
+        this(lands, atomic, store, selections, confirm, depths, depthPort,
+                fixedLimits(Objects.requireNonNull(limits, "limits")),
+                clock, events, publisher, depthExtender, depthConfirmations);
+    }
+
+    /**
+     * Full constructor over a live limits source: every mutation reads the
+     * current {@link LimitSettings} when it validates, so a config reload
+     * applies to the next commit without rebuilding the runner. In-flight
+     * validations finish on the value they read.
+     */
+    public SubLandMutationRunner(
+            LandRepository lands,
+            SubLandAtomicCommit atomic,
+            LandRegistryStore store,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            DepthExtensionPort depthPort,
+            Supplier<LimitSettings> limitSource,
+            Clock clock,
+            PublicEvents events,
+            RuntimePublisher publisher,
+            SubLandDepthExtendPort depthExtender,
+            SubLandDepthConfirmations depthConfirmations) {
         this.lands = Objects.requireNonNull(lands, "lands");
         this.atomic = Objects.requireNonNull(atomic, "atomic");
         this.store = Objects.requireNonNull(store, "store");
@@ -235,10 +263,23 @@ public final class SubLandMutationRunner {
         this.depthPort = Objects.requireNonNull(depthPort, "depthPort");
         this.depthExtender = depthExtender;
         this.depthConfirmations = depthConfirmations;
-        this.limits = Objects.requireNonNull(limits, "limits");
+        this.limits = Objects.requireNonNull(limitSource, "limitSource");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.events = events == null ? PublicEvents.noop() : events;
         this.publisher = Objects.requireNonNull(publisher, "publisher");
+    }
+
+    private static Supplier<LimitSettings> fixedLimits(LimitSettings fixed) {
+        return () -> fixed;
+    }
+
+    /** Current limits; a missing source fails closed via the caller's rejection path. */
+    private LimitSettings liveLimits() {
+        LimitSettings live = limits.get();
+        if (live == null) {
+            throw new IllegalStateException("config limits source returned null");
+        }
+        return live;
     }
 
     /** Production convenience constructor using the standard runtime publisher. */
@@ -256,6 +297,28 @@ public final class SubLandMutationRunner {
             SubLandDepthExtendPort depthExtender,
             SubLandDepthConfirmations depthConfirmations) {
         this(lands, atomic, store, selections, confirm, depths, depthPort, limits, clock,
+                events, defaultPublisher(lands, store), depthExtender, depthConfirmations);
+    }
+
+    /**
+     * Production convenience constructor over a live limits source, using
+     * the standard runtime publisher. Every mutation reads the current
+     * {@link LimitSettings} when it validates.
+     */
+    public SubLandMutationRunner(
+            LandRepository lands,
+            SubLandAtomicCommit atomic,
+            LandRegistryStore store,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            DepthExtensionPort depthPort,
+            Supplier<LimitSettings> limitSource,
+            Clock clock,
+            PublicEvents events,
+            SubLandDepthExtendPort depthExtender,
+            SubLandDepthConfirmations depthConfirmations) {
+        this(lands, atomic, store, selections, confirm, depths, depthPort, limitSource, clock,
                 events, defaultPublisher(lands, store), depthExtender, depthConfirmations);
     }
 
@@ -307,7 +370,7 @@ public final class SubLandMutationRunner {
             LandSnapshot next;
             try {
                 next = SubLandService.applyCreate(parent, candidate,
-                        parent.subLands().size(), limits.maxSublandsPerLand(),
+                        parent.subLands().size(), liveLimits().maxSublandsPerLand(),
                         effectiveMinY, actor, depthPort);
             } catch (RuntimeException rejected) {
                 confirm.releaseIfNotSuccess(actor, accepted);
@@ -315,7 +378,7 @@ public final class SubLandMutationRunner {
             }
             boolean depthConfirmed = candidate.cuboid().minY() < effectiveMinY;
             return atomic.commitCreate(candidate, next,
-                            accepted.structureRevision(), limits.maxSublandsPerLand(),
+                            accepted.structureRevision(), liveLimits().maxSublandsPerLand(),
                             SubLandAudit.createEntry(
                                     actor, parent, candidate,
                                     accepted.session().sessionGeneration(),

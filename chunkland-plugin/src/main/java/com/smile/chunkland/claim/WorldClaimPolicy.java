@@ -84,8 +84,32 @@ public interface WorldClaimPolicy {
      */
     static WorldClaimPolicy fromConfig(Supplier<ChunkLandConfig> configs,
             Function<UUID, Optional<String>> worldNames, boolean denyUnlisted) {
+        return fromConfig(configs, worldNames, () -> denyUnlisted);
+    }
+
+    /**
+     * Production policy over the live config snapshot, with a live choice
+     * for worlds absent from the config.
+     *
+     * <p>The strictness source is re-read on every call, so leaving the
+     * conservative startup fallback (or entering an equivalent strict mode)
+     * applies to the next claim without rebuilding the validator or the
+     * saga. A {@code null} or throwing source fails closed to deny-unlisted.
+     *
+     * @param configs live snapshot source (typically {@code ConfigService::current});
+     *        a throwing or {@code null} snapshot fails closed
+     * @param worldNames UUID-to-config-name mapping; an empty, {@code null} or
+     *        throwing result fails closed
+     * @param denyUnlisted live strictness flag; while true, a world with no
+     *        config entry rejects with {@code world.claim_disabled} instead
+     *        of following the enabled default
+     */
+    static WorldClaimPolicy fromConfig(Supplier<ChunkLandConfig> configs,
+            Function<UUID, Optional<String>> worldNames,
+            java.util.function.BooleanSupplier denyUnlisted) {
         Objects.requireNonNull(configs, "configs");
         Objects.requireNonNull(worldNames, "worldNames");
+        Objects.requireNonNull(denyUnlisted, "denyUnlisted");
         return worldId -> {
             if (worldId == null) {
                 throw new ClaimRejectedException("world.unknown");
@@ -116,7 +140,13 @@ public interface WorldClaimPolicy {
             }
             WorldSettings settings = worlds == null ? null : worlds.get(name.get());
             if (settings == null) {
-                if (denyUnlisted) {
+                boolean strict;
+                try {
+                    strict = denyUnlisted.getAsBoolean();
+                } catch (RuntimeException failure) {
+                    throw new ClaimRejectedException("world.unknown");
+                }
+                if (strict) {
                     throw new ClaimRejectedException("world.claim_disabled");
                 }
                 return;

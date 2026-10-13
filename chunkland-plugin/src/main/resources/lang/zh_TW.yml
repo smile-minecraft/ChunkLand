@@ -25,7 +25,7 @@ command:
       <gray>  <hover:show_text:'<gray>管理權限組合。</gray>'><click:suggest_command:'/land profile'>profile   </click></hover><hover:show_text:'<gray>查詢單一權限判定說明。</gray>'><click:suggest_command:'/land explain'>explain  </click></hover><hover:show_text:'<gray>查看領地資訊。</gray>'><click:suggest_command:'/land inspect'>inspect  </click></hover><hover:show_text:'<gray>查詢審計紀錄。</gray>'><click:suggest_command:'/land log'>log</click></hover>    </gray>
       <gray>  <hover:show_text:'<gray>查看附近方塊歷史。</gray>'><click:suggest_command:'/land history'>history   </click></hover>                         </gray>
       <yellow>管理員</yellow>
-      <gray>  <hover:show_text:'<gray>切換管理員豁免。</gray>'><click:suggest_command:'/land bypass'>bypass    </click></hover><hover:show_text:'<gray>管理員工具。</gray>'><click:suggest_command:'/land admin'>admin    </click></hover>                </gray>
+      <gray>  <hover:show_text:'<gray>切換管理員豁免。</gray>'><click:suggest_command:'/land bypass'>bypass    </click></hover><hover:show_text:'<gray>管理員工具。</gray>'><click:suggest_command:'/land admin'>admin    </click></hover><hover:show_text:'<gray>重新載入 ChunkLand 設定。</gray>'><click:suggest_command:'/land reload'>reload</click></hover>          </gray>
     usage: "<yellow>用法：/land <subcommand> [參數]</yellow>"
     unknown: "<red>未知子指令 <subcommand>。請使用 /land help。</red>"
     denied: "<red>你沒有使用這個指令的權限。</red> <dark_gray>（需要 <permission>）</dark_gray>"
@@ -215,6 +215,14 @@ command:
       "on": "<green>管理員豁免已啟用。</green>"
       "off": "<gray>管理員豁免已停用。</gray>"
       failed: "<red>管理員豁免切換失敗：<reason>。</red>"
+    reload:
+      usage: "<yellow>用法：/land reload</yellow>"
+      success: "<green>ChunkLand 設定已重新載入。</green>"
+      no_change: "<gray>ChunkLand 設定已經是最新，不需變更。</gray>"
+      failed: "<red>ChunkLand 設定重新載入失敗：<reason>。目前仍使用舊設定。</red>"
+      restart_required: "<yellow>ChunkLand 設定重新載入已拒絕：<reason>。請重新啟動伺服器以套用。</yellow>"
+      busy: "<yellow>已有另一個設定重新載入正在進行中，請稍後再試。</yellow>"
+      committed_callback_failed: "<yellow>ChunkLand 設定已重新載入，但後續步驟失敗：<reason>。新設定已生效。</yellow>"
     help_detail:
       prompt: "<gray>提示：在 /land help 後面加上子指令名稱，可查看完整說明與用法。</gray>"
       unknown_hint: "<red>未知子指令 <subcommand>。請使用 /land help 查看全部子指令。</red>"
@@ -327,6 +335,10 @@ command:
         short: "<gray>逐塊修剪選取範圍。</gray>"
         detail: "<gray>切換魔杖操作方式，不用角點也能一次加入或移除一個區塊。</gray>"
         usage: "<yellow>用法：/land selection (chunk|rectangle|toggle|add|remove|info) [x z]</yellow>"
+      reload:
+        short: "<gray>重新載入 ChunkLand 設定。</gray>"
+        detail: "<gray>重新讀取 config.yml 並一次套用可熱更新的欄位；結構性變更會拒絕並提示重啟。</gray>"
+        usage: "<yellow>用法：/land reload</yellow>"
     admin:
       ledger:
         usage: "<yellow>用法：/land admin ledger list [狀態] | show [操作編號] | resolve [操作編號] [RESOLVED|REFUNDED|IGNORED]</yellow>"
@@ -369,6 +381,8 @@ protection:
       no_permission: "你在這裡沒有這項權限"
     entry_denied: "<yellow>這塊領地不開放你進入。</yellow>"
     banned_inside: "<red>你已被這塊領地封鎖，無法在這裡停留。</red>"
+reload:
+  unavailable: "設定重新載入暫時無法使用，請稍後再試"
 claim:
   compensated: "圈地沒有完成，費用已經退還"
   compensation_pending: "圈地沒有完成，費用退還仍在處理中"

@@ -95,7 +95,7 @@ public class ChunkLandMessagePipeline {
     private final MessageParser parser;
     private final LangProvider lang;
     private final BedrockService bedrock;
-    private final Locale defaultLocale;
+    private volatile Locale defaultLocale;
 
     /**
      * Memory-only preferred-locale source backed by the player settings
@@ -250,6 +250,19 @@ public class ChunkLandMessagePipeline {
      */
     public void setPreferredLocaleLookup(PreferredLocaleLookup lookup) {
         this.preferredLocaleLookup = lookup;
+    }
+
+    /**
+     * Follow a config reload: the next render falls back to the new default
+     * locale. Already-resolved chains and cached templates keep their locale;
+     * only new lookups observe the new default. A volatile write only.
+     */
+    public void updateDefaultLocale(Locale defaultLocale) {
+        Objects.requireNonNull(defaultLocale, "defaultLocale");
+        if (defaultLocale.getLanguage().isEmpty()) {
+            throw new IllegalArgumentException("defaultLocale must have language: " + defaultLocale);
+        }
+        this.defaultLocale = defaultLocale;
     }
 
     static Locale resolveLocaleChain(Locale override, Locale playerLocale, String bedrockLanguageCode, Locale defaultLocale) {

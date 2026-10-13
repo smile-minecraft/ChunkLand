@@ -77,10 +77,12 @@ import com.smile.chunkland.command.OfflinePlayerResolver;
 import com.smile.chunkland.command.PlayerScheduler;
 import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.RenameCommandHandler;
+import com.smile.chunkland.command.ReloadCommandHandler;
 import com.smile.chunkland.command.SubLandCommandHandler;
 import com.smile.chunkland.command.VisualizationDebugCommand;
 import com.smile.chunkland.claim.RuntimeRegistryRebuilder;
 import com.smile.chunkland.config.ConfigService;
+import com.smile.chunkland.config.ConfigReloadCoordinator;
 import com.smile.chunkland.config.FeedbackSettings;
 import com.smile.chunkland.config.ConfigStartupResolver;
 import com.smile.chunkland.config.MessageSettings;
@@ -236,6 +238,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -364,6 +367,31 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * sees the immutable snapshot.
      */
     private boolean conservativeConfigMode;
+    /**
+     * Live conservative flag behind the claim gate and the depth lookup.
+     * Starts as the startup verdict and only ever clears, when a gated
+     * reload proves a valid operator file with an unchanged server world
+     * set. Both readers observe the same reference, so one generation can
+     * never mix strict and relaxed answers.
+     *
+     * <p>Assigned fresh on every enable (never inline): some tests
+     * allocate the plugin without running field initializers, and an
+     * enable must never observe a stale flag from a previous generation.
+     */
+    private AtomicBoolean conservativeLive;
+    /**
+     * Startup world tables backing the claim gate, the depth lookup and the
+     * permission defaults. Captured once at enable and never refreshed by a
+     * reload: a world set change refuses the candidate instead, so these
+     * stay the generation the snapshot was validated against.
+     */
+    private Set<String> startupWorldNameSet = Set.of();
+    private Map<UUID, String> startupWorldNamesById = Map.of();
+    private Map<UUID, Integer> startupWorldMinimums = Map.of();
+    /** Gated admin reload entry point; null before enable / after disable. */
+    private ConfigReloadCoordinator reloadCoordinator;
+    /** Shared rejection throttle window; follows the live messages section. */
+    private RejectionCooldown rejectionCooldown;
     private Optional<ChunkLandMessagePipeline> landMessagePipeline = Optional.empty();
     private PlayerPreferredLocaleService playerLocaleService;
     private PlayerSettingsRepository playerSettingsRepository;
@@ -404,7 +432,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private PermissionDefaultsCache permissionDefaults;
     private PermissionDecisionCache decisionCache;
     private ConfigReloadListener decisionCacheBudgetSync;
-    private SnapshotProtectionDepthLookup protectionDepthLookup;
+    /** Rejection-throttle retune; detached on disable like the budget sync. */
+    private ConfigReloadListener rejectionCooldownSync;
+    /** Message-locale follow; detached on disable like the budget sync. */
+    private ConfigReloadListener messageLocaleSync;
+    private volatile SnapshotProtectionDepthLookup protectionDepthLookup;
     private ProtectionListener protectionListener;
     /**
      * Volatile because region threads read it through the protection
@@ -2236,6 +2268,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 startupResolution.reloadLoader(), startupResolution.snapshot()));
         ConfigService activeConfig = this.configService.orElseThrow(
                 () -> new IllegalStateException("ChunkLand config service is unavailable"));
+        // Startup world tables: captured once here and never refreshed by a
+        // reload. A world-set change refuses the reload candidate instead, so
+        // these stay the generation the snapshot was validated against.
+        // (Fresh instances every enable: the flag and tables must never leak
+        // across enable generations.)
+        this.conservativeLive = new AtomicBoolean(this.conservativeConfigMode);
+        this.startupWorldNameSet = Set.copyOf(serverWorldNames());
+        this.startupWorldNamesById = snapshotWorldNames();
+        this.startupWorldMinimums = snapshotWorldMinimums();
+        this.reloadCoordinator = new ConfigReloadCoordinator(activeConfig,
+                conservativeLive::get, this::exitConservativeMode,
+                () -> Set.copyOf(serverWorldNames()), startupWorldNameSet,
+                com.smile.chunkland.ClaimStartupBootstrap.CLAIM_CURRENCY);
         // The registry store is created before the selection manager so the
         // manager's structure-revision source reads the same live snapshot the
         // /land claim, expand and shrink flows publish and validate against.
@@ -2314,6 +2359,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
         this.permissionDefaults = buildPermissionDefaults(
                 activeConfig, snapshotWorldIdsByName(), getLogger()::warning);
         this.configService.ifPresent(service -> service.addListener(this.permissionDefaults));
+        // Prepare-before-publish: the gated reload path builds this same
+        // derived view before the snapshot publishes, so a validation
+        // failure fails the whole reload with nothing published instead of
+        // swapping in a fallback afterwards.
+        this.configService.ifPresent(service -> service.addPreparer(this.permissionDefaults::prepareFor));
         // Atomic config view: one decision captures one immutable
         // subject/rule pair, so a reload can never mix generations inside a
         // single provide() call. The shared instance stays live: new
@@ -2326,13 +2376,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 new PermissionDecisionCache(activeConfig.current().decisionCacheMaxEntries());
         PermissionDecisionCache budgeted = this.decisionCache;
         this.decisionCacheBudgetSync = diff -> {
-            try {
-                budgeted.setMaxEntries(activeConfig.current().decisionCacheMaxEntries());
-            } catch (RuntimeException ignored) {
-                // A budget sync must never break a committed reload.
-            }
+            budgeted.setMaxEntries(activeConfig.current().decisionCacheMaxEntries());
         };
         this.configService.ifPresent(service -> service.addListener(this.decisionCacheBudgetSync));
+        // Rejection throttle and message default locale follow the live
+        // snapshot through shared mutable holders, so message-setting
+        // reloads apply to the next deny without rebuilding the listener.
+        // These updaters only re-read the just-published in-memory snapshot;
+        // a failure would surface as a committed-callback failure, never as
+        // a silent keep-old-value.
+        this.rejectionCooldownSync = diff -> rejectionCooldown.setCooldown(
+                Duration.ofSeconds(Math.max(0, rejectionCooldownSeconds(activeConfig))));
+        this.configService.ifPresent(service -> service.addListener(this.rejectionCooldownSync));
+        this.messageLocaleSync = diff -> landMessagePipeline.ifPresent(pipeline ->
+                pipeline.updateDefaultLocale(
+                        activeConfig.current().messages().defaultLocale()));
+        this.configService.ifPresent(service -> service.addListener(this.messageLocaleSync));
         this.protectionEngine = buildProtectionEngine(
                 this.protectionStore, atomicContexts, this.decisionCache, atomicContexts,
                 this::isRegistryHydrated);
@@ -2343,7 +2402,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         // Stored depths are never rewritten by a mode switch; worlds or
         // minima missing from the snapshot fall back explicitly.
         this.protectionDepthLookup = buildProtectionDepthLookup(
-                activeConfig::current, snapshotWorldNames(), snapshotWorldMinimums(),
+                activeConfig::current, startupWorldNamesById, startupWorldMinimums,
                 this.conservativeConfigMode);
         // Startup claim recovery: open persistence, rebuild durable domain
         // commits into the shared protection store, and scan without blocking.
@@ -2774,6 +2833,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 ? (sender, args, sink) -> sink.reply("command.land.bypass.failed",
                         Map.of("reason", "bypass.unavailable"))
                 : bypassHandler);
+        // Config reload: players and the console share one gated entry point.
+        // The coordinator owns the content gate plus the conservative-exit
+        // rule; without one the slot stays fail-closed instead of running
+        // half-wired.
+        ConfigReloadCoordinator reloader = this.reloadCoordinator;
+        landHandlers.put("reload", new ReloadCommandHandler(
+                reloader == null ? null : reloader::reload));
         // Bypass audit recovery: each enable starts with a fresh off memory
         // and a unique process id, so open attempts from crashed generations
         // are aborted without ever touching current-generation writes. The
@@ -2808,9 +2874,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
         EntryBanLookup banLookup = new EntryBanLookup(
                 this.protectionStore::snapshot, this.landAuthorisationCache::snapshot);
         var protectionScheduler = buildPlayerScheduler(this);
+        this.rejectionCooldown = new RejectionCooldown(Instant::now,
+                Duration.ofSeconds(Math.max(0, rejectionCooldownSeconds(activeConfig))));
         this.protectionListener = new ProtectionListener(this.protectionEngine,
                 buildRejectionNotifier(this.landMessagePipeline.orElse(null),
-                        protectionScheduler, rejectionCooldownSeconds(activeConfig),
+                        protectionScheduler, this.rejectionCooldown,
                         landNamesFrom(this.protectionStore::snapshot)),
                 ProtectionListener.productionEntryAdapter(this.protectionEngine, banLookup, this,
                         pushOutTuning(() -> activeConfig.current().feedback())),
@@ -4137,8 +4205,20 @@ public final class ChunkLandPlugin extends JavaPlugin {
             com.smile.chunkland.command.PlayerScheduler scheduler, int cooldownSeconds,
             PipelineRejectionRenderer.LandNames lands) {
         int seconds = Math.max(0, cooldownSeconds);
-        RejectionCooldown cooldown = new RejectionCooldown(Instant::now,
-                Duration.ofSeconds(seconds));
+        return buildRejectionNotifier(pipeline, scheduler,
+                new RejectionCooldown(Instant::now, Duration.ofSeconds(seconds)), lands);
+    }
+
+    /**
+     * Same notifier over a shared throttle holder: message-setting reloads
+     * retune the window through
+     * {@link RejectionCooldown#setCooldown(java.time.Duration)} without
+     * rebuilding the listener.
+     */
+    public static RejectionNotifier buildRejectionNotifier(ChunkLandMessagePipeline pipeline,
+            com.smile.chunkland.command.PlayerScheduler scheduler, RejectionCooldown cooldown,
+            PipelineRejectionRenderer.LandNames lands) {
+        Objects.requireNonNull(cooldown, "cooldown");
         if (pipeline == null || scheduler == null) {
             return new RejectionNotifier(null,
                     (player, action, decision) -> {
@@ -5006,8 +5086,30 @@ public final class ChunkLandPlugin extends JavaPlugin {
             PublicEvents events,
             SubLandDepthExtendPort depthExtender,
             SubLandDepthConfirmations depthConfirmations) {
+        return buildSubLandRunner(persistence, registry, selections, confirm, depths,
+                () -> Objects.requireNonNull(limits, "limits"),
+                clock, events, depthExtender, depthConfirmations);
+    }
+
+    /**
+     * SubLand runner over a live limits source: each commit validates
+     * against the current {@link LimitSettings}, so a limits reload applies
+     * to the next mutation without rebuilding the runner. In-flight
+     * validations finish on the value they read.
+     */
+    static SubLandMutationRunner buildSubLandRunner(
+            PersistenceStore persistence,
+            LandRegistryStore registry,
+            SelectionSessionManager selections,
+            SubLandConfirmService confirm,
+            SubLandDepthSource depths,
+            Supplier<LimitSettings> limitSource,
+            Clock clock,
+            PublicEvents events,
+            SubLandDepthExtendPort depthExtender,
+            SubLandDepthConfirmations depthConfirmations) {
         if (persistence == null || registry == null || selections == null
-                || confirm == null || depths == null || limits == null || clock == null) {
+                || confirm == null || depths == null || limitSource == null || clock == null) {
             return null;
         }
         return new SubLandMutationRunner(
@@ -5019,7 +5121,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 depths,
                 depthConfirmations == null
                         ? DepthExtensionPort.denyAll() : depthConfirmations,
-                limits,
+                limitSource,
                 clock,
                 events,
                 depthExtender,
@@ -5444,10 +5546,25 @@ public final class ChunkLandPlugin extends JavaPlugin {
      */
     static WorldClaimPolicy buildWorldClaimPolicy(ConfigService config,
             Function<UUID, Optional<String>> worldNames, boolean denyUnlisted) {
+        return buildWorldClaimPolicy(config, worldNames, () -> denyUnlisted);
+    }
+
+    /**
+     * Production per-world claim gate with a live choice for worlds absent
+     * from the config.
+     *
+     * <p>The strictness source is re-read on every claim, so leaving the
+     * conservative startup fallback applies without rebuilding the sagas.
+     * A {@code null} source fails closed to deny-all, exactly like the
+     * boolean overload with {@code denyUnlisted=true}.
+     */
+    static WorldClaimPolicy buildWorldClaimPolicy(ConfigService config,
+            Function<UUID, Optional<String>> worldNames, BooleanSupplier conservative) {
         if (config == null || worldNames == null) {
             return WorldClaimPolicy.denyAll("world.unknown");
         }
-        return WorldClaimPolicy.fromConfig(config::current, worldNames, denyUnlisted);
+        BooleanSupplier strict = conservative == null ? () -> true : conservative;
+        return WorldClaimPolicy.fromConfig(config::current, worldNames, strict);
     }
 
     /**
@@ -5603,6 +5720,35 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Leave the conservative startup fallback after a gated reload proved a
+     * valid operator file with an unchanged server world set.
+     *
+     * <p>Runs after the new snapshot publishes (fail-closed ordering: any
+     * decision between the publish and this flip still denies). The claim
+     * gate follows the shared flag live; the depth lookup is rebuilt over
+     * the unchanged startup tables with the relaxed unknown-world mode and
+     * swapped in one volatile store, so later read-API holders observe one
+     * consistent generation. Holders fetched before the swap keep answering
+     * with the stricter fallback until re-fetched — safe, never looser.</p>
+     */
+    private void exitConservativeMode() {
+        try {
+            conservativeLive.set(false);
+            conservativeConfigMode = false;
+            ConfigService service = this.configService.orElse(null);
+            if (service != null) {
+                this.protectionDepthLookup = buildProtectionDepthLookup(
+                        service::current, startupWorldNamesById, startupWorldMinimums, false);
+            }
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand failed to leave the conservative config fallback; "
+                    + "staying conservative until the next restart: " + failure.getMessage());
+            conservativeLive.set(true);
+            conservativeConfigMode = true;
+        }
+    }
+
+    /**
      * Startup snapshot of world config name to world UUID, read once at enable.
      * Config world entries absent from this table warn and stay {@code INHERIT}
      * (fail-closed) until the world is known at a later restart.
@@ -5695,7 +5841,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
             ConfigService config = this.configService.orElseThrow(
                     () -> new IllegalStateException("ChunkLand config service is unavailable"));
             this.claimQuotas = new OwnerQuotaService(
-                    new LimitResolver(config.current(), this.limitProvider));
+                    new LimitResolver(config::current, this.limitProvider));
             // Restart hydration: the quota service is process-local and starts
             // from zero, so restore committed counts from the authoritative
             // durable lands before serving any claim. A failed hydration keeps
@@ -5724,7 +5870,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
                                     .map(org.bukkit.World::getName),
-                            this.conservativeConfigMode),
+                            this.conservativeLive::get),
                     this.publicEvents);
             return this.claimSaga::claim;
         } catch (RuntimeException failure) {
@@ -5776,7 +5922,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     buildWorldClaimPolicy(config,
                             uuid -> Optional.ofNullable(getServer().getWorld(uuid))
                                     .map(org.bukkit.World::getName),
-                            this.conservativeConfigMode),
+                            this.conservativeLive::get),
                     this.publicEvents);
             return this.expandSaga::expand;
         } catch (RuntimeException failure) {
@@ -6080,7 +6226,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     new DepthExtendStore(bootstrap.store())::extend;
             SubLandMutationRunner runner = buildSubLandRunner(
                     bootstrap.store(), registry, selections, confirm, depths,
-                    activeConfig.current().limits(), Clock.systemUTC(), this.publicEvents,
+                    () -> activeConfig.current().limits(),
+                    Clock.systemUTC(), this.publicEvents,
                     depthExtender, depthConfirmations);
             if (runner == null) {
                 getLogger().warning("ChunkLand subland flow assembly failed; "
@@ -6619,6 +6766,19 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         }
         this.decisionCacheBudgetSync = null;
+        for (ConfigReloadListener sync : new ConfigReloadListener[]{
+                this.rejectionCooldownSync, this.messageLocaleSync}) {
+            if (sync != null && configService != null && configService.isPresent()) {
+                try {
+                    configService.get().removeListener(sync);
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }
+        this.rejectionCooldownSync = null;
+        this.messageLocaleSync = null;
+        this.reloadCoordinator = null;
+        this.rejectionCooldown = null;
         PermissionDecisionCache decisions = this.decisionCache;
         if (decisions != null) {
             try {

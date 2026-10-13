@@ -35,7 +35,7 @@ public final class RejectionCooldown {
     }
 
     private final SelectionClock clock;
-    private final Duration cooldown;
+    private volatile Duration cooldown;
     private final ConcurrentMap<Key, Instant> lastSent = new ConcurrentHashMap<>();
 
     public RejectionCooldown(SelectionClock clock, Duration cooldown) {
@@ -44,6 +44,20 @@ public final class RejectionCooldown {
         if (cooldown.isNegative()) {
             throw new IllegalArgumentException("cooldown must not be negative: " + cooldown);
         }
+    }
+
+    /**
+     * Follow a config reload: the next deny observes the new window while
+     * already-recorded send times stay, so a reload neither re-spams nor
+     * mutes players. A volatile write only; in-flight denies may use either
+     * generation exactly once.
+     */
+    public void setCooldown(Duration cooldown) {
+        Objects.requireNonNull(cooldown, "cooldown");
+        if (cooldown.isNegative()) {
+            throw new IllegalArgumentException("cooldown must not be negative: " + cooldown);
+        }
+        this.cooldown = cooldown;
     }
 
     /**

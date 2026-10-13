@@ -8,26 +8,45 @@ import com.smile.chunkland.api.limit.LimitType;
 import com.smile.chunkland.config.ChunkLandConfig;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Resolves a limit value for an owner/type, preferring an external provider
  * when present and falling back to {@link ChunkLandConfig#limits()}.
  *
  * <p>Provider absent or returning empty always falls back to config with source CONFIG.
- * Provider result must carry source PROVIDER so callers can distinguish provenance.</p>
+ * Provider result must carry source PROVIDER so callers can distinguish provenance.
+ * The config snapshot is re-read through the injected source on every call,
+ * so a config reload applies to the next resolution without rebuilding the
+ * owning quota service.</p>
  */
 public final class LimitResolver {
 
-    private final ChunkLandConfig config;
+    private final Supplier<ChunkLandConfig> configs;
     private final Optional<ExternalLimitProvider> provider;
 
     public LimitResolver(ChunkLandConfig config, Optional<ExternalLimitProvider> provider) {
-        this.config = Objects.requireNonNull(config, "config");
-        this.provider = Objects.requireNonNull(provider, "provider");
+        this(() -> Objects.requireNonNull(config, "config"),
+                Objects.requireNonNull(provider, "provider"));
     }
 
     public LimitResolver(ChunkLandConfig config) {
         this(config, Optional.empty());
+    }
+
+    /**
+     * Live resolver over the current snapshot source (typically
+     * {@code ConfigService::current}). A {@code null} or throwing source
+     * fails closed to zero so a reload can never loosen a quota.
+     */
+    public LimitResolver(Supplier<ChunkLandConfig> configs, Optional<ExternalLimitProvider> provider) {
+        this.configs = Objects.requireNonNull(configs, "configs");
+        this.provider = Objects.requireNonNull(provider, "provider");
+    }
+
+    /** Live resolver without an external provider. */
+    public LimitResolver(Supplier<ChunkLandConfig> configs) {
+        this(configs, Optional.empty());
     }
 
     public LimitResult resolve(OwnerRef owner, LimitType type) {
@@ -46,7 +65,16 @@ public final class LimitResolver {
                 return r;
             }
         }
-        long configValue = config.limits().longValueFor(type);
+        ChunkLandConfig live;
+        try {
+            live = configs.get();
+        } catch (RuntimeException unreadable) {
+            live = null;
+        }
+        if (live == null) {
+            return LimitResult.of(0L, LimitSource.CONFIG);
+        }
+        long configValue = live.limits().longValueFor(type);
         return LimitResult.of(configValue, LimitSource.CONFIG);
     }
 }

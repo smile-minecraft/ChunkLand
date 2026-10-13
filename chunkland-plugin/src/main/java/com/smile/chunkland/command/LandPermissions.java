@@ -35,6 +35,7 @@ public final class LandPermissions {
     public static final String HISTORY = "chunkland.command.land.history";
     public static final String MANAGE = "chunkland.command.land.manage";
     public static final String SELECTION = "chunkland.command.land.selection";
+    public static final String RELOAD = "chunkland.command.land.reload";
     /**
      * Independent ledger administration node for {@code /land admin ledger}.
      * Deliberately separate from {@code chunkland.admin.serverland} and the
@@ -61,7 +62,7 @@ public final class LandPermissions {
     public static final String BYPASS = "chunkland.admin.bypass";
 
     public static final List<String> ALL_ORDERED = List.of(
-            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, RULE, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN, ORPHAN, BYPASS, SELECTION);
+            HELP, CONFIRM, WAND, CLAIM, TRUST, UNTRUST, DEFAULT, BAN, UNBAN, SUBLAND, EXPAND, SHRINK, RENAME, DELETE, GROUP, PROFILE, BINDING, RULE, EXPLAIN, INSPECT, LOG, HISTORY, MANAGE, ADMIN, ORPHAN, BYPASS, SELECTION, RELOAD);
 
     private static final Map<String, String> BY_SUBCOMMAND = Map.ofEntries(
             Map.entry("help", HELP),
@@ -89,6 +90,7 @@ public final class LandPermissions {
             Map.entry("history", HISTORY),
             Map.entry("manage", MANAGE),
             Map.entry("selection", SELECTION),
+            Map.entry("reload", RELOAD),
             Map.entry("bypass", BYPASS),
             Map.entry("admin", ADMIN)
     );

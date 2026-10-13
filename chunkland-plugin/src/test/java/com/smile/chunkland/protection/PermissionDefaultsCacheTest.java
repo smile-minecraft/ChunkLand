@@ -1,7 +1,7 @@
 package com.smile.chunkland.protection;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.smile.chunkland.api.land.ChunkKey;
@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Contract for the reload-aware defaults cache: atomic publish, listener
- * refresh, and never-throw degradation.
+ * refresh, prepare-before-publish, and keep-old-view failure reporting.
  */
 class PermissionDefaultsCacheTest {
 
@@ -82,7 +82,7 @@ class PermissionDefaultsCacheTest {
     }
 
     @Test
-    void refreshNeverThrowsOnFailingSource() {
+    void refreshFailureKeepsOldViewWarnsAndThrows() {
         AtomicReference<ChunkLandConfig> ref = new AtomicReference<>(ChunkLandConfig.defaults());
         List<String> warnings = new ArrayList<>();
         PermissionDefaultsCache cache = new PermissionDefaultsCache(
@@ -94,12 +94,16 @@ class PermissionDefaultsCacheTest {
                     return config;
                 },
                 name -> Optional.empty(), warnings::add);
+        PermissionDefaultsSnapshot before = cache.snapshot();
         ref.set(null);
-        assertDoesNotThrow(() -> cache.onConfigReload(
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> cache.onConfigReload(
                 ReloadDiff.of(Set.of(), Set.of(), Set.of(), 0L, 1L)));
-        assertEquals(PermissionDefaultsSnapshot.empty(), cache.snapshot());
+        assertEquals(before, cache.snapshot(),
+                "a failed rebuild must keep the previous view, never swap in an empty one");
         assertTrue(warnings.stream().anyMatch(w -> w.contains("fail-closed")),
                 "refresh failure must warn, got: " + warnings);
+        assertTrue(thrown.getMessage().contains("boom"),
+                "the failure must be reported, not swallowed: " + thrown.getMessage());
     }
 
     @Test

@@ -21,6 +21,14 @@ import java.util.Set;
  * <p>{@code globalPolicyChanged} is content-based and independent of the global
  * epoch: it is true only when limits, messages, selection timeout, the
  * economy section, or the subject/rule permission defaults changed.</p>
+ *
+ * <p>The {@code feedback} section and the decision-cache budget are
+ * deliberately excluded: their consumers read the live snapshot on every
+ * deny or decision instead of caching values behind this flag, so a
+ * feedback-only or budget-only reload needs no listener fan-out and,
+ * in particular, never invalidates in-flight selections. Any listener that
+ * must react to those two sections has to read the snapshot directly and
+ * must not gate on this flag.</p>
  */
 public record ReloadDiff(
         Set<String> changedWorlds,

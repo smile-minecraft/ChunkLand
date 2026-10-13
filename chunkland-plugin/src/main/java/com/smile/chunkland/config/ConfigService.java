@@ -52,6 +52,7 @@ public final class ConfigService {
 
     private final ReentrantLock reloadLock = new ReentrantLock();
     private final CopyOnWriteArrayList<ConfigReloadListener> listeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<ReloadPreparer> preparers = new CopyOnWriteArrayList<>();
     private final ConfigLoader initialLoader;
     private volatile ConfigLoader loader;
     private volatile ChunkLandConfig snapshot;
@@ -166,8 +167,125 @@ public final class ConfigService {
         listeners.add(Objects.requireNonNull(listener, "listener"));
     }
 
+    /**
+     * Gated reload with a distinguishable outcome.
+     *
+     * <p>Unlike {@link #reload()}, the result tells "nothing changed" apart
+     * from "loading failed": a parseable candidate with content identical to
+     * the live snapshot returns {@link ReloadOutcome.Kind#NO_CHANGE} without
+     * publishing, bumping epochs or notifying listeners, while a loader
+     * failure returns {@link ReloadOutcome.Kind#FAILED} with the cause and
+     * keeps the previous snapshot. A gate rejection returns
+     * {@link ReloadOutcome.Kind#REJECTED} before anything publishes, so a
+     * refused candidate can never leave a half-applied generation behind. A
+     * committed publish whose post-publish callbacks threw still returns
+     * success, carrying the first callback failure so callers report
+     * "committed but a callback failed" instead of pretending a rollback.
+     *
+     * <p>Between the gate and the publish, registered {@link ReloadPreparer}s
+     * build and validate the derived state the candidate would publish. The
+     * first throw fails the whole attempt with nothing published and no
+     * listener notified.</p>
+     *
+     * <p>Reentrancy: the attempt takes the reload lock with
+     * {@code tryLock}, so a second reload racing an in-flight one returns
+     * {@link ReloadOutcome.Kind#BUSY} instead of queueing behind it.
+     *
+     * @param gate hot-swap gate consulted after loading, before publishing;
+     *             null allows every parseable candidate
+     */
+    public ReloadOutcome tryReload(ReloadGate gate) {
+        if (!reloadLock.tryLock()) {
+            return ReloadOutcome.busy(this.snapshot);
+        }
+        try {
+            ChunkLandConfig previous = this.snapshot;
+            ChunkLandConfig loaded;
+            try {
+                loaded = loader.load();
+            } catch (IOException | RuntimeException failure) {
+                // Fail-closed like reload(): the previous snapshot stays, no
+                // epoch moves, nobody is notified — but the failure is
+                // reported with its cause instead of looking like no-change.
+                return ReloadOutcome.failed(previous, failure);
+            }
+            ReloadGate.GateVerdict verdict = gate == null
+                    ? ReloadGate.GateVerdict.allow()
+                    : gate.check(previous, loaded);
+            if (verdict == null || !verdict.allowed()) {
+                String reason = verdict == null ? "reload gate refused" : verdict.reason();
+                return ReloadOutcome.rejected(previous, reason);
+            }
+            if (sameContent(previous, loaded)) {
+                return ReloadOutcome.noChange(previous);
+            }
+            try {
+                for (ReloadPreparer preparer : preparers) {
+                    preparer.prepare(loaded);
+                }
+            } catch (RuntimeException prepareFailure) {
+                // Prepare-before-publish: derived state could not be built
+                // for the candidate, so nothing publishes, no epoch moves
+                // and nobody is notified. Reported as a failure with its
+                // cause, never as no-change.
+                return ReloadOutcome.failed(previous, prepareFailure);
+            }
+            ChunkLandConfig next = previous.withEpochsBumped(
+                    loaded.worlds(), loaded.limits(), loaded.messages(), loaded.selection(),
+                    loaded.subjectDefaults(), loaded.ruleDefaults(), loaded.economy(), loaded.audit(),
+                    loaded.feedback(), loaded.decisionCacheMaxEntries());
+            ChunkLandConfig published = new ChunkLandConfig(
+                    loaded.worlds(),
+                    loaded.limits(),
+                    loaded.messages(),
+                    loaded.selection(),
+                    loaded.subjectDefaults(),
+                    loaded.ruleDefaults(),
+                    loaded.economy(),
+                    loaded.audit(),
+                    loaded.feedback(),
+                    next.globalPolicyEpoch(),
+                    next.worldPolicyEpochs(),
+                    loaded.decisionCacheMaxEntries());
+            this.snapshot = published;
+            ReloadDiff diff = computeDiff(previous, published);
+            RuntimeException callbackFailure = notifyListenersCollecting(diff);
+            return ReloadOutcome.success(published, diff, callbackFailure);
+        } finally {
+            reloadLock.unlock();
+        }
+    }
+
+    /**
+     * Content equality ignoring the epoch counters: every typed section plus
+     * the decision-cache budget.
+     */
+    static boolean sameContent(ChunkLandConfig left, ChunkLandConfig right) {
+        return left.worlds().equals(right.worlds())
+                && left.limits().equals(right.limits())
+                && left.messages().equals(right.messages())
+                && left.selection().equals(right.selection())
+                && left.subjectDefaults().equals(right.subjectDefaults())
+                && left.ruleDefaults().equals(right.ruleDefaults())
+                && Objects.equals(left.economy(), right.economy())
+                && left.audit().equals(right.audit())
+                && left.feedback().equals(right.feedback())
+                && left.decisionCacheMaxEntries() == right.decisionCacheMaxEntries();
+    }
+
     public void removeListener(ConfigReloadListener listener) {
         listeners.remove(listener);
+    }
+
+    /**
+     * Register a prepare hook for the gated reload path. Preparers run in
+     * registration order after the gate allows a candidate and before it
+     * publishes; the first throw fails the whole reload with nothing
+     * published and no listener notified. The legacy {@link #reload()}
+     * never consults preparers.
+     */
+    public void addPreparer(ReloadPreparer preparer) {
+        preparers.add(Objects.requireNonNull(preparer, "preparer"));
     }
 
     private void notifyListeners(ReloadDiff diff) {
@@ -188,6 +306,25 @@ public final class ConfigService {
         if (firstFailure != null) {
             throw firstFailure;
         }
+    }
+
+    /**
+     * Same fan-out as {@link #notifyListeners(ReloadDiff)}, but the first
+     * listener failure is returned instead of thrown so the gated reload
+     * path can report "committed but a callback failed".
+     */
+    private RuntimeException notifyListenersCollecting(ReloadDiff diff) {
+        RuntimeException firstFailure = null;
+        for (ConfigReloadListener listener : listeners) {
+            try {
+                listener.onConfigReload(diff);
+            } catch (RuntimeException re) {
+                if (firstFailure == null) {
+                    firstFailure = re;
+                }
+            }
+        }
+        return firstFailure;
     }
 
     private static ReloadDiff computeDiff(ChunkLandConfig previous, ChunkLandConfig next) {

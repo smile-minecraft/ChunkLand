@@ -39,9 +39,11 @@ import java.util.function.Supplier;
  * two reads can mix generations; they stay only for existing callers and
  * tests and must not back new production wiring.
  *
- * <p>Refresh never throws: a failing config read or resolver degrades to an
- * empty snapshot (fail-closed) and a warning, so a misbehaving reload
- * listener can never break {@code ConfigService#reload()}.
+ * <p>Refresh reports failure instead of degrading: a failing config read
+ * or resolver keeps the previous view and throws, so a reload either
+ * publishes the validated generation or reports it. The constructor
+ * alone keeps the old degrade-to-empty fallback, because startup must
+ * publish something before any reload exists to hold onto.</p>
  */
 public final class PermissionDefaultsCache implements ConfigReloadListener {
 
@@ -175,9 +177,53 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
         };
     }
 
-    /** Re-resolve from the live config; invoked on bootstrap and every reload. */
+    /** Rebuild from the live config and publish; invoked on every reload. */
     public void refresh() {
-        current = resolve();
+        ChunkLandConfig config;
+        try {
+            config = configs.get();
+        } catch (RuntimeException unreadable) {
+            throw warnAndReport(unreadable);
+        }
+        if (config == null) {
+            throw warnAndReport(new IllegalStateException("config source returned null"));
+        }
+        try {
+            current = buildView(config);
+        } catch (RuntimeException rebuildFailure) {
+            // Keep the previous view instead of swapping in an empty one:
+            // an empty view is looser than the conservative fallback it
+            // could replace, so a failed rebuild reports and holds.
+            throw warnAndReport(rebuildFailure);
+        }
+    }
+
+    /**
+     * Prepare hook for the gated reload path: build the derived view for
+     * {@code candidate} without publishing anything. Throwing fails the
+     * whole reload before it publishes, so the post-publish
+     * {@link #refresh()} that follows a validated prepare rebuilds the
+     * same view from the same content.
+     *
+     * @param candidate the loaded snapshot about to publish; never null
+     */
+    public void prepareFor(ChunkLandConfig candidate) {
+        buildView(Objects.requireNonNull(candidate, "candidate"));
+    }
+
+    /**
+     * Warn about a failed rebuild and hand back the failure to throw: the
+     * warning is the record, the throw is the report. A throwing warning
+     * sink never masks the failure being reported.
+     */
+    private RuntimeException warnAndReport(RuntimeException failure) {
+        try {
+            warnings.accept("ChunkLand permission defaults refresh failed (fail-closed): "
+                    + failure.getMessage());
+        } catch (RuntimeException ignored) {
+            // The warning sink must never mask the failure being reported.
+        }
+        return failure;
     }
 
     @Override
@@ -192,16 +238,25 @@ public final class PermissionDefaultsCache implements ConfigReloadListener {
             if (config == null) {
                 throw new IllegalStateException("config source returned null");
             }
-            PermissionDefaultsSnapshot snapshot =
-                    PermissionDefaultsSnapshot.resolve(config, worldIds, warnings);
-            return new ConfigView(snapshot, LandRuleService.fromRuleSnapshot(snapshot),
-                    config.globalPolicyEpoch(), resolveWorldEpochs(config));
+            return buildView(config);
         } catch (RuntimeException failure) {
             warnings.accept("ChunkLand permission defaults refresh failed (fail-closed): "
                     + failure.getMessage());
             PermissionDefaultsSnapshot empty = PermissionDefaultsSnapshot.empty();
             return new ConfigView(empty, LandRuleService.fromRuleSnapshot(empty), -1L, Map.of());
         }
+    }
+
+    /**
+     * Pure view build over one snapshot: throws instead of degrading, so
+     * the prepare hook and the refresh path can decide separately whether
+     * to fail the reload or hold the previous view.
+     */
+    private ConfigView buildView(ChunkLandConfig config) {
+        PermissionDefaultsSnapshot snapshot =
+                PermissionDefaultsSnapshot.resolve(config, worldIds, warnings);
+        return new ConfigView(snapshot, LandRuleService.fromRuleSnapshot(snapshot),
+                config.globalPolicyEpoch(), resolveWorldEpochs(config));
     }
 
     /**
