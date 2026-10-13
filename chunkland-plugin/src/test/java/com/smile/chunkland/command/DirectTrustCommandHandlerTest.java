@@ -103,7 +103,9 @@ class DirectTrustCommandHandlerTest {
                 },
                 name -> TARGET.toString().equals(name) || "Target".equals(name)
                         ? Optional.of(TARGET) : Optional.empty(),
-                mutation);
+                null, PlayerScheduler.direct(),
+                (viewer, landId, slot) -> true, viewer -> true, landId -> true,
+                () -> true, mutation);
     }
 
     @Test
@@ -171,7 +173,9 @@ class DirectTrustCommandHandlerTest {
             FakeMutation landMutation = new FakeMutation();
             CapturingSink landSink = new CapturingSink();
             new DirectTrustCommandHandler(mode, sender -> Optional.empty(),
-                    name -> Optional.of(TARGET), landMutation)
+                    name -> Optional.of(TARGET), null, PlayerScheduler.direct(),
+                    (viewer, landId, slot) -> true, viewer -> true, landId -> true,
+                    () -> true, landMutation)
                     .handle(player(ACTOR), new String[] {base, TARGET.toString()}, landSink);
             assertEquals(List.of("command.land." + base + ".failed"), landSink.keys);
             assertEquals(base + ".unknown_land", landSink.vars.get(

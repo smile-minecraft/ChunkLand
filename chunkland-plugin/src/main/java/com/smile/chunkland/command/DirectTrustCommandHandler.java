@@ -6,6 +6,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -14,18 +15,19 @@ import org.bukkit.entity.Player;
  * Production {@code /land trust} / {@code /land untrust} handler.
  *
  * <p>Both subcommands act on the land under the sender's current position:
- * the tail arg names the affected player, never a land. The target resolves
- * only through the injected lookup — a UUID string or an online exact name —
- * so unknown or offline names fail closed without any network query, and
- * reserved names ({@code EVERYONE}, {@code *}, group syntax) never resolve.
- * The domain gate ({@code MANAGE_MEMBER}) is enforced by the
- * {@link LandCommand} dispatcher before this handler runs; this handler owns
- * only input resolution and the durable mutation call.
- *
- * <p>Threading: everything sender-facing (sender type, UUID, land and target
- * resolution) happens synchronously on the calling thread; only the reply
- * runs on mutation completion, using values captured up front, so the
- * callback never touches server objects.
+ * the tail arg names the affected player, never a land. The affected land
+ * is fixed before resolution starts and never re-resolved afterwards. The
+ * target accepts UUID text, an online exact name, or a known offline name:
+ * the first two resolve synchronously, the last through the shared async
+ * operation on the resolver's explicit executor, so the region-facing call
+ * never blocks. Unknown names, timeouts, failures and reserved names
+ * ({@code EVERYONE}, {@code *}, group syntax) fail closed with one generic
+ * denial that never reveals whether the name exists. After resolution the
+ * viewer, the fixed land and the slot gate are re-checked on the viewer
+ * thread before the single allowed write. The domain gate
+ * ({@code MANAGE_MEMBER}) is enforced by the {@link LandCommand} dispatcher
+ * before this handler runs; this handler owns only input collection and the
+ * shared operation call.
  */
 public final class DirectTrustCommandHandler implements LandCommand.Handler {
 
@@ -51,20 +53,49 @@ public final class DirectTrustCommandHandler implements LandCommand.Handler {
     private final LandResolver lands;
     private final Function<String, Optional<UUID>> playerIds;
     private final TrustMutation mutation;
+    private final OfflinePlayerResolver offlinePlayers;
+    private final PlayerScheduler scheduler;
+    private final RosterChangeOperation.Gate gate;
+    private final RosterChangeOperation.Presence presence;
+    private final RosterChangeOperation.Lands knownLands;
+    private final BooleanSupplier alive;
 
     /**
      * @param mode which binding change to perform
      * @param lands affected-land resolver; null or empty resolves fail closed
      * @param playerIds target lookup (UUID text or online exact name); null
      *                  resolves every name fail closed
+     * @param offlinePlayers async offline-name resolution; when present, a
+     *                       name the sync lookup misses is resolved on its
+     *                       explicit executor without blocking the caller.
+     *                       {@code null} keeps the legacy online-only behaviour
+     * @param scheduler player-thread hop for the async continuation;
+     *                  {@code null} runs continuations inline
+     * @param gate live slot-gate re-check on the fixed land; {@code null}
+     *             denies every async completion
+     * @param presence viewer-online re-check; {@code null} denies every
+     *                 async completion
+     * @param knownLands fixed-land existence re-check; {@code null} denies
+     *                   every async completion
+     * @param alive enable-generation liveness; {@code null} denies every
+     *              async completion
      * @param mutation durable mutation; null replies unavailable without side effects
      */
     public DirectTrustCommandHandler(Mode mode, LandResolver lands,
-            Function<String, Optional<UUID>> playerIds, TrustMutation mutation) {
+            Function<String, Optional<UUID>> playerIds, OfflinePlayerResolver offlinePlayers,
+            PlayerScheduler scheduler, RosterChangeOperation.Gate gate,
+            RosterChangeOperation.Presence presence, RosterChangeOperation.Lands knownLands,
+            BooleanSupplier alive, TrustMutation mutation) {
         this.mode = Objects.requireNonNull(mode, "mode");
         this.lands = lands;
         this.playerIds = playerIds;
         this.mutation = mutation;
+        this.offlinePlayers = offlinePlayers;
+        this.scheduler = scheduler;
+        this.gate = gate;
+        this.presence = presence;
+        this.knownLands = knownLands;
+        this.alive = alive;
     }
 
     @Override
@@ -88,72 +119,51 @@ public final class DirectTrustCommandHandler implements LandCommand.Handler {
             sink.reply("command.land." + base + ".usage", Map.of());
             return;
         }
-        if (mutation == null) {
-            sink.reply("command.land." + base + ".failed", Map.of("reason", base + ".unavailable"));
-            return;
-        }
-        Optional<UUID> target = resolveTarget(rawTarget);
-        if (target.isEmpty() || target.get() == null) {
-            sink.reply("command.land." + base + ".failed", Map.of("reason", base + ".unknown_target"));
-            return;
-        }
+        // The affected land is fixed before resolution starts and is never
+        // re-resolved from the sender's position afterwards, so waiting for
+        // an offline lookup cannot retarget the change at a moved player.
         Optional<LandId> land = resolveLand(sender);
         if (land.isEmpty() || land.get() == null) {
             sink.reply("command.land." + base + ".failed", Map.of("reason", base + ".unknown_land"));
             return;
         }
-        UUID targetId = target.get();
-        LandId landId = land.get();
-        String targetLabel = rawTarget.strip();
-        CompletionStage<Void> stage;
-        try {
-            stage = mutation.apply(actor, landId, targetId);
-        } catch (RuntimeException failure) {
-            sink.reply("command.land." + base + ".failed", Map.of("reason", base + ".failed"));
-            return;
-        }
-        if (stage == null) {
-            sink.reply("command.land." + base + ".failed", Map.of("reason", base + ".failed"));
-            return;
-        }
-        stage.whenComplete((ignored, failure) -> {
-            try {
-                if (failure != null) {
-                    sink.reply("command.land." + base + ".failed",
-                            Map.of("reason", base + ".failed"));
-                } else {
-                    sink.reply("command.land." + base + ".success",
-                            Map.of("player", targetLabel));
-                }
-            } catch (RuntimeException replyFailure) {
-                // Terminal reply path: never let a sink failure escape.
-            }
-        });
+        RosterChangeOperation.Slot slot =
+                mode == Mode.TRUST ? RosterChangeOperation.Slot.TRUST : RosterChangeOperation.Slot.UNTRUST;
+        RosterChangeOperation operation = operation();
+        operation.submit(player, actor, land.get(), slot, rawTarget,
+                result -> reply(result, base, sink), null);
     }
 
-    private Optional<UUID> resolveTarget(String raw) {
-        String stripped = raw.strip();
-        if (stripped.isEmpty()
-                || stripped.equalsIgnoreCase("EVERYONE")
-                || stripped.equals("*")
-                || stripped.toLowerCase(java.util.Locale.ROOT).startsWith("group(")) {
-            return Optional.empty();
-        }
+    private void reply(RosterChangeOperation.Result result, String base, ReplySink sink) {
         try {
-            return Optional.of(UUID.fromString(stripped));
-        } catch (IllegalArgumentException notUuid) {
-            // Not a UUID: only an online exact name may resolve it, and only
-            // through the injected lookup (no network query here).
+            switch (result.outcome()) {
+                case SUCCESS -> sink.reply("command.land." + base + ".success",
+                        Map.of("player", result.label()));
+                case UNKNOWN_TARGET -> sink.reply("command.land." + base + ".failed",
+                        Map.of("reason", base + ".unknown_target"));
+                case UNAVAILABLE -> sink.reply("command.land." + base + ".failed",
+                        Map.of("reason", base + ".unavailable"));
+                default -> sink.reply("command.land." + base + ".failed",
+                        Map.of("reason", base + ".failed"));
+            }
+        } catch (RuntimeException replyFailure) {
+            // Terminal reply path: never let a sink failure escape.
         }
-        if (playerIds == null) {
-            return Optional.empty();
-        }
-        try {
-            Optional<UUID> found = playerIds.apply(stripped);
-            return found == null ? Optional.empty() : found;
-        } catch (RuntimeException failure) {
-            return Optional.empty();
-        }
+    }
+
+    private RosterChangeOperation operation() {
+        return new RosterChangeOperation(playerIds, offlinePlayers, scheduler, gate,
+                presence, knownLands, alive, null,
+                slot -> (actor, landId, target) -> {
+                    if (mutation == null) {
+                        return null;
+                    }
+                    try {
+                        return mutation.apply(actor, landId, target);
+                    } catch (RuntimeException failure) {
+                        return null;
+                    }
+                });
     }
 
     private Optional<LandId> resolveLand(CommandSender sender) {

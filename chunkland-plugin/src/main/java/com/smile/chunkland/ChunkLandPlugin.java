@@ -73,8 +73,10 @@ import com.smile.chunkland.command.LandDefaultCommandHandler;
 import com.smile.chunkland.command.LandRuleCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
 import com.smile.chunkland.command.ManageGuiCommandHandler;
+import com.smile.chunkland.command.DiscardingPlayerScheduler;
 import com.smile.chunkland.command.OfflinePlayerResolver;
 import com.smile.chunkland.command.PlayerScheduler;
+import com.smile.chunkland.command.RosterChangeOperation;
 import com.smile.chunkland.command.PluginManagementGateResolver;
 import com.smile.chunkland.command.RenameCommandHandler;
 import com.smile.chunkland.command.ReloadCommandHandler;
@@ -1991,7 +1993,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * instead of running half-wired.
      */
     private com.smile.chunkland.adapter.gui.ManagementRosterController buildManagementRoster(
-            LandAuthorisationService authorisations) {
+            LandAuthorisationService authorisations,
+            com.smile.chunkland.command.RosterChangeOperation operation) {
         var navigation = new com.smile.chunkland.adapter.gui.ManagementRosterController.Navigation() {
             @Override
             public GuiNavigator navigator() {
@@ -2041,30 +2044,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
             }
         };
         com.smile.chunkland.adapter.gui.ManagementRosterController.Gate gate =
-                (viewer, landId, slot) -> {
-                    Player player = resolveGuiPlayer(viewer);
-                    LandRegistryStore store = this.protectionStore;
-                    PermissionDefaultsCache defaults = this.permissionDefaults;
-                    if (player == null || store == null || defaults == null) {
-                        return false;
-                    }
-                    String node = com.smile.chunkland.command.LandPermissions.forSubcommand(slot);
-                    if (node == null || node.isBlank() || !player.hasPermission(node)) {
-                        return false;
-                    }
-                    ProtectionActionType action =
-                            ManagementPermissionGate.actionForSubcommand(slot).orElse(null);
-                    LandRegistry snapshot = store.snapshot();
-                    PermissionContextProvider contexts = defaults.provider();
-                    if (action == null || snapshot == null || contexts == null) {
-                        return false;
-                    }
-                    boolean steward = player.hasPermission(
-                            PluginManagementGateResolver.SERVER_LAND_STEWARD_NODE);
-                    PermissionDecision decision = ManagementPermissionGate.check(viewer, landId,
-                            action, snapshot, readAdminBypass(viewer), steward, contexts);
-                    return decision != null && decision.outcome() == PermissionState.ALLOW;
-                };
+                this::rosterSlotAllows;
         var people = new com.smile.chunkland.adapter.gui.ManagementRosterController.People() {
             @Override
             public String nameOf(UUID playerId) {
@@ -2107,7 +2087,103 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         authorisations == null ? null : authorisations::untrust,
                         authorisations == null ? null : authorisations::ban,
                         authorisations == null ? null : authorisations::unban),
-                people, feedback, hop, this::managementRosterTexts);
+                people, feedback, hop, this::managementRosterTexts,
+                operation, this::resolveGuiPlayer);
+    }
+
+    /**
+     * Shared roster-change operation behind the management roster adds: the
+     * same trust and ban entries the chat commands use, so the GUI can do
+     * nothing a command could not. Resolution runs on the shared executor,
+     * never on a region thread.
+     */
+    private com.smile.chunkland.command.RosterChangeOperation buildRosterOperation(
+            OfflinePlayerResolver rosterResolver, PlayerScheduler rosterScheduler,
+            com.smile.chunkland.command.RosterChangeOperation.Gate rosterGate,
+            com.smile.chunkland.command.RosterChangeOperation.Presence rosterPresence,
+            com.smile.chunkland.command.RosterChangeOperation.Lands rosterLands,
+            java.util.function.BooleanSupplier rosterAlive,
+            LandAuthorisationService authorisations) {
+        return new com.smile.chunkland.command.RosterChangeOperation(
+                name -> resolveOnlinePlayerUuid(getServer(), name),
+                rosterResolver, rosterScheduler, rosterGate, rosterPresence, rosterLands,
+                rosterAlive, null,
+                slot -> switch (slot) {
+                    case TRUST -> authorisations == null ? null : authorisations::trust;
+                    case UNTRUST -> authorisations == null ? null : authorisations::untrust;
+                    case BAN -> authorisations == null ? null : authorisations::ban;
+                    case UNBAN -> authorisations == null ? null : authorisations::unban;
+                });
+    }
+
+    /**
+     * Live slot-gate check for one roster viewer on one fixed land: the
+     * Bukkit command node plus the shared domain gate over the live
+     * snapshot. Shared by the roster pages and the async roster-change
+     * re-validation, so both ends judge the same inputs.
+     */
+    private boolean rosterSlotAllows(UUID viewer, LandId landId, String slot) {
+        try {
+            Player player = resolveGuiPlayer(viewer);
+            LandRegistryStore store = this.protectionStore;
+            PermissionDefaultsCache defaults = this.permissionDefaults;
+            if (player == null || store == null || defaults == null) {
+                return false;
+            }
+            String node = com.smile.chunkland.command.LandPermissions.forSubcommand(slot);
+            if (node == null || node.isBlank() || !player.hasPermission(node)) {
+                return false;
+            }
+            ProtectionActionType action =
+                    ManagementPermissionGate.actionForSubcommand(slot).orElse(null);
+            LandRegistry snapshot = store.snapshot();
+            PermissionContextProvider contexts = defaults.provider();
+            if (action == null || snapshot == null || contexts == null) {
+                return false;
+            }
+            boolean steward = player.hasPermission(
+                    PluginManagementGateResolver.SERVER_LAND_STEWARD_NODE);
+            PermissionDecision decision = ManagementPermissionGate.check(viewer, landId,
+                    action, snapshot, readAdminBypass(viewer), steward, contexts);
+            return decision != null && decision.outcome() == PermissionState.ALLOW;
+        } catch (RuntimeException denied) {
+            return false;
+        }
+    }
+
+    /** Whether the viewer is still reachable for a roster change. */
+    private boolean rosterViewerOnline(UUID viewer) {
+        try {
+            return resolveGuiPlayer(viewer) != null;
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+    }
+
+    /** Whether the fixed roster land still exists in the live snapshot. */
+    private boolean rosterLandKnown(LandId landId) {
+        try {
+            LandRegistryStore store = this.protectionStore;
+            LandRegistry snapshot = store == null ? null : store.snapshot();
+            return snapshot != null && landId != null && snapshot.land(landId) != null;
+        } catch (RuntimeException unresolved) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the enable generation that wired the roster flows is still
+     * alive: disable clears both references, so a late async completion
+     * stops before any write.
+     *
+     * <p>This check is a liveness probe, not a generation token. It holds
+     * only because the same plugin instance is never re-enabled: disable
+     * nulls both fields and the instance is discarded, so a later enable
+     * always wires fresh references on a new instance instead of reviving
+     * the cleared ones (the same premise the bypass lifecycle documents).
+     */
+    private boolean rosterGenerationAlive() {
+        return this.managementGuiScheduler != null && this.resolveExecutor != null;
     }
 
     /**
@@ -2541,15 +2617,61 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 .map(service -> service == null ? null : new GuiContentRenderer(service,
                         playerUuid -> getServer().getPlayer(playerUuid)))
                 .orElse(null);
+        // Offline name resolution runs on a dedicated daemon thread, never on
+        // a region thread: roster changes only schedule through it and report
+        // on completion. Created ahead of the roster wiring so the trust, ban
+        // and roster controllers share one executor; a failed build leaves
+        // it null and every offline name fails closed.
+        try {
+            this.resolveExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, "chunkland-resolve");
+                thread.setDaemon(true);
+                return thread;
+            });
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand offline resolution executor failed; "
+                    + "offline names stay fail-closed: " + failure.getMessage());
+            this.resolveExecutor = null;
+        }
+        this.managementGuiScheduler = buildPlayerScheduler(this);
+        this.managementGuiPlayerLookup = uuid -> {
+            try {
+                return uuid == null ? null : getServer().getPlayer(uuid);
+            } catch (RuntimeException unresolved) {
+                return null;
+            }
+        };
         DirectTrustCommandHandler.LandResolver trustLands =
                 currentLocationLandResolver(this.protectionStore);
         Function<String, Optional<UUID>> trustPlayers =
                 name -> resolveOnlinePlayerUuid(getServer(), name);
+        OfflinePlayerResolver rosterResolver =
+                buildOfflinePlayerResolver(getServer(), this.resolveExecutor);
+        PlayerScheduler rosterScheduler = this.managementGuiScheduler;
+        RosterChangeOperation.Gate rosterGate = this::rosterSlotAllows;
+        RosterChangeOperation.Presence rosterPresence = this::rosterViewerOnline;
+        RosterChangeOperation.Lands rosterLands = this::rosterLandKnown;
+        java.util.function.BooleanSupplier rosterAlive = this::rosterGenerationAlive;
+        EntryBanCommandHandler.LandView banViews = landId -> {
+            try {
+                LandRegistry snapshot = this.protectionStore.snapshot();
+                if (snapshot == null || landId == null) {
+                    return Optional.empty();
+                }
+                return Optional.ofNullable(snapshot.land(landId));
+            } catch (RuntimeException unresolved) {
+                return Optional.empty();
+            }
+        };
         DirectTrustCommandHandler trustHandler = new DirectTrustCommandHandler(
                 DirectTrustCommandHandler.Mode.TRUST, trustLands, trustPlayers,
+                rosterResolver, rosterScheduler, rosterGate, rosterPresence, rosterLands,
+                rosterAlive,
                 authorisations == null ? null : authorisations::trust);
         DirectTrustCommandHandler untrustHandler = new DirectTrustCommandHandler(
                 DirectTrustCommandHandler.Mode.UNTRUST, trustLands, trustPlayers,
+                rosterResolver, rosterScheduler, rosterGate, rosterPresence, rosterLands,
+                rosterAlive,
                 authorisations == null ? null : authorisations::untrust);
         LandDefaultCommandHandler defaultHandler = new LandDefaultCommandHandler(
                 trustLands::resolve,
@@ -2571,31 +2693,18 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 this::buildRuleViews);
         this.managementRuleMutation = this.landRuleMutationService == null ? null
                 : this.landRuleMutationService::setRuleExpected;
-        this.managementGuiScheduler = buildPlayerScheduler(this);
-        this.managementRoster = buildManagementRoster(authorisations);
-        this.managementGuiPlayerLookup = uuid -> {
-            try {
-                return uuid == null ? null : getServer().getPlayer(uuid);
-            } catch (RuntimeException unresolved) {
-                return null;
-            }
-        };
-        EntryBanCommandHandler.LandView banViews = landId -> {
-            try {
-                LandRegistry snapshot = this.protectionStore.snapshot();
-                if (snapshot == null || landId == null) {
-                    return Optional.empty();
-                }
-                return Optional.ofNullable(snapshot.land(landId));
-            } catch (RuntimeException unresolved) {
-                return Optional.empty();
-            }
-        };
+        this.managementRoster = buildManagementRoster(authorisations,
+                buildRosterOperation(rosterResolver, rosterScheduler, rosterGate,
+                        rosterPresence, rosterLands, rosterAlive, authorisations));
         EntryBanCommandHandler banHandler = new EntryBanCommandHandler(
-                EntryBanCommandHandler.Mode.BAN, trustLands::resolve, trustPlayers, banViews,
+                EntryBanCommandHandler.Mode.BAN, trustLands::resolve, trustPlayers,
+                rosterResolver, rosterScheduler, rosterGate, rosterPresence, rosterLands,
+                rosterAlive, banViews,
                 authorisations == null ? null : authorisations::ban);
         EntryBanCommandHandler unbanHandler = new EntryBanCommandHandler(
-                EntryBanCommandHandler.Mode.UNBAN, trustLands::resolve, trustPlayers, banViews,
+                EntryBanCommandHandler.Mode.UNBAN, trustLands::resolve, trustPlayers,
+                rosterResolver, rosterScheduler, rosterGate, rosterPresence, rosterLands,
+                rosterAlive, banViews,
                 authorisations == null ? null : authorisations::unban);
         // Formal rename flow: shares the recovery bootstrap store and the
         // shared runtime rebuilder so durable renames and the live map
@@ -2651,22 +2760,9 @@ public final class ChunkLandPlugin extends JavaPlugin {
         ProfileCommandHandler profileHandler = profileService == null ? null
                 : new ProfileCommandHandler(
                         ProfileCommandHandler.serviceProfiles(profileService));
-        // Offline name resolution runs on a dedicated daemon thread, never on
-        // a region thread: the binding handler and the inspect handler only
-        // schedule through it and reply on completion. Created ahead of the
-        // command wiring so both handlers share one executor; a failed build
-        // leaves it null and every offline name fails closed.
-        try {
-            this.resolveExecutor = Executors.newSingleThreadExecutor(r -> {
-                Thread thread = new Thread(r, "chunkland-resolve");
-                thread.setDaemon(true);
-                return thread;
-            });
-        } catch (RuntimeException failure) {
-            getLogger().warning("ChunkLand offline resolution executor failed; "
-                    + "offline names stay fail-closed: " + failure.getMessage());
-            this.resolveExecutor = null;
-        }
+        // The shared offline-resolution executor above also feeds the
+        // binding handler and the inspect handler below: both only schedule
+        // through it and reply on completion.
         BindingCommandHandler bindingHandler = bindingService == null
                 || groupService == null || profileService == null ? null
                 : new BindingCommandHandler(
@@ -4386,25 +4482,50 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * reply, while read-only paths drop the reply. A resolver-executor
      * thread still never touches a {@code Player}, a reply sink or any other
      * Bukkit sender API directly on the success path.
+     *
+     * <p>The seam also implements {@link DiscardingPlayerScheduler}: when
+     * the framework accepts the task but discards it before running (the
+     * entity left in between), only the discard callback fires, so callers
+     * holding per-player state across the hop still terminate instead of
+     * leaking it. Either the run callback or the discard callback fires,
+     * never both; the discard callback runs in framework critical code, so
+     * it only releases caller state and never touches the world.
      */
     static com.smile.chunkland.command.PlayerScheduler buildPlayerScheduler(
             org.bukkit.plugin.java.JavaPlugin plugin) {
         Objects.requireNonNull(plugin, "plugin");
-        return (player, task) -> {
-            Objects.requireNonNull(player, "player");
-            Objects.requireNonNull(task, "task");
-            io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduled =
-                    player.getScheduler().run(plugin, started -> {
-                        try {
-                            task.run();
-                        } catch (RuntimeException ignored) {
-                            // Player-thread continuation must never escape.
-                        }
-                    }, null);
-            if (scheduled == null) {
-                throw new IllegalStateException("player scheduler retired");
+        DiscardingPlayerScheduler scheduler = new DiscardingPlayerScheduler() {
+            @Override
+            public void runForPlayer(Player player, Runnable task) {
+                runForPlayer(player, task, null);
+            }
+
+            @Override
+            public void runForPlayer(Player player, Runnable task, Runnable onDiscarded) {
+                Objects.requireNonNull(player, "player");
+                Objects.requireNonNull(task, "task");
+                Runnable retired = onDiscarded == null ? null : () -> {
+                    try {
+                        onDiscarded.run();
+                    } catch (RuntimeException ignored) {
+                        // The discard callback runs in framework critical
+                        // code and must never escape.
+                    }
+                };
+                io.papermc.paper.threadedregions.scheduler.ScheduledTask scheduled =
+                        player.getScheduler().run(plugin, started -> {
+                            try {
+                                task.run();
+                            } catch (RuntimeException ignored) {
+                                // Player-thread continuation must never escape.
+                            }
+                        }, retired);
+                if (scheduled == null) {
+                    throw new IllegalStateException("player scheduler retired");
+                }
             }
         };
+        return scheduler;
     }
 
     /**

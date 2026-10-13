@@ -124,6 +124,9 @@ class EntryBanCommandHandlerTest {
                 },
                 name -> TARGET.toString().equals(name) || "Target".equals(name)
                         ? Optional.of(TARGET) : Optional.empty(),
+                null, PlayerScheduler.direct(),
+                (viewer, landId, slot) -> true, viewer -> true, landId -> true,
+                () -> true,
                 landId -> Optional.of(view),
                 mutation);
     }
@@ -198,6 +201,9 @@ class EntryBanCommandHandlerTest {
         new EntryBanCommandHandler(EntryBanCommandHandler.Mode.BAN,
                 sender -> Optional.empty(),
                 name -> Optional.of(TARGET),
+                null, PlayerScheduler.direct(),
+                (viewer, landId, slot) -> true, viewer -> true, landId -> true,
+                () -> true,
                 landId -> Optional.of(playerLand()),
                 noLand).handle(player(ACTOR), new String[] {"ban", TARGET.toString()}, noLandSink);
         assertEquals(List.of("command.land.ban.failed"), noLandSink.keys);
@@ -217,6 +223,9 @@ class EntryBanCommandHandlerTest {
         new EntryBanCommandHandler(EntryBanCommandHandler.Mode.BAN,
                 sender -> Optional.of(LAND),
                 name -> Optional.of(TARGET),
+                null, PlayerScheduler.direct(),
+                (viewer, landId, slot) -> true, viewer -> true, landId -> true,
+                () -> true,
                 landId -> Optional.of(playerLand()),
                 null).handle(player(ACTOR), new String[] {"ban", TARGET.toString()}, sink);
         assertEquals(List.of("command.land.ban.failed"), sink.keys);

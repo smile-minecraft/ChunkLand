@@ -99,6 +99,12 @@ public final class ManagementRosterController {
         void run(UUID viewer, Runnable task);
     }
 
+    /** Resolves the viewer to a handle for the shared operation; {@code null} when offline. */
+    @FunctionalInterface
+    public interface PlayerLookup {
+        org.bukkit.entity.Player playerOf(UUID viewer);
+    }
+
     /** Visible copy for one viewer. */
     @FunctionalInterface
     public interface Texts {
@@ -116,10 +122,25 @@ public final class ManagementRosterController {
     private final Feedback feedback;
     private final Hop hop;
     private final Texts texts;
+    private final com.smile.chunkland.command.RosterChangeOperation operation;
+    private final PlayerLookup lookup;
     private final Set<UUID> inFlight = ConcurrentHashMap.newKeySet();
 
     public ManagementRosterController(Navigation navigation, Rosters rosters, Gate gate,
             Changes changes, People people, Feedback feedback, Hop hop, Texts texts) {
+        this(navigation, rosters, gate, changes, people, feedback, hop, texts, null, null);
+    }
+
+    /**
+     * @param operation shared roster-change operation behind every roster
+     *                  add and remove; {@code null} keeps the direct
+     *                  {@link Changes} flow for clicks
+     * @param lookup viewer handle source for the operation; {@code null}
+     *               keeps the direct flow
+     */
+    public ManagementRosterController(Navigation navigation, Rosters rosters, Gate gate,
+            Changes changes, People people, Feedback feedback, Hop hop, Texts texts,
+            com.smile.chunkland.command.RosterChangeOperation operation, PlayerLookup lookup) {
         this.navigation = Objects.requireNonNull(navigation, "navigation");
         this.rosters = Objects.requireNonNull(rosters, "rosters");
         this.gate = Objects.requireNonNull(gate, "gate");
@@ -128,6 +149,8 @@ public final class ManagementRosterController {
         this.feedback = Objects.requireNonNull(feedback, "feedback");
         this.hop = Objects.requireNonNull(hop, "hop");
         this.texts = Objects.requireNonNull(texts, "texts");
+        this.operation = operation;
+        this.lookup = lookup;
     }
 
     /** Visible roster copy for one viewer; never {@code null}. */
@@ -300,6 +323,13 @@ public final class ManagementRosterController {
             tell(viewer, DENIED_KEY, Map.of());
             return;
         }
+        if (operation != null && lookup != null && entry != null && entry.id() != null) {
+            if (!inFlight.add(viewer)) {
+                return;
+            }
+            submitReference(viewer, landId, kind, add, entry.id().toString(), entry.name());
+            return;
+        }
         Change selected = switch (slot) {
             case "trust" -> changes.trust();
             case "untrust" -> changes.untrust();
@@ -373,6 +403,96 @@ public final class ManagementRosterController {
             feedback.tell(viewer, key, vars);
         } catch (RuntimeException ignored) {
             // A notice that cannot be sent never blocks the GUI.
+        }
+    }
+
+    /**
+     * Adds one player to a roster from a raw reference (UUID text, an online
+     * exact name, or a known offline name) through the shared operation.
+     * Unknown names, timeouts, failures and reserved subjects deny without
+     * writing and without revealing whether the name exists.
+     *
+     * @param viewer acting viewer
+     * @param landId fixed target land
+     * @param kind which roster to change
+     * @param add {@code true} adds, {@code false} removes
+     * @param raw raw player reference
+     */
+    public void addByReference(UUID viewer, LandId landId,
+            ManagementRosterPages.Kind kind, boolean add, String raw) {
+        if (viewer == null || landId == null || kind == null) {
+            return;
+        }
+        String slotKey = slot(kind, add);
+        if (operation == null || lookup == null) {
+            tell(viewer, "command.land." + slotKey + ".failed",
+                    Map.of("reason", slotKey + ".unavailable"));
+            return;
+        }
+        if (raw == null || raw.isBlank()) {
+            tell(viewer, "command.land." + slotKey + ".failed",
+                    Map.of("reason", slotKey + ".unknown_target"));
+            return;
+        }
+        if (!allowed(viewer, landId, slotKey)) {
+            tell(viewer, DENIED_KEY, Map.of());
+            return;
+        }
+        if (!inFlight.add(viewer)) {
+            return;
+        }
+        submitReference(viewer, landId, kind, add, raw, raw.strip());
+    }
+
+    /** Maps a roster change to the shared operation slot. */
+    private static com.smile.chunkland.command.RosterChangeOperation.Slot operationSlot(
+            ManagementRosterPages.Kind kind, boolean add) {
+        if (kind == ManagementRosterPages.Kind.MEMBERS) {
+            return add ? com.smile.chunkland.command.RosterChangeOperation.Slot.TRUST
+                    : com.smile.chunkland.command.RosterChangeOperation.Slot.UNTRUST;
+        }
+        return add ? com.smile.chunkland.command.RosterChangeOperation.Slot.BAN
+                : com.smile.chunkland.command.RosterChangeOperation.Slot.UNBAN;
+    }
+
+    private void submitReference(UUID viewer, LandId landId, ManagementRosterPages.Kind kind,
+            boolean add, String raw, String label) {
+        org.bukkit.entity.Player handle;
+        try {
+            handle = lookup.playerOf(viewer);
+        } catch (RuntimeException unresolved) {
+            handle = null;
+        }
+        if (handle == null) {
+            inFlight.remove(viewer);
+            String slotKey = slot(kind, add);
+            tell(viewer, "command.land." + slotKey + ".failed",
+                    Map.of("reason", slotKey + ".failed"));
+            return;
+        }
+        operation.submit(handle, viewer, landId, operationSlot(kind, add), raw,
+                result -> onReferenceResult(viewer, landId, kind, add, label, result),
+                () -> inFlight.remove(viewer));
+    }
+
+    private void onReferenceResult(UUID viewer, LandId landId, ManagementRosterPages.Kind kind,
+            boolean add, String label,
+            com.smile.chunkland.command.RosterChangeOperation.Result result) {
+        String slotKey = slot(kind, add);
+        switch (result.outcome()) {
+            case SUCCESS -> {
+                tell(viewer, "command.land." + slotKey + ".success", Map.of("player", label));
+                guarded(() -> refresh(viewer, landId, kind, add));
+            }
+            case GATE_DENIED -> tell(viewer, DENIED_KEY, Map.of());
+            case UNKNOWN_TARGET -> tell(viewer, "command.land." + slotKey + ".failed",
+                    Map.of("reason", slotKey + ".unknown_target"));
+            case NOT_ALLOWED -> tell(viewer, "command.land." + slotKey + ".failed",
+                    Map.of("reason", "ban.not_allowed"));
+            case UNAVAILABLE -> tell(viewer, "command.land." + slotKey + ".failed",
+                    Map.of("reason", slotKey + ".unavailable"));
+            default -> tell(viewer, "command.land." + slotKey + ".failed",
+                    Map.of("reason", slotKey + ".failed"));
         }
     }
 }
