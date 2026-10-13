@@ -206,6 +206,62 @@ class ProjectileRedstoneTest {
         return chunkX * 16 + 5;
     }
 
+    /**
+     * Arrow carrying an owner UUID: the primary shooter identity.
+     * A {@code null} owner exercises the shooter-wrapper fallback.
+     */
+    private static Projectile arrowProxyWithOwner(ProjectileSource shooter, UUID ownerId) {
+        UUID arrowId = UUID.randomUUID();
+        return (Projectile) Proxy.newProxyInstance(Projectile.class.getClassLoader(),
+                new Class[]{Projectile.class},
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "getShooter": return shooter;
+                        case "getOwnerUniqueId": return ownerId;
+                        case "getUniqueId": return arrowId;
+                        case "getLocation":
+                            throw new RuntimeException("arrow position must not be read");
+                        case "equals": return proxy == args[0];
+                        case "hashCode": return System.identityHashCode(proxy);
+                        case "toString": return "FakeArrow";
+                        default:
+                            Class<?> rt = method.getReturnType();
+                            if (rt == boolean.class) return false;
+                            if (rt == int.class) return 0;
+                            if (rt == double.class) return 0d;
+                            return null;
+                    }
+                });
+    }
+
+    /**
+     * Shooter wrapper whose identity read is broken: only the owner UUID
+     * can still identify the shot.
+     */
+    private static Player brokenIdentityShooter() {
+        return (Player) Proxy.newProxyInstance(Player.class.getClassLoader(),
+                new Class[]{Player.class},
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "getUniqueId":
+                            throw new RuntimeException("wrapper identity boom");
+                        case "isOnline": return true;
+                        case "getName": return "Archer";
+                        case "getLocation":
+                            throw new RuntimeException("shooter position must not be read");
+                        case "equals": return proxy == args[0];
+                        case "hashCode": return System.identityHashCode(proxy);
+                        case "toString": return "BrokenShooter";
+                        default:
+                            Class<?> rt = method.getReturnType();
+                            if (rt == boolean.class) return false;
+                            if (rt == int.class) return 0;
+                            if (rt == double.class) return 0d;
+                            return null;
+                    }
+                });
+    }
+
     private record TwoLands(UUID worldId, UUID ownerB, LandRegistryStore store, World world) {
     }
 
@@ -423,22 +479,172 @@ class ProjectileRedstoneTest {
     }
 
     @Test
-    void mobShotKeepsExistingVerdict() {
+    void dispenserShotButtonStaysVanilla() {
+        TwoLands fx = twoLands();
+        AtomicReference<ProtectionActionType> seen = new AtomicReference<>();
+        var listener = new ProtectionListener(actorEngine(fx.store(), fx.ownerB(),
+                PermissionState.ALLOW, PermissionState.DENY, seen));
+        // Buttons were never judged through this event before the change:
+        // a dispenser-shot arrow keeps vanilla even in a denying land.
+        Block source = blockProxy(fx.world(), 15, 64, 5, Material.DISPENSER);
+        EntityInteractEvent touch = new EntityInteractEvent(
+                arrowProxy(dispenserProxy(source)),
+                blockProxy(fx.world(), blockX(1), 64, 5, Material.OAK_BUTTON));
+        listener.onEntityInteract(touch);
+        assertFalse(touch.isCancelled(), "dispenser-shot arrow on a button stays vanilla");
+        assertNull(seen.get(), "unregulated button touch must not consult the engine");
+    }
+
+    @Test
+    void mobShotButtonStaysVanilla() {
+        TwoLands fx = twoLands();
+        AtomicReference<ProtectionActionType> seen = new AtomicReference<>();
+        var listener = new ProtectionListener(actorEngine(fx.store(), fx.ownerB(),
+                PermissionState.ALLOW, PermissionState.DENY, seen));
+        EntityInteractEvent touch = new EntityInteractEvent(
+                arrowProxy(mobProxy(UUID.randomUUID())),
+                blockProxy(fx.world(), blockX(1), 64, 5, Material.OAK_BUTTON));
+        listener.onEntityInteract(touch);
+        assertFalse(touch.isCancelled(), "mob-shot arrow on a button stays vanilla");
+        assertNull(seen.get(), "unregulated button touch must not consult the engine");
+    }
+
+    @Test
+    void dispenserShotTargetStaysVanilla() {
+        TwoLands fx = twoLands();
+        AtomicReference<ProtectionActionType> seen = new AtomicReference<>();
+        var listener = new ProtectionListener(actorEngine(fx.store(), fx.ownerB(),
+                PermissionState.ALLOW, PermissionState.DENY, seen));
+        // No target listener existed before the change either.
+        Block source = blockProxy(fx.world(), 15, 64, 5, Material.DISPENSER);
+        TargetHitEvent hit = new TargetHitEvent(arrowProxy(dispenserProxy(source)),
+                blockProxy(fx.world(), blockX(1), 64, 5, Material.TARGET), BlockFace.UP, 15);
+        listener.onTargetHit(hit);
+        assertFalse(hit.isCancelled(), "dispenser-shot arrow on a target stays vanilla");
+        assertNull(seen.get(), "unregulated target hit must not consult the engine");
+    }
+
+    @Test
+    void mobShotTargetStaysVanilla() {
+        TwoLands fx = twoLands();
+        AtomicReference<ProtectionActionType> seen = new AtomicReference<>();
+        var listener = new ProtectionListener(actorEngine(fx.store(), fx.ownerB(),
+                PermissionState.ALLOW, PermissionState.DENY, seen));
+        TargetHitEvent hit = new TargetHitEvent(arrowProxy(mobProxy(UUID.randomUUID())),
+                blockProxy(fx.world(), blockX(1), 64, 5, Material.TARGET), BlockFace.UP, 15);
+        listener.onTargetHit(hit);
+        assertFalse(hit.isCancelled(), "mob-shot arrow on a target stays vanilla");
+        assertNull(seen.get(), "unregulated target hit must not consult the engine");
+    }
+
+    @Test
+    void mobShotPlateKeepsArrowVerdict() {
         TwoLands fx = twoLands();
         var listener = new ProtectionListener(actorEngine(fx.store(), fx.ownerB(),
                 PermissionState.ALLOW, PermissionState.DENY, null));
+        // Plates were judged before the change by the arrow's own standing,
+        // and still are: denied in a denying land, vanilla in the wild.
         EntityInteractEvent inLand = new EntityInteractEvent(
                 arrowProxy(mobProxy(UUID.randomUUID())),
-                blockProxy(fx.world(), blockX(1), 64, 5, Material.OAK_BUTTON));
+                blockProxy(fx.world(), blockX(1), 64, 5, Material.OAK_PRESSURE_PLATE));
         listener.onEntityInteract(inLand);
-        assertTrue(inLand.isCancelled(), "mob-shot arrow keeps its existing land verdict");
+        assertTrue(inLand.isCancelled(), "mob-shot arrow keeps its existing plate verdict");
 
         int wild = blockX(9);
         EntityInteractEvent inWild = new EntityInteractEvent(
                 arrowProxy(mobProxy(UUID.randomUUID())),
-                blockProxy(fx.world(), wild, 64, 5, Material.OAK_BUTTON));
+                blockProxy(fx.world(), wild, 64, 5, Material.OAK_PRESSURE_PLATE));
         listener.onEntityInteract(inWild);
         assertFalse(inWild.isCancelled(), "wilderness mob shot follows vanilla");
+    }
+
+    @Test
+    void ownerUniqueIdIdentifiesOfflineShooter() {
+        TwoLands fx = twoLands();
+        var listener = new ProtectionListener(actorEngine(fx.store(), fx.ownerB(),
+                PermissionState.ALLOW, PermissionState.DENY, null));
+        // The owner UUID is the primary identity: an offline member is still
+        // recognised through it.
+        Projectile arrow = arrowProxyWithOwner(shooterProxy(fx.ownerB(), false), fx.ownerB());
+        TargetHitEvent hit = new TargetHitEvent(arrow,
+                blockProxy(fx.world(), blockX(1), 64, 5, Material.TARGET), BlockFace.UP, 15);
+        listener.onTargetHit(hit);
+        assertFalse(hit.isCancelled(), "offline member identified by owner UUID must still pass");
+    }
+
+    @Test
+    void ownerUniqueIdSurvivesBrokenShooterWrapper() {
+        TwoLands fx = twoLands();
+        var listener = new ProtectionListener(actorEngine(fx.store(), fx.ownerB(),
+                PermissionState.ALLOW, PermissionState.DENY, null));
+        // The wrapper identity read is broken, but the owner UUID still
+        // identifies a stranger: the touch must deny, not pass or throw.
+        Projectile arrow = arrowProxyWithOwner(brokenIdentityShooter(), UUID.randomUUID());
+        EntityInteractEvent touch = new EntityInteractEvent(arrow,
+                blockProxy(fx.world(), blockX(1), 64, 5, Material.OAK_BUTTON));
+        assertDoesNotThrow(() -> listener.onEntityInteract(touch));
+        assertTrue(touch.isCancelled(), "stranger identified by owner UUID must still deny");
+    }
+
+    @Test
+    void nonPlayerSkipsHoldInSublandAndDepth() {
+        SubFixture fx = subFixture();
+        ProtectionEngine engine = engineWithSubAuth(fx, PermissionState.ALLOW, PermissionState.DENY);
+        ProtectionListener listener = new ProtectionListener(engine);
+        Block source = blockProxy(fx.world(), 15, 64, 5, Material.DISPENSER);
+
+        // Even inside a denying subland cuboid, dispenser-shot buttons stay vanilla.
+        EntityInteractEvent insideButton = new EntityInteractEvent(
+                arrowProxy(dispenserProxy(source)),
+                blockProxy(fx.world(), 5, 64, 5, Material.OAK_BUTTON));
+        listener.onEntityInteract(insideButton);
+        assertFalse(insideButton.isCancelled(), "dispenser-shot button stays vanilla in a subland");
+
+        TargetHitEvent insideTarget = new TargetHitEvent(
+                arrowProxy(dispenserProxy(source)),
+                blockProxy(fx.world(), 5, 64, 5, Material.TARGET), BlockFace.UP, 15);
+        listener.onTargetHit(insideTarget);
+        assertFalse(insideTarget.isCancelled(), "dispenser-shot target stays vanilla in a subland");
+
+        // Plates stay judged at any depth: the arrow has no binding, so both
+        // the denying subland and the default-deny land refuse it.
+        EntityInteractEvent insidePlate = new EntityInteractEvent(
+                arrowProxy(dispenserProxy(source)),
+                blockProxy(fx.world(), 5, 64, 5, Material.OAK_PRESSURE_PLATE));
+        listener.onEntityInteract(insidePlate);
+        assertTrue(insidePlate.isCancelled(), "dispenser-shot plate keeps its verdict in a subland");
+
+        EntityInteractEvent abovePlate = new EntityInteractEvent(
+                arrowProxy(dispenserProxy(source)),
+                blockProxy(fx.world(), 5, 80, 5, Material.OAK_PRESSURE_PLATE));
+        listener.onEntityInteract(abovePlate);
+        assertTrue(abovePlate.isCancelled(), "dispenser-shot plate keeps its verdict above the subland");
+    }
+
+    @Test
+    void nonPlayerWildernessStaysVanilla() {
+        LandRegistryStore store = new LandRegistryStore();
+        store.publish(LandRegistry.empty());
+        World world = worldProxy(UUID.randomUUID());
+        AtomicReference<ProtectionActionType> seen = new AtomicReference<>();
+        var listener = new ProtectionListener(actorEngine(store, null,
+                PermissionState.ALLOW, PermissionState.DENY, seen));
+        int wild = blockX(9);
+        Block source = blockProxy(world, 15, 64, 5, Material.DISPENSER);
+
+        EntityInteractEvent button = new EntityInteractEvent(
+                arrowProxy(dispenserProxy(source)),
+                blockProxy(world, wild, 64, 5, Material.OAK_BUTTON));
+        listener.onEntityInteract(button);
+        assertFalse(button.isCancelled(), "wilderness dispenser button follows vanilla");
+
+        TargetHitEvent target = new TargetHitEvent(
+                arrowProxy(mobProxy(UUID.randomUUID())),
+                blockProxy(world, wild, 64, 5, Material.TARGET), BlockFace.UP, 15);
+        listener.onTargetHit(target);
+        assertFalse(target.isCancelled(), "wilderness mob target follows vanilla");
+
+        assertNull(seen.get(), "wilderness non-player touches must not consult the engine");
     }
 
     @Test

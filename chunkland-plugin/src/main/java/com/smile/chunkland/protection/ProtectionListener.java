@@ -1590,21 +1590,35 @@ public final class ProtectionListener implements Listener {
             }
             ProtectionActionType action;
             if (block.getType() == Material.FARMLAND) {
-                action = ProtectionActionType.FARMLAND_TRAMPLE;
-            } else {
-                action = interactAction(block.getType());
-                if (action != ProtectionActionType.BUTTON_USE
-                        && action != ProtectionActionType.REDSTONE_USE) {
-                    return;
+                // Unchanged pre-change path: the touching entity's own standing.
+                if (deniedAtBlock(entity.getUniqueId(), block,
+                        ProtectionActionType.FARMLAND_TRAMPLE)) {
+                    event.setCancelled(true);
                 }
+                return;
             }
-            UUID actor = entity.getUniqueId();
-            if (entity instanceof Projectile projectile
-                    && (action == ProtectionActionType.BUTTON_USE
-                        || action == ProtectionActionType.REDSTONE_USE)) {
-                actor = projectileActor(projectile, actor);
+            // Only plates were ever judged through this event; buttons and
+            // every other redstone kind passed through vanilla. Plates stay
+            // judged, buttons gain judgment for player and unidentifiable
+            // arrow touches only.
+            boolean plate = PLATE_TYPES.contains(block.getType());
+            boolean button = !plate && BUTTON_TYPES.contains(block.getType());
+            if (!plate && !button) {
+                return;
             }
-            if (deniedAtBlock(actor, block, action)) {
+            if (!(entity instanceof Projectile projectile)) {
+                if (plate && deniedAtBlock(entity.getUniqueId(), block,
+                        ProtectionActionType.REDSTONE_USE)) {
+                    event.setCancelled(true);
+                }
+                return;
+            }
+            UUID resolved = projectileActor(projectile, entity.getUniqueId(), plate);
+            if (resolved == null) {
+                return;
+            }
+            if (deniedAtBlock(resolved, block, plate
+                    ? ProtectionActionType.REDSTONE_USE : ProtectionActionType.BUTTON_USE)) {
                 event.setCancelled(true);
             }
         } catch (RuntimeException ex) {
@@ -1789,7 +1803,10 @@ public final class ProtectionListener implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            UUID actor = projectileActor(projectile, projectile.getUniqueId());
+            UUID actor = projectileActor(projectile, projectile.getUniqueId(), false);
+            if (actor == null) {
+                return;
+            }
             if (deniedAtBlock(actor, hitBlock, ProtectionActionType.REDSTONE_USE)) {
                 event.setCancelled(true);
             }
@@ -1846,19 +1863,23 @@ public final class ProtectionListener implements Listener {
 
     /**
      * Actor behind a projectile touching a button, plate, or target: the
-     * shooting player when one is identifiable, the untouched arrow verdict
-     * for identifiable non-player sources (dispensers, mobs), and the fixed
-     * environmental actor when no source can be identified at all.
+     * shooting player when one is identifiable, the fixed environmental
+     * actor when no source can be identified at all, and no adjudication
+     * ({@code null}) for identifiable non-player sources (dispensers, mobs)
+     * on touches that were never regulated before this change.
      *
-     * <p>Identity only, never position: neither the shooter's location nor
-     * its online state is read, so this stays on the event's own region
-     * thread on Folia and an offline-but-identifiable shooter is still
-     * judged by UUID. An unidentifiable source could be an offline player,
-     * so waving it through as environment would let a player action hide
-     * behind an ownerless mechanic: it denies in a land instead. Where no
-     * land exists the wilderness short-circuit still leaves it vanilla.
+     * <p>Regulated touches (plates) keep the pre-change arrow verdict for
+     * non-player sources. Identity only, never position: the player identity
+     * comes from the owner UUID first with the shooter wrapper as fallback,
+     * and neither the shooter's location nor its online state is read, so
+     * this stays on the event's own region thread on Folia and an
+     * offline-but-identifiable shooter is still judged by UUID. An
+     * unidentifiable source could be an offline player, so waving it through
+     * as environment would let a player action hide behind an ownerless
+     * mechanic: it denies in a land instead. Where no land exists the
+     * wilderness short-circuit still leaves it vanilla.
      */
-    private static UUID projectileActor(Projectile projectile, UUID touchUuid) {
+    private static UUID projectileActor(Projectile projectile, UUID touchUuid, boolean regulated) {
         ProjectileSource shooter;
         try {
             shooter = projectile.getShooter();
@@ -1866,12 +1887,27 @@ public final class ProtectionListener implements Listener {
             return ENVIRONMENT_ACTOR;
         }
         if (shooter instanceof Player player) {
-            return player.getUniqueId();
+            UUID ownerId = ownerUniqueId(projectile);
+            return ownerId != null ? ownerId : player.getUniqueId();
         }
         if (shooter == null) {
             return ENVIRONMENT_ACTOR;
         }
-        return touchUuid;
+        return regulated ? touchUuid : null;
+    }
+
+    /**
+     * Owner UUID carried by the projectile itself, without touching the
+     * shooter wrapper. The NMS owner reference keeps the UUID even after
+     * the shooter logs out; dispensers and ownerless flights answer
+     * {@code null}. Never throws.
+     */
+    private static UUID ownerUniqueId(Projectile projectile) {
+        try {
+            return projectile.getOwnerUniqueId();
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     private static Location safeLocation(Entity entity) {
