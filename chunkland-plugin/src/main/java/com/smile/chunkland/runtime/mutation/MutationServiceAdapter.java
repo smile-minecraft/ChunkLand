@@ -4,6 +4,8 @@ import com.smile.chunkland.api.mutation.ChunkLandMutations;
 import com.smile.chunkland.api.mutation.MutationKind;
 import com.smile.chunkland.api.mutation.MutationRequest;
 import com.smile.chunkland.api.mutation.MutationResult;
+import com.smile.chunkland.api.mutation.TypedMutationRequest;
+import com.smile.chunkland.api.mutation.TypedMutationResult;
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
@@ -104,5 +106,25 @@ public final class MutationServiceAdapter implements ChunkLandMutations {
             out.complete(MutationResult.failed(FAILED_DIAGNOSTIC));
         }
         return out;
+    }
+
+    /**
+     * Submit a typed request. The current pipeline cannot receive the typed
+     * safety fields (expected version, operation id, separated actor), so
+     * converting and executing would silently drop them. This entry therefore
+     * refuses every typed request with {@code REJECTED /
+     * mutation.unsupported} (echoing the request's operation id) and never
+     * touches the delegate or the legacy {@link #submit(MutationRequest)}.
+     * Typed execution lands with the pipeline that can actually enforce those
+     * fields.
+     *
+     * @param request immutable typed request, never {@code null}
+     * @return non-null stage completing with an immutable typed result
+     */
+    @Override
+    public CompletionStage<TypedMutationResult> submitTyped(TypedMutationRequest request) {
+        Objects.requireNonNull(request, "request");
+        return CompletableFuture.completedFuture(
+                TypedMutationResult.rejected(UNSUPPORTED_DIAGNOSTIC, request.operationId()));
     }
 }
