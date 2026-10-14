@@ -93,6 +93,29 @@ A subland is a region inside a land with its own permissions:
 create or update confirmation once more — the plugin asks for it, because the
 live index refreshes on the next confirmation.
 
+A successful subland create, update or delete releases your own selection
+session, so select again before your next shape change.
+
+## Setting the land's environment rules
+
+```
+ /land rule                  # list all eleven rules with their values
+ /land rule FIRE_SPREAD       # show one rule
+ /land rule PVP ALLOW         # change one rule on this land
+```
+
+The eleven rules — PVP, terrain and entity explosions, fire spread and burn,
+mob griefing, fluid flow, pistons, hopper transfer, hostile and passive mob
+spawning — each run per land on `ALLOW`, `DENY` or `INHERIT`. `INHERIT` removes
+your override and the rule falls back through the world, global and built-in
+layers. The management screen shows the same three values side by side: what
+you set, what actually applies, and which layer decided it.
+
+Rules bind the owner too: setting `FIRE_SPREAD` to `DENY` stops your own fire
+as well as everyone else's. And the boundary itself is not a rule — a piston,
+fluid or hopper reaching across a land edge is always refused, whatever the
+rules say.
+
 ## The management screen
 
 ```
@@ -133,10 +156,13 @@ blocks from the boundary, or to the world spawn if there is no exit.
 - **Strangers can walk in.** Entry is allowed by default. `/land ban` overrides
   it per player; for everyone, the operator has to set
   `subject-defaults.global.ENTRY: DENY`.
-- **You cannot start a fire inside your land.** Fire spread and burning are
-  blocked, but setting a fire source is not checked at all.
-- **You cannot turn rules on.** PVP, explosions, pistons, fluid flow and the
-  rest have no player interface.
+- **Lighting a fire needs permission.** Starting a fire inside a claim is
+  judged per player and denied by default: the owner and players explicitly
+  given the ignition right may light one, strangers may not. Fire the land did
+  not light — lava, lightning, a dispenser holding flint and steel — follows
+  the fire-spread rule instead, which denies by default, so it is stopped in a
+  land unless the owner opens that rule. Explosions are separate: blast damage
+  and broken blocks follow the explosion rules, not the ignition right.
 - **A thin subland can be crossed at speed.** Entry is judged from where a
   movement started and ended. Elytra, ice boats or a long fall will pass over a
   subland that is thinner than one tick of movement.

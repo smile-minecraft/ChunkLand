@@ -8,7 +8,7 @@ recovery.
 ## Before you install
 
 ChunkLand runs on **Folia 26.2** with **Java 25**. Paper is not supported. It
-requires **AceLib 1.3.0** on the server (`depend: [AceLib]`, so the server
+requires **AceLib 1.5.0** on the server (`depend: [AceLib]`, so the server
 refuses to enable ChunkLand without it) and optionally a Vault-ecosystem
 economy plugin, LuckPerms, or CoreProtect.
 
@@ -25,10 +25,14 @@ To build from a checkout instead:
 ./gradlew build --no-daemon --console=plain
 ```
 
-`build-acelib.sh` downloads AceLib 1.3.0 from its fixed GitHub Release asset
+`build-acelib.sh` downloads AceLib 1.5.0 from its fixed GitHub Release asset
 into a cache directory outside the working tree and verifies it against a pinned
 SHA-256; Gradle then resolves AceLib from there as a `flatDir` dependency. It
 never embeds AceLib in the ChunkLand jar.
+
+If you are upgrading from a server that ran AceLib 1.3.0: stop the server,
+replace the AceLib jar in `plugins/` with 1.5.0, and start again. No ChunkLand
+data or config migration is needed for the AceLib bump itself.
 
 The build output is `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`.
 
@@ -48,11 +52,24 @@ overwrites your edits, so an upgraded server keeps an older copy and keys added
 since then come from the jar. Deleting a language file makes the plugin write a
 fresh one.
 
-## Configuration changes need a restart
+## Changing the configuration without a restart
 
-There is no reload command. Edit `config.yml`, restart. The internal reload API
-that the config file's header comment mentions is not exposed as a command, and
-Bukkit's `/reload` is not supported by this plugin or by Folia.
+`/land reload` (node `chunkland.command.land.reload`, console included)
+re-reads `config.yml` and applies it live. Bukkit's `/reload` stays
+unsupported.
+
+Hot — applies on the next read: `limits` quotas, `messages` settings,
+`selection` sessions and budgets, `subject-defaults` and `rule-defaults`,
+`feedback` tuning, the decision-cache budget, and `claim-enabled` of
+already-listed worlds.
+
+Needs a restart: added or removed worlds, any world's `vertical-mode`, the
+whole `economy` section, and the whole `audit` section. A reload touching any
+of those refuses the whole candidate with a message naming the reason — never a
+partial apply. A reload that fails to read or validate keeps the previous
+settings and says why. A successful reload does not rewrite
+`config-last-known-good.yml`: that file still only refreshes on a successful
+startup load, so it keeps covering a config that no longer parses.
 
 Two settings interact with restarts:
 
@@ -86,15 +103,19 @@ permissions:
   chunkland.command.land.ban: true
   chunkland.command.land.unban: true
   chunkland.command.land.default: true
+  chunkland.command.land.rule: true
+  chunkland.command.land.selection: true
   chunkland.command.land.subland: true
   chunkland.command.land.expand: true
   chunkland.command.land.shrink: true
   chunkland.command.land.manage: true
 ```
 
-All 25 nodes and what they gate are in the
+All 32 nodes and what they gate are in the
 [permission reference](reference/permissions.md). The `chunkland.admin.*` and
-`chunkland.debug.*` nodes are for operators; do not hand them to players.
+`chunkland.debug.*` nodes are for operators; do not hand them to players. Keep
+`chunkland.command.land.reload` with operators too: it re-reads the whole
+server configuration.
 
 ## Locking claims down
 
@@ -110,8 +131,11 @@ Per-player entry bans override this default in the other direction — a banned
 player is refused even when the default allows. With the default set to DENY,
 trusted members and the owner still pass, because trust is a separate layer.
 
-The eleven land rules cannot be changed from any interface. `rule-defaults` in
-`config.yml` is a commented example that is not wired to anything yet.
+The eleven land rules have per-land, world and global layers now: the owner
+adjusts their own land with `/land rule` (past the `MANAGE_PERMISSION` gate),
+and `rule-defaults` in `config.yml` carries the world and global layers. What
+stays fixed is the boundary itself — a piston, fluid or hopper reaching across
+a land edge is always refused, and no rule opens it.
 
 ## Claim pricing
 

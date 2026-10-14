@@ -2,7 +2,7 @@ English · [繁體中文](../../zh-TW/reference/permissions.md) · [简体中文
 
 # Permission reference
 
-29 nodes. **Every one of them defaults to `op`**, so a fresh install gives these
+32 nodes. **Every one of them defaults to `op`**, so a fresh install gives these
 commands to operators and to nobody else. A player needs the node granted
 explicitly before `/land` will do anything for them.
 
@@ -25,6 +25,7 @@ layers.
 | `chunkland.command.land.unban` | `/land unban` |
 | `chunkland.command.land.default` | `/land default` — per-land defaults |
 | `chunkland.command.land.binding` | `/land binding` |
+| `chunkland.command.land.rule` | `/land rule` — per-land environment rules |
 | `chunkland.command.land.group` | `/land group` |
 | `chunkland.command.land.profile` | `/land profile` |
 | `chunkland.command.land.subland` | `/land subland` |
@@ -37,6 +38,8 @@ layers.
 | `chunkland.command.land.log` | `/land log` — the audit log |
 | `chunkland.command.land.history` | `/land history` — CoreProtect block history |
 | `chunkland.command.land.manage` | `/land manage` — the management GUI and forms |
+| `chunkland.command.land.selection` | `/land selection` — chat-based selection editing |
+| `chunkland.command.land.reload` | `/land reload` — re-read `config.yml` without a restart |
 
 `shrink` and `unclaim` intentionally share a node: they are the same operation
 with a different outcome, so a server that allows shrinking has implicitly
@@ -44,8 +47,8 @@ allowed releasing chunks.
 
 A sensible player grant is the set an ordinary player needs for the land they
 own — wand, claim, confirm, expand, shrink, rename, delete, subland, trust,
-untrust, ban, unban, default, inspect, explain, manage. Leave `log`, `history`
-and `binding` to staff unless you have a reason.
+untrust, ban, unban, default, rule, selection, inspect, explain, manage. Leave
+`log`, `history`, `binding` and `reload` to staff unless you have a reason.
 
 ## Administration
 
@@ -70,14 +73,14 @@ and does not refund.
 ## Action identifiers
 
 An identifier is a `ProtectionActionType` constant name, matched
-case-insensitively with surrounding whitespace stripped. The enum has 40
+case-insensitively with surrounding whitespace stripped. The enum has 41
 constants, but the three commands accept different ranges:
 
 | Command | Accepts |
 | --- | --- |
-| `/land default <action>` | The 17 everyday member actions in the table below |
-| `/land profile set <profile> <action> <state>` | All 22 `SUBJECT_PERMISSION` actions — the 17 everyday ones plus the 5 management ones |
-| `/land explain <action>` | All 40, including the land-rule and cross-boundary actions |
+| `/land default <action>` | The 18 everyday member actions in the table below |
+| `/land profile set <profile> <action> <state>` | All 23 `SUBJECT_PERMISSION` actions — the 18 everyday ones plus the 5 management ones |
+| `/land explain <action>` | All 41, including the land-rule and cross-boundary actions |
 
 `explain` has the widest range, so it will report a verdict for actions that no
 interface lets you configure. That is the read path for diagnosis; it does not
@@ -85,14 +88,14 @@ make those actions adjustable.
 
 ### Everyday member actions
 
-`/land default` accepts exactly these 17. The gate above
+`/land default` accepts exactly these 18. The gate above
 (`MANAGE_MEMBER` and friends) is not among them: a land default never carries
 management powers.
 
 `BLOCK_BREAK`, `BLOCK_PLACE`, `CONTAINER_OPEN`, `WORKSTATION_USE`, `DOOR_USE`,
 `BUTTON_USE`, `LEVER_USE`, `REDSTONE_USE`, `BUCKET_USE`, `ENTRY`,
 `VEHICLE_USE`, `ENTITY_INTERACT`, `ENTITY_DAMAGE`, `ITEM_FRAME`,
-`ARMOR_STAND`, `HANGING_ENTITY`, `FARMLAND_TRAMPLE`
+`ARMOR_STAND`, `HANGING_ENTITY`, `FARMLAND_TRAMPLE`, `FIRE_IGNITE`
 
 ### Management actions
 
@@ -108,8 +111,9 @@ so you can put management powers in a profile and bind the whole profile.
 cross-boundary set `BLOCK_MOVE_IN`, `BLOCK_MOVE_OUT`, `FLUID_ENTER`,
 `FLUID_EXIT`, `ITEM_TRANSFER_IN`, `ITEM_TRANSFER_OUT`,
 `DISPENSER_CROSS_BOUNDARY`. Neither `/land default` nor `/land profile set`
-accepts these — see [Limitations](../limitations.md). Only `explain` reads
-them.
+accepts these. The eleven `LandRuleType` mechanics are adjustable per land
+with `/land rule` instead — see [Limitations](../limitations.md). The
+cross-boundary seven stay fixed: only `explain` reads them.
 
 ## Granting them
 

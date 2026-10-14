@@ -24,10 +24,10 @@
 
 | 參考手冊 | 主要內容 |
 | --- | --- |
-| [指令參考](reference/commands.md) | `/land` 旗下 25 個子指令語法與 `/chunkland` 診斷工具 |
-| [權限參考](reference/permissions.md) | 29 個權限節點清單、管理閘門檢驗邏輯與玩家建議配置 |
-| [設定參考](reference/configuration.md) | `config.yml` 每個設定區段的預設值、驗證邊界與調優說明 |
-| [API 參考](reference/api.md) | 公開唯讀查詢 API、事件匯流排規格與架構邊界 |
+| [指令參考](reference/commands.md) | `/land` 旗下 28 個子指令語法與 `/chunkland` 診斷工具 |
+| [權限參考](reference/permissions.md) | 32 個權限節點清單、管理閘門檢驗邏輯與玩家建議配置 |
+| [設定參考](reference/configuration.md) | `config.yml` 每個設定區段的預設值、驗證邊界、熱套用範圍與調優說明 |
+| [API 參考](reference/api.md) | 公開查詢 API、型別化寫入入口、事件匯流排規格與架構邊界 |
 
 ## 執行環境規格
 
@@ -35,7 +35,7 @@
 | --- | --- | --- |
 | 伺服器核心 | Folia 26.2 | 必備。僅支援 Folia 多執行緒架構 |
 | Java 執行環境 | Java 25 | 必備 |
-| 基礎前置外掛 | AceLib 1.3.0 | 必備。缺少則外掛無法啟動 |
+| 基礎前置外掛 | AceLib 1.5.0 | 必備。缺少則外掛無法啟動 |
 | 選配相依 | Vault 系經濟外掛、LuckPerms、CoreProtect | 選配：經濟外掛支援圈地計價、LuckPerms 提供額度中繼資料、CoreProtect 支援 `/land history` |
 
 特別注意：**ChunkLand 僅支援 Folia 26.2**。外掛描述檔與編譯設定中標記的 `26.1.2` 僅為相依標記，不代表向下相容 Paper 或舊版核心。

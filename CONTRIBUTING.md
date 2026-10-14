@@ -2,7 +2,7 @@
 
 ## Before you build
 
-You need **Java 25** and the **AceLib 1.3.0** plugin jar. AceLib is a
+You need **Java 25** and the **AceLib 1.5.0** plugin jar. AceLib is a
 compile-only dependency resolved from a local cache directory, so it has to be
 there before Gradle can configure the project:
 
@@ -10,7 +10,7 @@ there before Gradle can configure the project:
 ./scripts/build-acelib.sh
 ```
 
-That script downloads a fixed AceLib 1.3.0 GitHub Release asset and verifies it
+That script downloads a fixed AceLib 1.5.0 GitHub Release asset and verifies it
 against a pinned SHA-256, the plugin descriptor version, and the presence of
 `AceLibVersion.class`. It fails closed: a wrong digest, a wrong version, a
 non-JAR response or a missing class all abort with a non-zero exit. The output

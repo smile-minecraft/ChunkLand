@@ -8,6 +8,47 @@ All notable changes to ChunkLand are recorded here. The format follows
 
 ### Added
 
+- Player-attributed ignition is now protected. Lighting a fire with flint and
+  steel in hand, or with a projectile shot by a player, is decided as the new
+  `FIRE_IGNITE` subject action at the ignited block and denied by default: the
+  land owner and explicitly authorised players pass, strangers do not.
+  Ownerless ignition (lava, lightning, spread, dispenser steel, mob-shot or
+  ownerless projectiles) is decided as `FIRE_SPREAD` at the ignited block and,
+  when known, at the source block, so it stays stopped where the rule denies.
+  Wilderness ignition stays vanilla. Explosions are separate: blast damage and
+  broken blocks follow the explosion rules, never the ignition right.
+- `/land rule` adjusts the eleven land environment rules per land
+  (`PVP`, `EXPLOSION_TERRAIN`, `EXPLOSION_ENTITY`, `FIRE_SPREAD`, `FIRE_BURN`,
+  `MOB_GRIEFING`, `FLUID_FLOW`, `PISTON`, `HOPPER_TRANSFER`,
+  `HOSTILE_MOB_SPAWN`, `PASSIVE_MOB_SPAWN`). Each rule is `ALLOW`, `DENY` or
+  `INHERIT`; `INHERIT` deletes the override and falls back through the world,
+  global and built-in layers. Owners are bound by the same rules. The
+  management screen shows the explicit, effective and source values side by
+  side. A committed but not yet live write answers distinctly from a write
+  that never landed.
+- `/land reload` (node `chunkland.command.land.reload`, console included)
+  re-reads `config.yml` without a restart. Hot on the next read: `limits`,
+  `messages`, `selection`, `subject-defaults`, `rule-defaults`, `feedback`,
+  the decision-cache budget, and `claim-enabled` of already-listed worlds.
+  Added or removed worlds, any world's `vertical-mode`, the whole `economy`
+  section and the whole `audit` section refuse the whole reload with a named
+  reason instead of a partial apply; restart for those. Failures keep the
+  previous settings and say why; unchanged content answers no-change; a
+  successful reload never rewrites `config-last-known-good.yml`.
+- `ChunkLandPlugin.getMutations()` exposes the production typed mutation entry
+  for external plugins: the same sagas the chat handlers use, with actor,
+  target owner, target land, expected version and operation id all enforced.
+  Resubmitting an operation id returns the recorded result without charging,
+  refunding or publishing twice; the same id with different content rejects
+  with `mutation.operation-id-mismatch`; cancelling the returned stage only
+  stops the caller waiting. The entry is stricter than chat for delegated
+  managers: the actor must be the durable owner (or the steward on Server
+  land). Only typed requests execute; the legacy envelope stays unsupported.
+- Three new permission nodes, all `default: op` (32 total):
+  `chunkland.command.land.rule`, `chunkland.command.land.selection`,
+  `chunkland.command.land.reload`.
+- `RuleChangedEvent` now fires when a durable per-land rule write commits, on
+  both the API bus and the Bukkit view channel.
 - `ChunkLandApi.isReady()` reports whether the land index has finished loading
   at startup. Until it is `true`, an empty location answer means unknown, not
   wilderness.
@@ -22,6 +63,21 @@ All notable changes to ChunkLand are recorded here. The format follows
 
 ### Changed
 
+- AceLib requirement raised from 1.3.0 to 1.5.0, for running and for building
+  (`scripts/build-acelib.sh` fetches the 1.5.0 release asset). To upgrade, stop
+  the server, replace the AceLib jar in `plugins/` with 1.5.0, and start again;
+  no ChunkLand data or config migration is needed for the AceLib bump itself.
+- `rule-defaults` in `config.yml` is now wired to the world and global rule
+  layers. Upgrade note: entries that were ignored while the section was
+  unwired now take effect — review any uncommented `rule-defaults` block
+  before starting on this version.
+- Starting a fire inside a claim now denies strangers by default (previously
+  unchecked). Owners pass, and authorised members pass once trusted or allowed
+  by the land default; servers that relied on anyone lighting fires inside
+  lands should grant the ignition right explicitly.
+- `ProtectionActionType` gains `FIRE_IGNITE` (41 constants; 23
+  `SUBJECT_PERMISSION`, of which 18 everyday actions are trustable through
+  direct trust, land defaults and profiles).
 - `getReadApi().can(actor, landId, action)` now returns real land-level
   decisions through the same permission context the protection engine uses,
   instead of always `false`. It still returns `false` while `isReady()` is

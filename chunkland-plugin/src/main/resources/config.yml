@@ -19,9 +19,16 @@
 # Until a section is added, its top-level key is rejected on load so a typo or
 # a premature copy-paste is a loud failure rather than a silently ignored line.
 #
-# Applying changes: edit this file and restart the server. ChunkLand parses
-# config.yml during startup and does not re-read it while running, so there is
-# no in-game reload command and the Bukkit /reload command is not supported
+# Applying changes: edit this file, then run `/land reload`
+# (permission `chunkland.command.land.reload`, console included). Hot fields
+# apply on the next read: `limits`, `messages`, `selection`,
+# `subject-defaults`, `rule-defaults`, `feedback`, the decision-cache
+# budget, and `claim-enabled` of already-listed worlds. Anything else
+# refuses the whole reload with a restart prompt instead of a partial
+# apply: added or removed worlds, any world's `vertical-mode`, the whole
+# `economy` section, and the whole `audit` section. A refused or failed
+# reload keeps the previous settings; a successful one never rewrites the
+# last-known-good copy. The Bukkit `/reload` command is not supported
 # either. A restart applies the whole file at once.
 
 messages:
@@ -106,7 +113,8 @@ selection:
   visualization-render-distance-blocks: 64
   visualization-refresh-interval-ticks: 10
 
-# Deny feedback (operator-tunable; changes apply on restart). Everything here is shown to
+# Deny feedback (operator-tunable; changes apply on `/land reload`).
+# Everything here is shown to
 # the denied player only and never changes what is allowed.
 #
 # entry-wall-*: the red border drawn when a player is refused entry.
@@ -165,8 +173,10 @@ subject-defaults:
 # missing entry, or an explicit INHERIT all mean "fall through to the next
 # resolver layer". A subject action ends at implicit DENY; a rule ends at its
 # built-in default below. Action/rule keys are case-insensitive; world names
-# are case-sensitive. Land bindings, land defaults and SubLand layers are NOT
-# configured here (no durable source is wired yet) and stay INHERIT.
+# are case-sensitive. Land bindings, land defaults and SubLand layers are
+# managed in game (`/land trust`, `/land default`, `/land binding`,
+# `/land subland`, `/land manage`), not in this file: this file only carries
+# the world and global defaults.
 #
 # Built-in rule defaults: a land behaves like vanilla for the mechanics a
 # player builds with, and stays closed to the ones that destroy.

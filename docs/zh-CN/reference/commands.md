@@ -4,7 +4,7 @@
 
 # 命令参考
 
-`/land` 一共 25 个子命令，顺序与插件内部的派发顺序一致。`/chunkland` 是给开发与除错用的诊断指令，与玩家功能无关。
+`/land` 一共 28 个子命令，顺序与插件内部的派发顺序一致。`/chunkland` 是给开发与除错用的诊断指令，与玩家功能无关。
 
 直接输入 `/land` 不带参数等同 `/land help`；`?` 也是 `help` 的别名。
 
@@ -26,8 +26,9 @@
 | `rename` | `/land rename <new_name>` | `chunkland.command.land.rename` | 是 |
 | `delete` | `/land delete confirm <revision>` | `chunkland.command.land.delete` | 是 |
 | `subland` | `/land subland (select\|create\|update\|delete\|extend) [generation revision] [name]` | `chunkland.command.land.subland` | 是 |
+| `selection` | `/land selection (chunk\|rectangle\|toggle\|add\|remove\|info) [x z]` | `chunkland.command.land.selection` | 是 |
 
-`claim` 单独跑不会成立领地：它回一个确认，真正落地的是 `confirm`。`shrink` 与 `unclaim` 共用一个权限节点，`unclaim` 没有自己的节点。`delete` 第一次执行只取得带 `<revision>` 的确认指令。
+`claim` 单独跑不会成立领地：它回一个确认，真正落地的是 `confirm`。`shrink` 与 `unclaim` 共用一个权限节点，`unclaim` 没有自己的节点。`delete` 第一次执行只取得带 `<revision>` 的确认指令。`selection` 不动魔杖按键，用聊天指令微调同一份选区：`chunk` 切单块编辑、`rectangle` 回角点、`toggle` 两者切换、`add`／`remove` 加减一块（站立处或指定坐标）、`info` 报区块数；同样过范围、碰撞与连通检查，拒绝不碰会话。
 
 「玩家专属」指该命令从主控台执行会被拒绝。管理类子命令还要再过一道领地层的管理闸门，所以你必须站在自己管得到的领地里面。
 
@@ -45,7 +46,15 @@
 | `profile` | `/land profile (create\|list\|set\|delete) [参数]` | `chunkland.command.land.profile` | 是 |
 | `manage` | `/land manage` | `chunkland.command.land.manage` | 是 |
 
-`default` 的 `<action>` 只接受那 17 个可直接设默认的动作，规则动作不行；第三个参数省略时显示当前设置。`group` 的 `create`、`delete` 各收一个名称，`add`、`remove` 先群组再玩家。`profile` 的 `set` 收 `<action>` 与 `<state>`，`state` 只能是 `ALLOW`、`DENY`、`INHERIT`，它的 `<action>` 接受全部 22 个玩家权限动作。`binding` 加 `--in-subland` 表示绑在子领地里。
+`default` 的 `<action>` 只接受那 18 个可直接设默认的动作，规则动作不行；第三个参数省略时显示当前设置。`group` 的 `create`、`delete` 各收一个名称，`add`、`remove` 先群组再玩家。`profile` 的 `set` 收 `<action>` 与 `<state>`，`state` 只能是 `ALLOW`、`DENY`、`INHERIT`，它的 `<action>` 接受全部 23 个玩家权限动作。`binding` 加 `--in-subland` 表示绑在子领地里。
+
+### 领地规则
+
+| 子命令 | 用法 | 权限节点 | 玩家专属 |
+| --- | --- | --- | --- |
+| `rule` | `/land rule [rule] [ALLOW\|DENY\|INHERIT]` | `chunkland.command.land.rule` | 是 |
+
+不带参数列出十一项规则的明确值、有效值与来源层；带规则名查单项；再带状态就写入领地覆盖（`INHERIT` 删掉覆盖，退回世界、全局与内置层）。写入前钉住你看到的基线，过期的画面不能悄悄覆盖别人的新变更。节点之外另过 `MANAGE_PERMISSION` 管理闸门。
 
 动作标识字的完整清单在[权限参考](permissions.md#动作标识字)。
 
@@ -68,6 +77,9 @@
 | --- | --- | --- | --- |
 | `bypass` | `/land bypass [on\|off]` | `chunkland.admin.bypass` | 是 |
 | `admin` | `/land admin (ledger\|orphan) ...` | 见下表 | 否 |
+| `reload` | `/land reload` | `chunkland.command.land.reload` | 否 |
+
+`/land reload` 不重启重读 `config.yml`，主控台也能用。热套用的字段下次读取就生效；世界增减、垂直模式、经济与审计整段会整笔拒绝并说明原因，那些改完要重启。失败保留旧配置并说明原因，内容没变则直接回报无变更。
 
 两个分支用不同节点，互不授权：
 
@@ -93,8 +105,10 @@
 | 子命令 | 补全什么 |
 | --- | --- |
 | `help` | 全部子命令名称 |
-| `explain` | 全部 `ProtectionActionType` 名称 |
-| `default` | 可设默认值的动作标识字；第三个参数补 `ALLOW`、`DENY`、`INHERIT` |
+| `explain` | 全部 `ProtectionActionType` 名称（共 41 个） |
+| `default` | 可设默认值的动作标识字（18 个）；第三个参数补 `ALLOW`、`DENY`、`INHERIT` |
+| `rule` | 十一项环境规则名；第三个参数同样补三态 |
+| `selection` | `chunk`、`rectangle`、`toggle`、`add`、`remove`、`info` |
 | `trust`、`untrust`、`ban`、`unban`、`inspect` | **在线**玩家名称 |
 | `subland` | `select`、`create`、`update`、`delete`、`extend` |
 | `group` | `create`、`list`、`add`、`remove`、`delete` |
@@ -112,7 +126,7 @@
 
 1. UUID 文本，直接解析，必定成功。
 2. 在线玩家，名称完全匹配，区分大小写。
-3. 离线玩家查询，在异步执行器上跑，只对服务器已经认识的玩家作答（曾登录过或当前在线）。它可能卡在 profile 查询上，所以离开区域线程执行，超时就 fail closed。
+3. 离线玩家查询，在异步执行器上跑，只对服务器已经认识的玩家作答（曾登录过或当前在线）。它可能卡在 profile 查询上，所以离开区域线程执行，超时就 fail closed。调用线程不会被它阻塞。
 
 其他一律 fail closed，回覆找不到该玩家。从未加入过这台服务器的名字解析不出来，请改用 UUID。没有部分匹配。
 

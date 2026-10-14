@@ -32,28 +32,34 @@ import java.util.UUID;
  * </ul>
  *
  * <p><b>Authorization contract.</b> A constructed request is a claim, not a
- * proof — and today nothing downstream verifies the claim. The pipeline
- * currently receives neither the actor nor any actor check: actor and target
- * owner are recorded as separate fields so a future pipeline can enforce
- * them, but callers must not treat a constructed or accepted request as
- * authorized. In particular, nothing today stops a caller from naming an
- * arbitrary target owner.
+ * proof: callers must not treat a constructed request as authorized. The
+ * production entry (see {@link ChunkLandMutations}) verifies the claim
+ * before any side effect — a player land requires the actor to be the
+ * durable owner, a Server land requires the steward grant, and the shared
+ * management gate applies on top, exactly as the matching chat handler
+ * checks it. In particular, naming an arbitrary target owner is rejected
+ * there, never recorded silently.
  *
  * <p><b>Resubmission contract.</b> The same {@code operationId} resubmitted
- * must not take effect twice — but that is not enforced yet. The current
- * pipeline mints its own operation ids, so resubmitting one typed request
- * today would run as two separate operations. Keep the same {@code
- * operationId} across retries anyway, so the future durable dedup can
- * recognize them, and reconcile through the read API before retrying. The
- * typed submission entries refuse execution until the pipeline can carry the
- * identifier through.
+ * must not take effect twice, and the production entry enforces that through
+ * the durable operation ledger: a resubmitted id returns the recorded result
+ * without charging, refunding or publishing twice, while the same id with
+ * different content is rejected and runs nothing. Keep the same {@code
+ * operationId} across retries anyway, and reconcile through the read API
+ * before retrying. A different id with the same content is an independent
+ * operation and runs the full flow again.
  *
  * <p>Construction rejects missing safety fields fail-fast ({@link
  * NullPointerException} for a missing actor, owner, target, expectation or
  * operation identifier; {@link IllegalArgumentException} for a malformed
  * payload or a wrong expectation dimension). A request that cannot be built
- * can never be submitted. Unknown kinds cannot be constructed at all; the
- * typed submission entry points currently reject every kind.
+ * can never be submitted. Unknown kinds cannot be constructed at all. The
+ * production entry executes the constructible kinds through the same sagas
+ * the chat handlers use, enforcing all five envelope fields before any side
+ * effect; the interface default (see {@link
+ * ChunkLandMutations#submitTyped(TypedMutationRequest)}) still refuses every
+ * kind so existing third-party implementations keep compiling and running
+ * unchanged.
  *
  * <p>Thread-safe: all shapes are immutable value objects with defensively
  * copied collections.
@@ -95,7 +101,8 @@ public sealed interface TypedMutationRequest
     UUID operationId();
 
     /**
-     * Render this request as the legacy envelope shape for the current pipeline.
+     * Render this request as the legacy envelope shape for display or
+     * diagnostics.
      *
      * <p>This is a lossy projection, not a submission path. The legacy
      * envelope has no room for the expected version or the operation id, and
@@ -103,8 +110,8 @@ public sealed interface TypedMutationRequest
      * reaches downstream. Submitting this projection directly would execute
      * the mutation without version comparison, without idempotency and
      * without any actor check — the refuse-or-enforce invariant forbids
-     * exactly that, which is why the typed submission entries refuse instead
-     * of converting. Future pipeline work consumes the typed request itself.
+     * exactly that. The production pipeline consumes the typed request
+     * itself; never convert-and-submit to work around a rejection.
      *
      * @return immutable legacy envelope describing the same mutation
      */

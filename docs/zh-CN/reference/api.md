@@ -27,9 +27,9 @@ dependencies {
 
 在自己的 `plugin.yml` 声明 `depend: [ChunkLand]` 让 ChunkLand 先加载，两条依赖都保持 `compileOnly`——服务器已经提供这些类型，打包进去只会让同一组类型出现两份。
 
-### 为什么要挂两个
+### 为什么这样挂
 
-[取得实例](#取得实例)之后的两个取用点都声明在 `com.smile.chunkland.ChunkLandPlugin` 上，这个类在**插件 jar** 里，不在 JitPack 构件里。所以只要代码写出 `ChunkLandPlugin` 这个类型——不论是 import、cast 还是局部变量声明——就必须再挂一份插件 jar，否则编译期找不到这个类。从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载 `chunkland-plugin-0.1.0.jar` 放进 `libs/` 即可；`SHA256SUMS` 里有它的预期摘要值。
+[取得实例](#取得实例)之后的三个取用点都声明在 `com.smile.chunkland.ChunkLandPlugin` 上，这个类在**插件 jar** 里，不在 JitPack 构件里。所以只要代码写出 `ChunkLandPlugin` 这个类型——不论是 import、cast 还是局部变量声明——就必须再挂一份插件 jar，否则编译期找不到这个类。从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载 `chunkland-plugin-0.1.0.jar` 放进 `libs/` 即可；`SHA256SUMS` 里有它的预期摘要值。
 
 `Bukkit` 不在这两个 jar 的任何一个里，它来自你自己的 paper-api 编译期依赖。
 
@@ -38,7 +38,7 @@ dependencies {
 ## 不想走仓库的话，从源码构建
 
 ```bash
-./scripts/build-acelib.sh          # 取得编译用的 AceLib 1.3.0
+./scripts/build-acelib.sh          # 取得编译用的 AceLib 1.5.0
 ./gradlew build --no-daemon --console=plain
 ```
 
@@ -62,12 +62,13 @@ if (plugin == null || !plugin.isEnabled()) return;
 
 `plugin.yml` 宣告的插件名称是 `ChunkLand`。请在 ChunkLand 完成启用之后才取用 API。
 
-两个取用点，都在 `com.smile.chunkland.ChunkLandPlugin` 上：
+三个取用点，都在 `com.smile.chunkland.ChunkLandPlugin` 上：
 
 | 方法 | 返回 | 生命周期 |
 | --- | --- | --- |
 | `plugin.getReadApi()` | `ChunkLandApi` | **不会是 null**。启用前与停用后读到的都是空 |
 | `plugin.publicEventBus()` | `ChunkLandEventBus` | **只有首次启用前才是 `null`**；停用后仍会回传上一次启用的旧 bus，它不报错，但从此不再收到任何事件 |
+| `plugin.getMutations()` | `ChunkLandMutations` | **流程还没组装好时是 `null`**；停用后旧 handle 不再执行、一律拒绝。每次取用都要判空，只有型别化请求会执行 |
 
 `getReadApi()` 每次调用都回传一个轻量持有者，内部指向同一份即时快照，所以之后的设定变动不需要重建就能看到。这个持有者会记住它所属的启用世代：停用时该世代会被停用，所以你事先缓存起来的持有者在停用之后仍然只回空；下一次启用会开新的世代，不会让旧的持有者复活。
 
@@ -139,7 +140,7 @@ boolean allowed = api.decideAtBlock(
 
 ### `getRule()` 为什么固定回空
 
-`getReadApi()` 建立读取 API 时，注入的规则查找来源固定回 `Optional.empty()`，所以 `getRule()` 没有东西可报。领地规则目前没有可调整的介面（见[已知限制](../limitations.md)），这是 fail-closed 的预期结果，不是能从外部绕过的缺陷。对 `LAND_RULE` 类动作，规则仍会在 `decideAtBlock` 的裁决里生效。
+`getReadApi()` 建立读取 API 时，注入的规则查找来源固定回 `Optional.empty()`，所以 `getRule()` 没有东西可报——即使领地规则在游戏内已经可以用 `/land rule` 调整（见[已知限制](../limitations.md)）。这是 fail-closed 的预期结果，不是能从外部绕过的缺陷。对 `LAND_RULE` 类动作，规则仍会在 `decideAtBlock` 的裁决里生效。
 
 需要排查时，请让站在领地里的玩家跑 `/land explain <action>`，那一条读的是真正的执行路径。
 
@@ -201,9 +202,9 @@ boolean allowed = api.decideAtBlock(
 | `SubLandEnterEvent` | 否 | 是 |
 | `SubLandLeaveEvent` | 否 | 是 |
 | `PermissionChangedEvent` | 否 | 是 |
-| `RuleChangedEvent` | 否 | **从不发送** |
+| `RuleChangedEvent` | 否 | **是，领地规则写入提交时发送** |
 
-`RuleChangedEvent` 虽然型别宣告了、两条通道也都接线完成，但**实际上从不发送**：领地规则目前没有任何可写入的介面，没有可以触发它的持久化写入点。为它注册监听器不会收到任何事件。
+`RuleChangedEvent` 在 `/land rule` 写入（或等价的型别化 `RULE_CHANGE`）提交时发送。
 
 事件类型在 `com.smile.chunkland.api.event`，可取消的事件实作 `ChunkLandCancellable`。`NoopChunkLandEventBus.instance()` 是惰性实作，写自己的测试时可以用。
 
@@ -225,7 +226,7 @@ boolean allowed = api.decideAtBlock(
 | `SubLandEnterEvent` | `SubLandEnterBukkitEvent` | 是 |
 | `SubLandLeaveEvent` | `SubLandLeaveBukkitEvent` | 是 |
 | `PermissionChangedEvent` | `PermissionChangedBukkitEvent` | 是 |
-| `RuleChangedEvent` | `RuleChangedBukkitEvent` | **从不发送，见上** |
+| `RuleChangedEvent` | `RuleChangedBukkitEvent` | **是，见上** |
 
 ## 领域类型
 
@@ -237,10 +238,10 @@ boolean allowed = api.decideAtBlock(
 | `api.geometry` | `ChunkGeometry`、`BoundaryExtractor`、`BoundarySegment`、`Direction` |
 | `api.money` | `Money`、`Currency`、`PricingTable`、`PricingTier`、`CostBasisCalculator`、`CostBasisAllocation`、`ChunkCoordinate` |
 | `api.limit` | `LimitType`、`LimitResult`、`LimitSource`、`ExternalLimitProvider` |
-| `api.mutation` | `ChunkLandMutations`、`MutationRequest`、`MutationKind`、`MutationResult`、`MutationOutcome` |
+| `api.mutation` | `ChunkLandMutations`、`MutationRequest`、`MutationKind`、`MutationResult`、`MutationOutcome`、`TypedMutationRequest`、`TypedMutationResult`、`ExpectedVersion` |
 | `api.history` | `HistoryQuery`、`HistoryResult`、`HistoryEntry`、`WorldHistoryProvider` |
 
-`ProtectionActionType` 有 40 个常量，每个都声明自己从哪个 `DecisionSource` 解析。`SUBJECT_PERMISSION` 覆盖 22 个——`BLOCK_BREAK`、`BLOCK_PLACE`、`CONTAINER_OPEN`、`WORKSTATION_USE`、`DOOR_USE`、`BUTTON_USE`、`LEVER_USE`、`REDSTONE_USE`、`BUCKET_USE`、`ENTRY`、`VEHICLE_USE`、`ENTITY_INTERACT`、`ENTITY_DAMAGE`、`ITEM_FRAME`、`ARMOR_STAND`、`HANGING_ENTITY`、`FARMLAND_TRAMPLE`，加上管理组 `MANAGE_MEMBER`、`MANAGE_PERMISSION`、`MANAGE_SUBLAND`、`EXPAND_LAND` 与 `DELETE_LAND`，这一组有主人保障，主人永远放行。`LAND_RULE` 覆盖 18 个：`PLAYER_DAMAGE_PLAYER`、`PISTON_MOVE`、`FLUID_FLOW`、`HOPPER_TRANSFER`、`FIRE_SPREAD`、`FIRE_BURN`、`EXPLOSION_TERRAIN`、`EXPLOSION_ENTITY`、`MOB_GRIEFING`、`HOSTILE_MOB_SPAWN`、`PASSIVE_MOB_SPAWN`，加上跨边界那组 `BLOCK_MOVE_IN`、`BLOCK_MOVE_OUT`、`FLUID_ENTER`、`FLUID_EXIT`、`ITEM_TRANSFER_IN`、`ITEM_TRANSFER_OUT`、`DISPENSER_CROSS_BOUNDARY`。
+`ProtectionActionType` 有 41 个常量，每个都声明自己从哪个 `DecisionSource` 解析。`SUBJECT_PERMISSION` 覆盖 23 个——`BLOCK_BREAK`、`BLOCK_PLACE`、`CONTAINER_OPEN`、`WORKSTATION_USE`、`DOOR_USE`、`BUTTON_USE`、`LEVER_USE`、`REDSTONE_USE`、`BUCKET_USE`、`ENTRY`、`VEHICLE_USE`、`ENTITY_INTERACT`、`ENTITY_DAMAGE`、`ITEM_FRAME`、`ARMOR_STAND`、`HANGING_ENTITY`、`FARMLAND_TRAMPLE`、`FIRE_IGNITE`，加上管理组 `MANAGE_MEMBER`、`MANAGE_PERMISSION`、`MANAGE_SUBLAND`、`EXPAND_LAND` 与 `DELETE_LAND`，这一组有主人保障，主人永远放行。`LAND_RULE` 覆盖 18 个：`PLAYER_DAMAGE_PLAYER`、`PISTON_MOVE`、`FLUID_FLOW`、`HOPPER_TRANSFER`、`FIRE_SPREAD`、`FIRE_BURN`、`EXPLOSION_TERRAIN`、`EXPLOSION_ENTITY`、`MOB_GRIEFING`、`HOSTILE_MOB_SPAWN`、`PASSIVE_MOB_SPAWN`，加上跨边界那组 `BLOCK_MOVE_IN`、`BLOCK_MOVE_OUT`、`FLUID_ENTER`、`FLUID_EXIT`、`ITEM_TRANSFER_IN`、`ITEM_TRANSFER_OUT`、`DISPENSER_CROSS_BOUNDARY`。
 
 `LandRuleType` 有 11 个值：`PVP`、`EXPLOSION_TERRAIN`、`EXPLOSION_ENTITY`、`FIRE_SPREAD`、`FIRE_BURN`、`MOB_GRIEFING`、`FLUID_FLOW`、`PISTON`、`HOPPER_TRANSFER`、`HOSTILE_MOB_SPAWN`、`PASSIVE_MOB_SPAWN`。它们回答的是「这个机制能不能在这里发生」，不是「这个玩家能不能动作」。可设领地默认的动作清单在[权限参考](permissions.md#动作标识字)。
 
@@ -250,11 +251,33 @@ boolean allowed = api.decideAtBlock(
 
 这个限制不是靠审查维持的，而是由构建脚本机械检查：宣告了禁止的相依会让 `check`（因而也让 `build`）直接失败，而且这个检查同时挂在 `jar` 上。检查只看正式产物的相依设定，测试专用相依不算违规。
 
+## 用 `getMutations()` 做程序化写入
+
+`plugin.getMutations()` 是正式的型别化写入入口，走的跟聊天命令同一套生产流程——同样的校验、配额、预约、计价、账本、经济、原子提交、公开事件与复原，没有第二条写入路径。旧的 `submit(MutationRequest)` 包络维持不支持，只有型别化请求会执行。
+
+每个型别化请求都带同样的五个包络字段，全部会真的检查、不会收了不用：
+
+| 字段 | 意思 |
+| --- | --- |
+| `actorUuid` | 执行这次变更的操作者 |
+| `targetOwner` | 目标领地的拥有人：创建时是未来的拥有人，其余是送出当下看到的拥有人 |
+| `landId` | 目标领地（只有创建可为空，因为目标还不存在） |
+| `expectedVersion` | 乐观并发的版本期望（只有创建可为空） |
+| `operationId` | 这次操作的不重复键 |
+
+周围的约定：
+
+- **授权**。玩家领地要求操作者就是持久化的地主本人；服务器领地要求协管授权。在此之上还要过共用的管理闸门，跟对应的聊天命令走同一套。因此这个入口对被委派的管理者比聊天命令严格：只拿到绑定的人过得了聊天闸门，但不是地主，型别化入口会拒绝。
+- **版本**。期望先跟即时快照比对，有副作用之前就挡下。过期期望以 `mutation.stale-expected-version` 拒绝，不留账本、不写资料、不发事件。
+- **不重复**。操作识别码一路带进账本。同一个识别码重送返回已记录的结果——成功还是成功、失败还是失败，不会重复扣款、退款或发事件。同一个识别码配不同内容以 `mutation.operation-id-mismatch` 拒绝、什么都不跑：领地转手后拿旧拥有人重送就是内容不符，重送前请先确认现在的地主。不同识别码配相同内容是两次独立操作，会完整再跑一次。
+- **取消**。返回的阶段只是调用端等结果用的 handle：取消它只代表这个调用端不等了，不会传进管线，也不会逆转已经落盘的效果。已经生效的操作维持生效，重试前请用操作识别码对账，不要盲重送。
+- **生命周期**。handle 关闭后送出的操作以 `FAILED / coordinator.rejected` 完成，不产生新副作用。外观层不碰 Bukkit 状态，离线的操作者只影响协管与豁免查询——无法证明授权时一律视为没有。
+
+有一种型别化操作是刻意拒绝的：子领地深度延伸回 `subland.confirm_depth`，因为即时索引在下一次确认时才刷新——请重跑创建或更新确认，不要重送。
+
 ## 这里没有的
 
-- **没有支援的写入取用点。** `com.smile.chunkland.api.mutation.ChunkLandMutations` 这个类型确实存在，只有一个方法 `submit(MutationRequest)`，外挂模组里也有实作（`runtime.mutation.MutationServiceAdapter`）。缺的是取用点：`ChunkLandPlugin` 只公开 `getReadApi()` 与 `publicEventBus()`，没有 `mutations()` 方法，`ServicesManager` 里也没有注册。所以契约在你的 classpath 上，却没有支援的入口可以呼叫它，没有支援的程序化圈地路径。
 - 没有服务注册。`getRegistration(ChunkLandApi.class)` 之类的调用按设计回 `null`。
-- 没有已发布的构件可以相依。
 
 ## 相关页面
 

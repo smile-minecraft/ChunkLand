@@ -10,7 +10,7 @@ ChunkLand 的公開文件依讀者正在做的事拆分。新增內容前，先�
 | 從原始碼建置、依賴已發布座標或本機 jar、讀取 API、事件匯流排、Folia 執行緒 | `docs/<lang>/developer-guide.md` |
 | `/land` 與 `/chunkland` 完整語法、玩家名稱解析順序 | `docs/<lang>/reference/commands.md` |
 | `config.yml` 每個鍵的預設值、範圍與注意事項 | `docs/<lang>/reference/configuration.md` |
-| 29 個權限節點與各自動到什麼 | `docs/<lang>/reference/permissions.md` |
+| 32 個權限節點與各自動到什麼 | `docs/<lang>/reference/permissions.md` |
 | `ChunkLandApi` 九個方法、事件匯流排、領域型別、未接線的部分 | `docs/<lang>/reference/api.md` |
 | 已知限制 | 根目錄 `LIMITATIONS.md`（繁中交付正本）、`docs/en/limitations.md`、`docs/zh-CN/limitations.md` |
 | 版本歷史 | `CHANGELOG.md` |
@@ -61,5 +61,5 @@ JitPack 構件**只有 API**，沒有 `ChunkLandPlugin`，也沒有 Bukkit。`ge
 - `isReady()` 為 `false` 時，`getLandAt` 回空代表「未知」而不是荒野，`decideAtBlock` 一律 `DENY`。範例不能把空結果寫成「沒有領地」。
 - `plugin.publicEventBus()` 只在首次啟用前是 `null`；停用不會把它清成 `null`，舊 bus 仍會被回傳，但從此不再收到任何事件（不報錯、只是沒反應）。`getReadApi()` 則永不為 null、停用後讀到空，快取的舊持有者也不會在下次啟用時復活。兩者生命週期不同，文件要分開寫。
 - `shrink` 與 `unclaim` 共用 `chunkland.command.land.shrink` 節點，容易漏掉。
-- 權限節點共 29 個，全部 `default: op`。任何「玩家可以用」的說法都要搭配授權提醒。
-- `rule-defaults` 區段尚未接線，寫成可調會誤導。
+- 權限節點共 32 個，全部 `default: op`。任何「玩家可以用」的說法都要搭配授權提醒。
+- `rule-defaults` 區段已經接線到世界與全域規則層：`config.yml` 的設定可調、可持久化並在判定中生效。寫成「尚未接線」會誤導。

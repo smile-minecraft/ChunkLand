@@ -18,6 +18,7 @@ dependency, see the [developer guide](../developer-guide.md#depending-on-it).
 | --- | --- | --- |
 | `getReadApi()` | `ChunkLandApi` | Never null. Reads as an empty registry before the first enable and after disable |
 | `publicEventBus()` | `ChunkLandEventBus` | **`null` only before the first enable**. A disable leaves the previous bus in place, so a stale handle is non-null but permanently silent |
+| `getMutations()` | `ChunkLandMutations` | **`null` while the mutation flows are not assembled**. After a disable the previous handle keeps rejecting instead of running |
 
 ```java
 ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("ChunkLand");
@@ -25,6 +26,7 @@ if (plugin == null || !plugin.isEnabled()) return;
 
 ChunkLandApi api = plugin.getReadApi();           // cache it; it tracks later changes
 ChunkLandEventBus bus = plugin.publicEventBus();  // acquire per enable; null only before the first enable
+ChunkLandMutations mutations = plugin.getMutations(); // null-check; null while flows are not assembled
 ```
 
 The read API holder is deliberately long-lived: each call reads the current
@@ -110,10 +112,11 @@ answer and ignores sublands. Use `decideAtBlock` whenever a position is known.
 ### Why `getRule` always returns empty
 
 `getReadApi()` builds the read API with a rule lookup that returns
-`Optional.empty()`, so `getRule()` has nothing to report. Land rules have no
-adjustable interface yet (see [limitations](../limitations.md)); this is the
-fail-closed answer working as designed, not a defect you can work around from
-outside. The rule still takes effect in `decideAtBlock` for `LAND_RULE` actions.
+`Optional.empty()`, so `getRule()` has nothing to report — even though land
+rules are adjustable in game since `/land rule` (see
+[Limitations](../limitations.md)). That is the fail-closed answer working as
+designed, not a defect you can work around from outside. The rule still takes
+effect in `decideAtBlock` for `LAND_RULE` actions.
 
 For diagnosis, ask a player standing in the land to run `/land explain <action>`,
 which reads the real enforcement path.
@@ -174,12 +177,11 @@ Event types live in `com.smile.chunkland.api.event`. There are 16 of them:
 | `SubLandEnterEvent` | No | Yes |
 | `SubLandLeaveEvent` | No | Yes |
 | `PermissionChangedEvent` | No | Yes |
-| `RuleChangedEvent` | No | **Never fired** |
+| `RuleChangedEvent` | No | **Yes — fired by durable per-land rule writes** |
 
-`RuleChangedEvent` is declared and wired on both channels, but nothing
-constructs it: there is no durable per-land rule writer to fire it from,
-because land rules have no adjustable interface yet. A listener registered for
-it will simply never run. Cancellable events implement `ChunkLandCancellable`.
+A listener registered for `RuleChangedEvent` runs when a `/land rule` write (or
+the equivalent typed `RULE_CHANGE`) commits. Cancellable events implement
+`ChunkLandCancellable`.
 
 `NoopChunkLandEventBus.instance()` is the inert implementation — useful in your
 own tests.
@@ -207,7 +209,7 @@ compile-time dependency on `chunkland-api`.
 | `SubLandEnterEvent` | `SubLandEnterBukkitEvent` | Yes |
 | `SubLandLeaveEvent` | `SubLandLeaveBukkitEvent` | Yes |
 | `PermissionChangedEvent` | `PermissionChangedBukkitEvent` | Yes |
-| `RuleChangedEvent` | `RuleChangedBukkitEvent` | **Never fired — see above** |
+| `RuleChangedEvent` | `RuleChangedBukkitEvent` | **Yes — see above** |
 
 ## Domain types
 
@@ -220,15 +222,16 @@ compile-time dependency on `chunkland-api`.
 | `api.geometry` | `ChunkGeometry`, `BoundaryExtractor`, `BoundarySegment`, `Direction` |
 | `api.money` | `Money`, `Currency`, `PricingTable`, `PricingTier`, `CostBasisCalculator`, `CostBasisAllocation`, `ChunkCoordinate` |
 | `api.limit` | `LimitType`, `LimitResult`, `LimitSource`, `ExternalLimitProvider` |
-| `api.mutation` | `ChunkLandMutations`, `MutationRequest`, `MutationKind`, `MutationResult`, `MutationOutcome` |
+| `api.mutation` | `ChunkLandMutations`, `MutationRequest`, `MutationKind`, `MutationResult`, `MutationOutcome`, `TypedMutationRequest`, `TypedMutationResult`, `ExpectedVersion` |
 | `api.history` | `HistoryQuery`, `HistoryResult`, `HistoryEntry`, `WorldHistoryProvider` |
 
-`ProtectionActionType` carries 40 constants. Each declares the `DecisionSource`
-it resolves from. `SUBJECT_PERMISSION` covers 22 — the actor actions
+`ProtectionActionType` carries 41 constants. Each declares the `DecisionSource`
+it resolves from. `SUBJECT_PERMISSION` covers 23 — the actor actions
 `BLOCK_BREAK`, `BLOCK_PLACE`, `CONTAINER_OPEN`, `WORKSTATION_USE`, `DOOR_USE`,
 `BUTTON_USE`, `LEVER_USE`, `REDSTONE_USE`, `BUCKET_USE`, `ENTRY`,
 `VEHICLE_USE`, `ENTITY_INTERACT`, `ENTITY_DAMAGE`, `ITEM_FRAME`,
-`ARMOR_STAND`, `HANGING_ENTITY`, `FARMLAND_TRAMPLE`, plus the management set
+`ARMOR_STAND`, `HANGING_ENTITY`, `FARMLAND_TRAMPLE`, `FIRE_IGNITE`, plus the
+management set
 `MANAGE_MEMBER`, `MANAGE_PERMISSION`, `MANAGE_SUBLAND`, `EXPAND_LAND` and
 `DELETE_LAND`, where the owner guarantee applies and the owner always passes.
 `LAND_RULE` covers 18: `PLAYER_DAMAGE_PLAYER`, `PISTON_MOVE`, `FLUID_FLOW`,
@@ -249,17 +252,62 @@ this mechanic happen here?", not "may this player act?".
 external production dependency — no Bukkit, no SQL, no AceLib, nothing. SQLite
 and the persistence layer live in `chunkland-plugin`.
 
+## Writing through `getMutations()`
+
+`plugin.getMutations()` returns the production typed mutation entry: the same
+sagas the chat handlers use — same validation, quotas, reservations, pricing,
+ledger, economy, atomic commits, public events and recovery. There is no second
+write path. The legacy `submit(MutationRequest)` envelope stays unsupported;
+only typed requests execute.
+
+Every typed request carries the same five envelope fields, all enforced, never
+accepted-but-dropped:
+
+| Field | Meaning |
+| --- | --- |
+| `actorUuid` | The operator performing the mutation |
+| `targetOwner` | The owner of the targeted land: the future owner for creates, the observed owner otherwise |
+| `landId` | The targeted land (`null` only for creates, which have nothing to address yet) |
+| `expectedVersion` | The optimistic-concurrency expectation (`null` only for creates) |
+| `operationId` | The idempotency key of this operation |
+
+The contract around them:
+
+- **Authorisation.** A player land requires the actor to be the durable owner;
+  a Server land requires the steward grant. On top of that the shared
+  management gate applies, exactly as the matching chat handler checks it. That
+  makes this entry stricter than chat for delegated managers: someone holding
+  only a binding passes the chat gate but is not the owner, so the typed entry
+  rejects them.
+- **Versions.** The expectation is compared against the live snapshot before
+  any side effect. A stale expectation rejects with
+  `mutation.stale-expected-version` and writes nothing — no ledger row, no
+  domain write, no event.
+- **Idempotency.** The operation id travels end to end into the ledger. A
+  resubmitted id returns the recorded result — success stays success, failure
+  stays failure — without charging, refunding or publishing twice. The same id
+  with different content rejects with `mutation.operation-id-mismatch` and runs
+  nothing: after a land changes hands, resubmitting with the old owner reads as
+  a content mismatch, so confirm the current owner first. A different id with
+  the same content is an independent operation and runs the full flow again.
+- **Cancellation.** The returned stage is a caller-side handle only: cancelling
+  it means this caller stops waiting. Cancellation is not propagated to the
+  pipeline, so it never reverts effects that already landed. An operation that
+  already took effect stays in effect: reconcile by operation id instead of
+  retrying blindly.
+- **Lifecycle.** After the handle is closed, submissions complete with
+  `FAILED / coordinator.rejected` and create no new side effects. The facade
+  never touches Bukkit state, so an offline actor changes nothing except the
+  steward and bypass lookups, which resolve to `false` when they cannot prove
+  the grant.
+
+One typed kind is refused on purpose: subland depth extension answers
+`subland.confirm_depth`, because the live index refreshes on the next
+confirmation — run the create or update confirmation again instead of
+resubmitting.
+
 ## Not available
 
-- **No supported way to reach the write facade.** The type
-  `com.smile.chunkland.api.mutation.ChunkLandMutations` does exist, with one
-  method `submit(MutationRequest)`, and the plugin ships an implementation of
-  it (`runtime.mutation.MutationServiceAdapter`). What is missing is the
-  accessor: `ChunkLandPlugin` exposes only `getReadApi()` and `publicEventBus()`,
-  there is no `mutations()` method, and nothing registers the facade in
-  `ServicesManager`. So the contract is in your classpath and there is no
-  supported entry point to call it through. There is no supported programmatic
-  claim.
 - No service registration. `getRegistration(ChunkLandApi.class)` and friends
   return `null` by design.
 

@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 伺服器核心 | Folia 26.2 | 必備。僅支援 Folia 多執行緒架構 |
 | Java 執行環境 | Java 25 | 必備 |
-| 基礎前置外掛 | AceLib 1.3.0 | 必備。缺少則外掛無法啟動 |
+| 基礎前置外掛 | AceLib 1.5.0 | 必備。缺少則外掛無法啟動 |
 | Vault 系經濟外掛 | 任意相容版本 | 選配。只有把 `economy.enabled` 改成 `true`（預設為 `false`，圈地免費）時才需要，用於圈地計價與退款 |
 | LuckPerms | 任意相容版本 | 選配。提供玩家額度中繼資料支援 |
 | CoreProtect | 任意相容版本 | 選配。提供 `/land history` 方塊查詢 |
@@ -21,18 +21,20 @@
 
 ## 安裝步驟
 
-1. 將 AceLib 1.3.0 放進伺服器的 `plugins/` 目錄（ChunkLand 在 `plugin.yml` 宣告了 `depend: [AceLib]`，缺少前置時伺服器會拒絕載入）。
+1. 將 AceLib 1.5.0 放進伺服器的 `plugins/` 目錄（ChunkLand 在 `plugin.yml` 宣告了 `depend: [AceLib]`，缺少前置時伺服器會拒絕載入）。
 2. 從 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下載 `chunkland-plugin-0.1.0.jar`，複製到 `plugins/`。此檔案已內嵌核心相依（API 模組、SQLite 驅動、SnakeYAML），伺服器的 `plugins/` 目錄不需要額外補充執行庫；同一個 Release 內的 `SHA256SUMS` 列出各附件的預期雜湊值。
 3. 啟動伺服器。
 
 ### 若要改從原始碼建置
 
 ```bash
-./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.3.0
+./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.5.0
 ./gradlew build --no-daemon --console=plain
 ```
 
 建置產物位於 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`，把它複製到 `plugins/` 即可。
+
+若原本跑的是 AceLib 1.3.0：先停服，把 `plugins/` 裡的 AceLib 換成 1.5.0，再啟動。AceLib 這次升級不需要搬移 ChunkLand 的資料或設定。
 
 本專案工具鏈鎖定 Java 25；`./gradlew build` 會自動執行完整的單元測試與架構邊界檢查，執行時間會比純編譯稍長。
 
@@ -49,9 +51,13 @@
 
 更新外掛 jar 檔後請完整重啟伺服器。換下來的舊 jar 檔請移出 `plugins/` 目錄，避免保留在同目錄下造成干擾。
 
-## 設定變更與重啟原則
+## 設定變更：先重載，不行再重啟
 
-**Folia 環境不支援熱重載**：ChunkLand 沒有提供 `/chunkland reload`，Bukkit 傳統的 `/reload` 在 Folia 架構下亦可能破壞區塊與多執行緒狀態。因此每次修改 `config.yml` 之後，請安心重啟伺服器以套用變更。
+`/land reload`（節點 `chunkland.command.land.reload`，主控台也能用）不重啟重讀 `config.yml`。Bukkit 傳統的 `/reload` 在 Folia 架構下可能破壞區塊與多執行緒狀態，仍然不要用。
+
+熱套用、下次讀取就生效：`limits` 上限、`messages` 訊息、`selection` 選取與視覺化預算、`subject-defaults` 與 `rule-defaults` 世界／全域預設、`feedback` 回饋、`max-decision-cache-entries` 判定快取上限，以及既有世界的 `claim-enabled` 開關。
+
+要重啟、整筆拒絕不部分套用：新增或刪除世界、任一世界的 `vertical-mode` 變更、整個 `economy` 區段、整個 `audit` 區段。拒絕時會說明是哪一類原因。讀取或驗證失敗時舊設定繼續生效；內容沒變則回報無變更。成功重載不會更新 `config-last-known-good.yml`，那份備份只在開機載入成功時更新。
 
 若擔心設定手滑改錯，可參考下一節關於設定檔自動備援與修復的設計。
 
@@ -194,11 +200,11 @@ subject-defaults:
 
 | 檢查項目 | 重點理由 |
 | --- | --- |
-| 確認 AceLib 1.3.0 在 `plugins/` | 缺少基礎前置外掛，ChunkLand 無法啟動 |
+| 確認 AceLib 1.5.0 在 `plugins/` | 缺少基礎前置外掛，ChunkLand 無法啟動 |
 | 確認核心為 Folia 26.2、Java 25 | 確保多執行緒非同步排程完全相容 |
 | 確認已發放指令權限節點給玩家 | 所有權限預設為 OP，未發放前一般玩家無法圈地 |
 | 評估 `subject-defaults.global.ENTRY` | 預設為 `ALLOW`；若要完全防闖入請改為 `DENY` |
 | 評估是否需要調整 `limits` 額度上限 | 根據伺服器經濟體系微調玩家領地與區塊數量 |
 | 確認伺服器定時備份包含 `plugins/ChunkLand/` | 保障領地資料庫與設定檔完整性 |
 
-十一項領地環境規則（如 PVP、水流與活塞防護）目前由系統安全預設託管，暫不開放自訂，詳情請參考[已知限制](limitations.md)。
+十一項領地環境規則（如 PVP、水流與活塞防護）地主可用 `/land rule` 逐領地調整，世界與全域層走 `config.yml` 的 `rule-defaults`，詳情請參考[已知限制](limitations.md)。跨越領地邊界的活塞、液體、漏斗維持一律攔阻，沒有開關。

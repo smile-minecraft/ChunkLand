@@ -18,7 +18,7 @@ have read the others.
 
 ## Support baseline
 
-ChunkLand runs on **Folia 26.2** with **Java 25** and requires **AceLib 1.3.0**
+ChunkLand runs on **Folia 26.2** with **Java 25** and requires **AceLib 1.5.0**
 on the server. Paper is not a supported runtime. The `api-version: '26.1.2'` in
 `plugin.yml` and the paper-api 26.1.2 compile dependency are build markers; they
 do not mean Paper 26.1.2 is supported.
@@ -29,11 +29,12 @@ Entry is allowed by default, so strangers can walk into a claim until you either
 set `subject-defaults.global.ENTRY: DENY` or ban them.
 
 The eleven land rules — PVP, explosions, fire, mob griefing, fluid flow,
-pistons, hopper transfer, mob spawning — have no interface to change them. They
-run on built-in defaults. Inside a land, fluid flow, pistons, hopper transfer
-and both kinds of mob spawning follow vanilla; PVP, explosions, fire spread and
-burn, and mob griefing are denied. A piston, fluid or hopper that reaches across
-a land boundary — in either direction — is always refused.
+pistons, hopper transfer, mob spawning — are set per land with `/land rule`,
+with world and global layers in `rule-defaults`. Inside a land, fluid flow,
+pistons, hopper transfer and both kinds of mob spawning follow vanilla unless
+overridden; PVP, explosions, fire spread and burn, and mob griefing are denied
+unless opened. A piston, fluid or hopper that reaches across a land boundary —
+in either direction — is always refused.
 
 Every permission node defaults to `op`. Regular players cannot claim land or
 trust members until an operator grants the node explicitly.

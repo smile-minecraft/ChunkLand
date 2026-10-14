@@ -25,9 +25,16 @@ command is refused from the console.
 | `rename` | `/land rename <new_name>` | `chunkland.command.land.rename` | yes |
 | `delete` | `/land delete confirm <revision>` | `chunkland.command.land.delete` | yes |
 | `subland` | `/land subland (select\|create\|update\|delete\|extend) [generation revision] [name]` | `chunkland.command.land.subland` | yes |
+| `selection` | `/land selection (chunk\|rectangle\|toggle\|add\|remove\|info) [x z]` | `chunkland.command.land.selection` | yes |
 
 `shrink` and `unclaim` share one permission node. `claim` alone does nothing:
-it returns a confirmation, and `confirm` is what commits it.
+it returns a confirmation, and `confirm` is what commits it. `selection` edits
+the same selection the wand draws without touching the wand buttons: `chunk`
+arms single-chunk edits, `rectangle` returns to corner clicks, `toggle` flips
+between the two, `add` and `remove` apply one chunk (the one you stand in, or
+explicit block coordinates), and `info` reports the chunk count. Every verb
+passes the same range, collision and connectivity checks as wand clicks, and a
+rejected verb leaves the session untouched.
 
 ### Permissions on a land
 
@@ -43,8 +50,23 @@ it returns a confirmation, and `confirm` is what commits it.
 | `binding` | add `--in-subland` to bind inside a subland | `chunkland.command.land.binding` | yes |
 
 `<action>` in `default` is a `ProtectionActionType` name; the value is optional
-and omitting it shows the current setting. `default` accepts the 17 everyday
+and omitting it shows the current setting. `default` accepts the 18 everyday
 member actions — see [Permissions](permissions.md#action-identifiers).
+
+### Land rules
+
+| Subcommand | Usage | Permission | Player |
+| --- | --- | --- | --- |
+| `rule` | `/land rule [rule] [ALLOW\|DENY\|INHERIT]` | `chunkland.command.land.rule` | yes |
+
+Bare `/land rule` lists all eleven rules with their explicit, effective and
+source values; `/land rule <rule>` shows one; `/land rule <rule>
+<ALLOW|DENY|INHERIT>` persists the land override — `INHERIT` deletes the row
+and the rule falls back through the world, global and built-in layers. The
+write pins the baseline you were shown, so a stale view can never silently
+overwrite a newer change. Past the permission node, the management gate
+(`MANAGE_PERMISSION`) applies, exactly as for `/land default`. A committed but
+not yet live write answers distinctly from a write that never landed.
 
 ### Groups and profiles
 
@@ -69,16 +91,17 @@ resolve — see [Player references](#player-references).
 | Subcommand | Usage | Permission | Player |
 | --- | --- | --- | --- |
 | `explain` | `/land explain <action>` | `chunkland.command.land.explain` | yes |
-| `inspect` | `/land inspect [player]` | `chunkland.command.land.inspect` | no |
+| `inspect` | `/land inspect [player]` | `chunkland.command.land.inspect` | yes |
 | `log` | `/land log [u:<player-uuid>] [t:<duration>] [a:<action>] [land:<land-uuid>] [world:<world-uuid>] [limit:<n>] [page:<n>]` | `chunkland.command.land.log` | no |
 | `history` | `/land history` | `chunkland.command.land.history` | no |
 | `manage` | `/land manage` | `chunkland.command.land.manage` | yes |
 
 `explain`, `inspect` and `manage` require you to be standing inside a land you
-manage. `<action>` is matched case-insensitively against the exact
+manage, and all three are player-only. `<action>` is matched case-insensitively
+against the exact
 `ProtectionActionType` names — tab completion offers the valid ones by prefix.
-`explain` accepts all 40, so it will explain land-rule actions that no command
-can configure; see [Permissions](permissions.md#action-identifiers).
+`explain` accepts all 41, so it will explain land-rule actions that no command
+but `/land rule` can configure; see [Permissions](permissions.md#action-identifiers).
 `t:` accepts a duration such as `7d`.
 
 ### Administration
@@ -92,10 +115,19 @@ can configure; see [Permissions](permissions.md#action-identifiers).
 | `admin` | `/land admin orphan list` | `chunkland.admin.orphan` | no |
 | `admin` | `/land admin orphan purge <world-uuid>` | `chunkland.admin.orphan` | no |
 | `admin` | `/land admin orphan purge <world-uuid> confirm <nonce>` | `chunkland.admin.orphan` | no |
+| `reload` | `/land reload` | `chunkland.command.land.reload` | no |
 
 Purge is destructive and does not refund. `/land admin orphan ...` routes to the
 orphan branch and its own permission node; every other `/land admin ...` verb
 routes to the ledger branch.
+
+`/land reload` re-reads `config.yml` and applies it without a restart — see
+[Configuration reference](configuration.md#reloading-without-a-restart). It
+works from the console too. Fields that cannot apply live refuse the whole
+reload with a message naming the reason (world set changes, any world's
+vertical mode, the `economy` and `audit` sections); restart the server for
+those. A failed reload keeps the previous settings and says why; a reload that
+changed nothing answers without publishing anything.
 
 ## `/chunkland`
 
@@ -117,7 +149,7 @@ Resolution order:
 3. Offline-player lookup, run on an async executor. It only answers for players
    the server already knows (has played before, or is online). It may block on a
    profile request, so it runs off the region thread and fails closed on
-   timeout.
+   timeout. The calling thread never blocks on it.
 
 Anything else fails closed and reports an unknown target. Names that never
 joined this server do not resolve — use the UUID. There is no partial-name

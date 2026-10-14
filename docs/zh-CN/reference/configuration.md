@@ -6,7 +6,16 @@
 
 配置文件在 `plugins/ChunkLand/config.yml`，由插件首次启动时生成，之后每次启动都读取它。
 
-**改完一定要重启服务器才生效。** ChunkLand 没有 reload 指令，Bukkit 的 `/reload` 也不支持。加载成功时会把内容复制到 `config-last-known-good.yml`。
+**改完配置先用 `/land reload` 试试。** 多数字段不重启就生效（热套用范围见下）。只有世界增减、任一世界的垂直模式、经济整段、审计整段这四类改完要重启。Bukkit 的 `/reload` 不支持。加载成功时会把内容复制到 `config-last-known-good.yml`。
+
+## 哪些字段热套用、哪些要重启
+
+`/land reload`（节点 `chunkland.command.land.reload`，主控台也能用）重读整份文件：
+
+- **热套用，下次读取就生效**：`limits` 上限、`messages` 消息、`selection` 选取与可视化预算、`subject-defaults` 与 `rule-defaults` 世界／全局默认、`feedback` 反馈、`max-decision-cache-entries` 判定缓存上限，以及既有世界的 `claim-enabled` 开关。
+- **要重启，整笔拒绝不部分套用**：新增或删除世界、任一世界的 `vertical-mode` 变更、整个 `economy` 区段、整个 `audit` 区段。拒绝时会说明是哪一类原因。
+
+读取或校验失败时旧配置继续生效，并说明失败原因；内容跟线上配置相同时直接回报无变更，不发布、不通知。成功重载**不会**更新 `config-last-known-good.yml`：那份备份只在开机加载成功时更新，继续为读不懂的配置文件保留后路。
 
 配置文件损坏或遗失时的行为与修复步骤，写在[服务器管理指南](../server-guide.md#配置文件坏了怎么办)。
 
@@ -194,9 +203,18 @@ subject-defaults:
 
 ## rule-defaults
 
-回答「这个机制在这里能不能发生」，是每个 `LAND_RULE` 的默认值。
+回答「这个机制在这里能不能发生」，是每个 `LAND_RULE` 的世界／全局默认值。
 
-**这个区段目前没有接上任何实际功能。** 默认文件里的 `rule-defaults` 区块整段被注解起来，写进去不会改变任何行为。十一项领地规则目前一律使用内置默认：水流、活塞、漏斗传输与生物生成在领地内放行，PVP、爆炸、火焰、生物破坏挡下，活塞、液体、漏斗跨越领地边界一律挡下；没有玩家或管理员界面可以调整。完整说明在[已知限制](../limitations.md)。
+形状跟 `subject-defaults` 一样：`rule-defaults.global.<规则>` 与 `rule-defaults.worlds.<世界名称>.<规则>`，值是 `ALLOW`、`DENY`、`INHERIT`。它喂给规则链的世界与全局层——领地、世界、全局、内置一路往下问，所以世界写了就盖掉全局，两者都盖掉内置默认。缺项或明确写 `INHERIT` 就往下一层掉。领地那一层在游戏内用 `/land rule` 写，那里也能并排看到明确值、有效值与来源层。
+
+内置默认（没有任何一层设定时用它）：
+
+| 值 | 规则 |
+| --- | --- |
+| `ALLOW` | `FLUID_FLOW`、`PISTON`、`HOPPER_TRANSFER`、`HOSTILE_MOB_SPAWN`、`PASSIVE_MOB_SPAWN` |
+| `DENY` | `PVP`、`EXPLOSION_TERRAIN`、`EXPLOSION_ENTITY`、`FIRE_SPREAD`、`FIRE_BURN`、`MOB_GRIEFING` |
+
+这些规则只管待在同一块领地内的机制。活塞、液体、漏斗只要跨越领地边界——不论进出——一律挡下，这里写什么都打不开。跟玩家权限链不同，规则链没有主人保障：地主照样被规则管。
 
 ```
 #rule-defaults:
@@ -207,7 +225,7 @@ subject-defaults:
 #      PVP: ALLOW
 ```
 
-`subject-defaults` 与 `rule-defaults` 是两个各自型别化的命名空间，**永远不会互相回退**。领地绑定、领地默认值与子领地这三层不在这里设置（还没有可持久化的来源），一律维持 `INHERIT`。
+`subject-defaults` 与 `rule-defaults` 是两个各自型别化的命名空间，**永远不会互相回退**。领地绑定、领地默认值与子领地这三层不在这里设置——它们在游戏内用 `/land trust`、`/land default`、`/land binding`、`/land subland` 与 `/land manage` 管理，这份文件只放世界与全局默认。
 
 ## 语言文件
 

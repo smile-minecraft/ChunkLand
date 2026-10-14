@@ -25,9 +25,9 @@ dependencies {
 
 在你自己的 `plugin.yml` 宣告 `depend: [ChunkLand]` 讓 ChunkLand 先載入，兩條相依都維持 `compileOnly`——伺服器已經提供這些類型，打包進去只會讓同一組型別出現兩份。
 
-### 為什麼要掛兩個
+### 為什麼這樣掛
 
-[取得實例](#取得-api-實例)之後的兩個取用點都宣告在 `com.smile.chunkland.ChunkLandPlugin` 上，那個類別在**外掛 jar** 裡，不在 JitPack 構件裡。所以只要你的程式碼寫出 `ChunkLandPlugin` 這個型別——不論是 import、cast 還是區域變數宣告——就必須再掛一份外掛 jar，否則編譯期會找不到這個類別。從 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下載 `chunkland-plugin-0.1.0.jar` 放進 `libs/` 即可；`SHA256SUMS` 有它的預期摘要值。
+[取得實例](#取得-api-實例)之後的三個取用點都宣告在 `com.smile.chunkland.ChunkLandPlugin` 上，那個類別在**外掛 jar** 裡，不在 JitPack 構件裡。所以只要你的程式碼寫出 `ChunkLandPlugin` 這個型別——不論是 import、cast 還是區域變數宣告——就必須再掛一份外掛 jar，否則編譯期會找不到這個類別。從 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下載 `chunkland-plugin-0.1.0.jar` 放進 `libs/` 即可；`SHA256SUMS` 有它的預期摘要值。
 
 `Bukkit` 不在這兩個 jar 的任何一個裡，它來自你自己的 paper-api 編譯期相依。
 
@@ -36,7 +36,7 @@ dependencies {
 若要改用本機 jar 編譯，先從原始碼建置：
 
 ```bash
-./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.3.0
+./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.5.0
 ./gradlew build --no-daemon --console=plain
 ```
 
@@ -58,12 +58,13 @@ ChunkLandPlugin plugin = (ChunkLandPlugin) Bukkit.getPluginManager().getPlugin("
 
 ChunkLand 在 `plugin.yml` 宣告的外掛名稱為 `ChunkLand`。請確保在 ChunkLand 完整啟用後再取得 API。
 
-兩大取用點：
+三大取用點：
 
 | 方法 | 回傳型別 | 生命週期與特性 |
 | --- | --- | --- |
 | `plugin.getReadApi()` | `ChunkLandApi` | **永不為 null**。外掛啟用前與停用後呼叫皆安全回傳空值 |
 | `plugin.publicEventBus()` | `ChunkLandEventBus` | **只有首次啟用前才為 `null`**；停用後仍會回傳上一次啟用的舊 bus，它不報錯，但從此不再收到任何事件 |
+| `plugin.getMutations()` | `ChunkLandMutations` | **流程尚未組裝完成時為 `null`**；停用後舊 handle 不再執行、一律拒絕。每次取用都要判空，只有型別化請求會執行 |
 
 `getReadApi()` 每次呼叫回傳一個輕量持有者（Holder），內部指向即時快照，配置變更無須手動重建即可取得最新資料。持有者會綁定當前的啟用世代：當外掛停用時世代失效，快取的持有者安全回傳空值，避免因殘留物件讀取到過期舊資料；再次啟用時會開闢全新世代。
 
@@ -117,7 +118,7 @@ boolean allowed = api.decideAtBlock(
 
 ### `getRule()` 為什麼固定回空
 
-`getReadApi()` 建立讀取 API 時注入的規則查詢來源固定回傳 `Optional.empty()`，所以 `getRule()` 沒有東西可回報。領地規則目前沒有可調整的介面（見[已知限制](../limitations.md)），這是 fail-closed 的預期結果，不是能從外部繞過的缺陷。對 `LAND_RULE` 類動作，規則仍會在 `decideAtBlock` 的裁決中生效。
+`getReadApi()` 建立讀取 API 時注入的規則查詢來源固定回傳 `Optional.empty()`，所以 `getRule()` 沒有東西可回報——即使領地規則在遊戲內已經可以用 `/land rule` 調整（見[已知限制](../limitations.md)）。這是 fail-closed 的預期結果，不是能從外部繞過的缺陷。對 `LAND_RULE` 類動作，規則仍會在 `decideAtBlock` 的裁決中生效。
 
 需要排查時，請讓站在領地裡的玩家執行 `/land explain <action>`，它讀的是實際的執行路徑。
 
@@ -170,7 +171,7 @@ boolean allowed = api.decideAtBlock(
 | `SubLandEnterEvent` | 否 | 正常發送 |
 | `SubLandLeaveEvent` | 否 | 正常發送 |
 | `PermissionChangedEvent` | 否 | 正常發送 |
-| `RuleChangedEvent` | 否 | **暫不發送**（目前尚無寫入路徑） |
+| `RuleChangedEvent` | 否 | **正常發送——領地規則寫入提交時觸發** |
 
 ### Bukkit 兼容事件視圖
 
@@ -188,13 +189,38 @@ boolean allowed = api.decideAtBlock(
 | `api.geometry` | `ChunkGeometry`、`BoundaryExtractor`、`BoundarySegment`、`Direction` |
 | `api.money` | `Money`、`Currency`、`PricingTable`、`PricingTier`、`CostBasisCalculator`、`CostBasisAllocation`、`ChunkCoordinate` |
 | `api.limit` | `LimitType`、`LimitResult`、`LimitSource`、`ExternalLimitProvider` |
-| `api.mutation` | `ChunkLandMutations`、`MutationRequest`、`MutationKind`、`MutationResult`、`MutationOutcome` |
+| `api.mutation` | `ChunkLandMutations`、`MutationRequest`、`MutationKind`、`MutationResult`、`MutationOutcome`、`TypedMutationRequest`、`TypedMutationResult`、`ExpectedVersion` |
 | `api.history` | `HistoryQuery`、`HistoryResult`、`HistoryEntry`、`WorldHistoryProvider` |
 
-`ProtectionActionType` 包含 40 個列舉值，其中 22 個為 `SUBJECT_PERMISSION`（17 個日常成員動作 + 5 個管理動作），其餘 18 個為 `LAND_RULE`。
+`ProtectionActionType` 包含 41 個列舉值，其中 23 個為 `SUBJECT_PERMISSION`（18 個日常成員動作，含點火 `FIRE_IGNITE`，加上 5 個管理動作），其餘 18 個為 `LAND_RULE`。
+
+## 用 `getMutations()` 做程序化寫入
+
+`plugin.getMutations()` 是正式的型別化寫入入口，走的跟聊天指令同一套生產流程——同樣的驗證、配額、預約、計價、帳本、經濟、原子提交、公開事件與復原，沒有第二條寫入路徑。舊的 `submit(MutationRequest)` 包絡維持不支援，只有型別化請求會執行。
+
+每個型別化請求都帶同樣的五個包絡欄位，全部會真的檢查、不會收了不用：
+
+| 欄位 | 意思 |
+| --- | --- |
+| `actorUuid` | 執行這次變更的操作者 |
+| `targetOwner` | 目標領地的擁有人：建立時是未來的擁有人，其餘是送出當下看到的擁有人 |
+| `landId` | 目標領地（只有建立可為空，因為目標還不存在） |
+| `expectedVersion` | 樂觀併發的版本期望（只有建立可為空） |
+| `operationId` | 這次操作的不重複鍵 |
+
+周圍的約定：
+
+- **授權**。玩家領地要求操作者就是持久化的地主本人；伺服器領地要求協管授權。在此之上還要過共用的管理閘門，跟對應的聊天指令走同一套。因此這個入口對被委派的管理者比聊天指令嚴格：只拿到綁定的人過得了聊天閘門，但不是地主，型別化入口會拒絕。
+- **版本**。期望先跟即時快照比對，有副作用之前就擋下。過期期望以 `mutation.stale-expected-version` 拒絕，不留帳本、不寫資料、不發事件。
+- **不重複**。操作識別碼一路帶進帳本。同一個識別碼重送回傳已記錄的結果——成功還是成功、失敗還是失敗，不會重複扣款、退款或發事件。同一個識別碼配不同內容以 `mutation.operation-id-mismatch` 拒絕、什麼都不跑：領地轉手後拿舊擁有人重送就是內容不符，重送前請先確認現在的地主。不同識別碼配相同內容是兩次獨立操作，會完整再跑一次。
+- **取消**。回傳的階段只是呼叫端等結果用的 handle：取消它只代表這個呼叫端不等了，不會傳進管線，也不會逆轉已經落盤的效果。已經生效的操作維持生效，重試前請用操作識別碼對帳，不要盲重送。
+- **生命週期**。handle 關閉後送出的操作以 `FAILED / coordinator.rejected` 完成，不產生新副作用。外觀層不碰 Bukkit 狀態，離線的操作者只影響協管與豁免查詢——無法證明授權時一律視為沒有。
+
+有一種型別化操作是刻意拒絕的：子領地深度延伸回 `subland.confirm_depth`，因為即時索引在下一次確認時才刷新——請重跑建立或更新確認，不要重送。
 
 ## 外部寫入邊界提示
 
-目前版本尚未公開程序化圈地或變更的外部入口：
-- `ChunkLandMutations` 型別雖然存在於 API 中，但外掛本體目前僅公開唯讀的 `getReadApi()` 與 `publicEventBus()`，未向外暴露 `mutations()` 入口。
-- 請勿透過非公開內部類別強行呼叫寫入操作，所有領地變更請引導玩家經由遊戲內指令或 GUI 操作完成。
+所有領地變更請走上面的型別化入口或遊戲內指令與介面：
+
+- 請勿透過非公開內部類別強行呼叫寫入操作。
+- 舊包絡 `submit(MutationRequest)` 沒有版本與識別碼的位置，轉換執行等於悄悄丟掉安全欄位，因此一律拒絕。

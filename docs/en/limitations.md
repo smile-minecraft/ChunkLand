@@ -9,34 +9,39 @@ confirmed on a live server say so.
 This list is not claimed to be exhaustive. Behaviour not listed here is not
 promised by this document.
 
-## 1. Starting a fire is not protected
+## 1. Ignition is judged per player; explosions follow their own rules
 
-Fire spread and burning are blocked by default, but there is no decision point
-for *igniting* — lava can light a fire. Spread and burn are stopped; a fire that
-is already lit has to be put out by hand.
+Starting a fire inside a claim answers per player and denies by default. The
+land's owner and players explicitly given the ignition right pass; strangers
+do not. Fire nobody lit — lava, lightning, a dispenser holding flint and
+steel, a mob's shot — follows the fire-spread rule at the ignited block
+instead, which denies by default, so it is stopped unless the owner opens that
+rule.
 
-**Workaround:** extinguish fires you find and remove lava sources you do not need
-inside a claim. Reduce who can get in and be trusted, so fewer people can light
-one.
+What this does not cover is explosions. Blast damage and broken blocks are
+decided by the terrain and entity explosion rules, never by the ignition
+right. A blast inside a land whose explosion rules allow it still breaks
+blocks, even with ignition denied to everyone.
 
-## 2. The land rules cannot be changed
+## 2. The land rules are adjustable per land; the boundary is not
 
 All eleven land rules — PVP, terrain explosion, entity explosion, fire spread,
 fire burn, mob griefing, fluid flow, pistons, hopper transfer, hostile mob
-spawning, passive mob spawning — have no player or administrator interface.
-They run on built-in defaults. Inside a land, fluid flow, pistons, hopper
-transfer and both kinds of mob spawning are allowed and follow vanilla; PVP,
-terrain and entity explosions, fire spread and burn, and mob griefing are
-denied. The `rule-defaults` section in `config.yml` is a commented example and
-is not wired to anything.
+spawning, passive mob spawning — can be set per land with `/land rule`
+(`ALLOW`, `DENY`, or `INHERIT` to delete the override and fall back through
+the world, global and built-in layers), and `rule-defaults` in `config.yml`
+carries the world and global layers. The management screen shows the explicit,
+effective and source values side by side. Owners are bound by the same rules:
+denying one stops the owner too.
 
-A piston, fluid or hopper that reaches across a land boundary is always refused,
-whichever way it points: from outside into a land, from a land out, or between
-two different lands, including two neighbouring lands with the same owner. This
-is not one of the eleven rules and nothing opens it.
+What stays fixed is the boundary itself. A piston, fluid or hopper that reaches
+across a land boundary is always refused, whichever way it points: from
+outside into a land, from a land out, or between two different lands, including
+two neighbouring lands with the same owner. This is not one of the eleven
+rules and nothing opens it.
 
 **Workaround:** keep a machine inside one land, and design around the denied
-mechanics. There is no player-side route today.
+mechanics.
 
 ## 3. The `/land manage` screen: what it cannot do
 
@@ -161,6 +166,15 @@ controlled.
 > Verified on Folia 26.2, with walking blocked and `/tp` not blocked in the same
 > session. This comes from how the server performs teleportation, not from a
 > setting. Only `/tp` was checked; other teleportation paths were out of scope.
+
+## 10. `/land inspect` and the public read API can disagree on revisions
+
+`/land inspect` prints the structure and policy revisions from the immutable
+snapshot it read for that one call. The public read API reads its own
+immutable snapshot once per call the same way. Two reads taken at different
+moments — an inspect and an external plugin's lookup around a concurrent
+write — can therefore show different revisions. Neither copy is more correct;
+each one is the truth as of its own call.
 
 ## Not yet covered
 

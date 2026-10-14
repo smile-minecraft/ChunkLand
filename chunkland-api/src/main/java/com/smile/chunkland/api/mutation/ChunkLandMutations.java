@@ -50,17 +50,19 @@ public interface ChunkLandMutations {
      *
      * <p>The typed request carries actor, target owner, target land, expected
      * version and operation id as separate fields (see {@link
-     * TypedMutationRequest}). The current pipeline cannot receive those
-     * safety fields: the legacy envelope has no room for an expected version
-     * or an operation id, and the coordinator mints its own operation ids, so
-     * converting and executing would silently drop them. This default
-     * therefore refuses every typed request with {@code REJECTED /
+     * TypedMutationRequest}). The production implementation behind the
+     * plugin's typed mutation handle delivers all five fields to stages that
+     * really enforce them — authorisation, version comparison and
+     * idempotency — before any side effect. This default method, in
+     * contrast, refuses every typed request with {@code REJECTED /
      * mutation.unsupported} (echoing the request's operation id) and never
-     * touches {@link #submit(MutationRequest)}. Keeping this a default method
-     * preserves existing third-party implementations: they compile and run
-     * unchanged, and their typed callers get an explicit rejection instead of
-     * a silently degraded execution. Typed execution lands with the pipeline
-     * that can actually enforce versions, identity keys and actor checks.
+     * touches {@link #submit(MutationRequest)}, because the legacy envelope
+     * has no room for an expected version or an operation id and converting
+     * would silently drop them. Keeping this a default method preserves
+     * existing third-party implementations: they compile and run unchanged,
+     * and their typed callers get an explicit rejection instead of a
+     * silently degraded execution. Override it only with a pipeline that
+     * enforces every field it accepts.
      *
      * <p><b>Refuse-or-enforce invariant.</b> Any entry point that accepts an
      * expected version or an operation id must either deliver it to a stage

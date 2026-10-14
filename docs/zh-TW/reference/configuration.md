@@ -6,7 +6,16 @@
 
 主設定檔路徑為 `plugins/ChunkLand/config.yml`。外掛初次開服時會自動生成該檔，之後每次啟動時讀取載入。
 
-**變更參數請務必重啟伺服器**：ChunkLand 未提供熱重載指令，Folia 環境下亦請避免使用 Bukkit 的 `/reload`。若設定檔有語法損毀，請參考[伺服器管理指南](../server-guide.md#設定檔損壞或遺失時的自動修復)的修復說明。
+**改完設定先用 `/land reload` 試試**：多數欄位不重啟就生效（熱套用範圍見下）。只有世界增減、任一世界的垂直模式、經濟整段、稽核整段這四類改完要重啟。Folia 環境下請避免使用 Bukkit 的 `/reload`。若設定檔有語法損毀，請參考[伺服器管理指南](../server-guide.md#設定檔損壞或遺失時的自動修復)的修復說明。
+
+## 哪些欄位熱套用、哪些要重啟
+
+`/land reload`（節點 `chunkland.command.land.reload`，主控台也能用）重讀整份檔案：
+
+- **熱套用，下次讀取就生效**：`limits` 上限、`messages` 訊息、`selection` 選取與視覺化預算、`subject-defaults` 與 `rule-defaults` 世界／全域預設、`feedback` 回饋、`max-decision-cache-entries` 判定快取上限，以及既有世界的 `claim-enabled` 開關。
+- **要重啟，整筆拒絕不部分套用**：新增或刪除世界、任一世界的 `vertical-mode` 變更、整個 `economy` 區段、整個 `audit` 區段。拒絕時會說明是哪一類原因；這四類改完請重啟伺服器。
+
+讀取或驗證失敗時舊設定繼續生效，並說明失敗原因；內容跟線上設定相同時直接回報無變更，不發布、不通知。成功重載**不會**更新 `config-last-known-good.yml`：那份備份只在開機載入成功時更新，繼續為讀不懂的設定檔保留後路。
 
 ## 強型別驗證與容錯機制
 
@@ -192,9 +201,18 @@ subject-defaults:
 
 ## rule-defaults
 
-回答「這個機制在這裡能不能發生」，是每個 `LAND_RULE` 的預設。
+回答「這個機制在這裡能不能發生」，是每個 `LAND_RULE` 的世界／全域預設。
 
-**這個區段目前沒有接上任何實際功能。** 預設檔裡的 `rule-defaults` 區塊整段被註解起來，寫進去不會改變任何行為。十一項領地規則目前一律使用內建預設：水流、活塞、漏斗傳輸與生物生成在領地內放行，PVP、爆炸、火焰、生物破壞擋下，活塞、液體、漏斗跨越領地邊界一律擋下；沒有玩家或管理員介面可以調整。完整說明在[已知限制](../limitations.md)。
+形狀跟 `subject-defaults` 一樣：`rule-defaults.global.<規則>` 與 `rule-defaults.worlds.<世界名稱>.<規則>`，值是 `ALLOW`、`DENY`、`INHERIT`。它餵給規則鏈的世界與全域層——領地、世界、全域、內建一路往下問，所以世界寫了就蓋掉全域，兩者都蓋掉內建預設。缺項或明確寫 `INHERIT` 就往下一層掉。領地那一層在遊戲內用 `/land rule` 寫，那裡也能並排看到明確值、有效值與來源層。
+
+內建預設（沒有任何一層設定時用它）：
+
+| 值 | 規則 |
+| --- | --- |
+| `ALLOW` | `FLUID_FLOW`、`PISTON`、`HOPPER_TRANSFER`、`HOSTILE_MOB_SPAWN`、`PASSIVE_MOB_SPAWN` |
+| `DENY` | `PVP`、`EXPLOSION_TERRAIN`、`EXPLOSION_ENTITY`、`FIRE_SPREAD`、`FIRE_BURN`、`MOB_GRIEFING` |
+
+這些規則只管待在同一塊領地內的機制。活塞、液體、漏斗只要跨越領地邊界——不論進出——一律擋下，這裡寫什麼都打不開。跟玩家權限鏈不同，規則鏈沒有主人保障：地主照樣被規則管。
 
 ```
 #rule-defaults:
@@ -205,4 +223,4 @@ subject-defaults:
 #      PVP: ALLOW
 ```
 
-`subject-defaults` 與 `rule-defaults` 是兩個各自型別化的命名空間，**永遠不會互相回退**。領地綁定、領地預設與子領地這三層不在這裡設定（還沒有可持久化的來源），一律維持 `INHERIT`。
+`subject-defaults` 與 `rule-defaults` 是兩個各自型別化的命名空間，**永遠不會互相回退**。領地綁定、領地預設與子領地這三層不在這裡設定——它們在遊戲內用 `/land trust`、`/land default`、`/land binding`、`/land subland` 與 `/land manage` 管理，這份檔案只放世界與全域預設。

@@ -4,7 +4,7 @@
 
 # 權限參考
 
-外掛一共宣告 29 個權限節點，**全部預設鎖定為管理員（`default: op`）**。這是為了保障開箱安全，避免伺服器剛裝好就被隨意圈地。服主可利用 LuckPerms 等權限外掛將節點指派給玩家或群組。
+外掛一共宣告 32 個權限節點，**全部預設鎖定為管理員（`default: op`）**。這是為了保障開箱安全，避免伺服器剛裝好就被隨意圈地。服主可利用 LuckPerms 等權限外掛將節點指派給玩家或群組。
 
 想快速完成玩家基礎授權，可直接跳至[一般玩家至少需要這幾個](#一般玩家至少需要這幾個)。
 
@@ -35,6 +35,7 @@
 | `chunkland.command.land.trust` | `/land trust` | 信任成員 |
 | `chunkland.command.land.untrust` | `/land untrust` | 取消信任 |
 | `chunkland.command.land.default` | `/land default` | 變更領地預設權限 |
+| `chunkland.command.land.rule` | `/land rule` | 調整領地環境規則（地主限定，另過管理閘門） |
 | `chunkland.command.land.binding` | `/land binding` | 建立或移除通用權限綁定 |
 | `chunkland.command.land.group` | `/land group` | 管理玩家群組 |
 | `chunkland.command.land.profile` | `/land profile` | 管理權限組合 |
@@ -45,6 +46,8 @@
 | `chunkland.command.land.inspect` | `/land inspect` | 查詢領地資訊 |
 | `chunkland.command.land.log` | `/land log` | 查詢審計紀錄 |
 | `chunkland.command.land.history` | `/land history` | 查詢附近方塊歷史，需要 CoreProtect |
+| `chunkland.command.land.selection` | `/land selection` | 以聊天指令微調選取範圍，不動魔杖按鍵 |
+| `chunkland.command.land.reload` | `/land reload` | 不重啟重讀 `config.yml`（服主專用） |
 
 沒有 `/land` 的頂層節點，也沒有 `chunkland.command.land.unclaim`。
 
@@ -55,12 +58,12 @@
 | 管理動作 | 覆蓋的子指令 |
 | --- | --- |
 | `MANAGE_MEMBER`（管理成員） | `trust`、`untrust`、`ban`、`unban` |
-| `MANAGE_PERMISSION`（管理權限） | `default`、`binding`、`explain`、`inspect` |
+| `MANAGE_PERMISSION`（管理權限） | `default`、`rule`、`binding`、`explain`、`inspect` |
 | `MANAGE_SUBLAND`（管理子領地） | `subland` |
 | `EXPAND_LAND`（擴張領地） | `expand`、`shrink`、`unclaim` |
 | `DELETE_LAND`（刪除領地） | `delete` |
 
-其餘子指令（`help`、`wand`、`claim`、`confirm`、`rename`、`group`、`profile`、`log`、`history`、`manage`、`bypass`、`admin`）不帶管理動作，不會進這道閘門；它們各自靠指令節點加上領地資料的擁有者檢查把關。
+其餘子指令（`help`、`wand`、`claim`、`confirm`、`rename`、`group`、`profile`、`log`、`history`、`manage`、`selection`、`reload`、`bypass`、`admin`）不帶管理動作，不會進這道閘門；它們各自靠指令節點加上領地資料的擁有者檢查把關。
 
 `explain` 與 `inspect` 的拒絕是刻意做成不回填內容的：無論是節點不足、閘門拒絕、目標解析不到還是解析器出錯，回覆都是同一句固定的拒絕文字，不會透露這塊領地存不存在。
 
@@ -95,27 +98,27 @@
 | --- | --- |
 | 只能圈地 | `chunkland.command.land.wand`、`chunkland.command.land.claim`、`chunkland.command.land.confirm` |
 | 加上改名 | 再加 `chunkland.command.land.rename` |
-| 加上擴張與縮減 | 再加 `chunkland.command.land.expand`、`chunkland.command.land.shrink` |
+| 加上擴張與縮減 | 再加 `chunkland.command.land.expand`、`chunkland.command.land.shrink`、`chunkland.command.land.selection` |
 | 加上自己管成員與封鎖 | 再加 `chunkland.command.land.trust`、`chunkland.command.land.untrust`、`chunkland.command.land.ban`、`chunkland.command.land.unban` |
-| 加上自己調權限 | 再加 `chunkland.command.land.default`、`chunkland.command.land.binding`、`chunkland.command.land.group`、`chunkland.command.land.profile`、`chunkland.command.land.manage` |
+| 加上自己調權限與規則 | 再加 `chunkland.command.land.default`、`chunkland.command.land.rule`、`chunkland.command.land.binding`、`chunkland.command.land.group`、`chunkland.command.land.profile`、`chunkland.command.land.manage` |
 | 加上管理子領地 | 再加 `chunkland.command.land.subland` |
 | 讓玩家自己查 | 再加 `chunkland.command.land.help`、`chunkland.command.land.explain`、`chunkland.command.land.inspect`、`chunkland.command.land.log` |
 
-`chunkland.command.land.delete` 建議不要開給一般玩家。刪除會永久移除領地並全額退費，只有你能決定要不要給這個權力。
+`chunkland.command.land.delete` 建議不要開給一般玩家。刪除會永久移除領地並全額退費，只有你能決定要不要給這個權力。`chunkland.command.land.reload` 留給管理團隊：它重讀整份伺服器設定。
 
 ## 動作識別字
 
-識別字就是 `ProtectionActionType` 裡的列舉名稱，不分大小寫，頭尾空白會被去掉。整份列舉有 40 個，但**三個指令各自接受的範圍不同**：
+識別字就是 `ProtectionActionType` 裡的列舉名稱，不分大小寫，頭尾空白會被去掉。整份列舉有 41 個，但**三個指令各自接受的範圍不同**：
 
 | 指令 | 接受的動作 |
 | --- | --- |
-| `/land default <action>` | 下面「可設領地預設」那 17 個日常成員動作 |
-| `/land profile set <profile> <action> <state>` | 全部 22 個 `SUBJECT_PERMISSION` 動作，也就是 17 個日常動作加上 5 個管理動作 |
-| `/land explain <action>` | 全部 40 個，連規則動作與跨邊界動作都能解釋 |
+| `/land default <action>` | 下面「可設領地預設」那 18 個日常成員動作 |
+| `/land profile set <profile> <action> <state>` | 全部 23 個 `SUBJECT_PERMISSION` 動作，也就是 18 個日常動作加上 5 個管理動作 |
+| `/land explain <action>` | 全部 41 個，連規則動作與跨邊界動作都能解釋 |
 
-`explain` 的接受範圍最寬，所以它會回報某些沒有任何介面可以設定的動作的判定結果。這是診斷用的讀取路徑，不代表那些動作可調。
+`explain` 的接受範圍最寬，所以它會回報某些沒有任何指令可以設定的動作的判定結果。這是診斷用的讀取路徑，不代表那些動作可調。
 
-**可設領地預設的日常成員動作**（`/land default` 接受的就是這 17 個）
+**可設領地預設的日常成員動作**（`/land default` 接受的就是這 18 個）
 
 | 識別字 | 動作 |
 | --- | --- |
@@ -136,6 +139,7 @@
 | `ARMOR_STAND` | 動用盔甲座 |
 | `HANGING_ENTITY` | 動用畫與掛飾 |
 | `FARMLAND_TRAMPLE` | 踩踏耕地 |
+| `FIRE_IGNITE` | 點火 |
 
 **管理動作**（`/land default` 不接受，`/land profile set` 接受）
 
@@ -149,7 +153,7 @@
 
 這五個是上面那道管理閘門在內部使用的動作。它們不能寫進領地預設——預設只給日常成員動作留位子——但可以在權限組合裡設定，讓你把某個組合整包綁給成員時連管理能力一起帶上。
 
-**領地規則動作**（`/land default` 與 `/land profile set` 都不接受，只有 `explain` 能解釋）
+**領地規則動作**（`/land default` 與 `/land profile set` 都不接受；十一項環境規則改用 `/land rule`，只有 `explain` 能解釋跨邊界動作）
 
 | 識別字 | 規則 |
 | --- | --- |
@@ -167,7 +171,9 @@
 
 這一類動作答的是「這個機制能不能在這裡發生」，沒有玩家的面向。判定時會同時套用玩家權限鏈與規則鏈，兩者都允許才會放行。
 
-底下還有一組只用在跨越邊界時的規則動作：`BLOCK_MOVE_IN`、`BLOCK_MOVE_OUT`、`FLUID_ENTER`、`FLUID_EXIT`、`ITEM_TRANSFER_IN`、`ITEM_TRANSFER_OUT`、`DISPENSER_CROSS_BOUNDARY`。同樣沒有可調整的介面，只有 `explain` 讀得到判定結果。這七個加上上面 11 個就是全部 18 個規則動作，17 加 22 加它們剛好是 40。
+上面 11 個是 `LandRuleType` 的環境規則，地主用 `/land rule` 逐領地調整（`ALLOW`、`DENY`、`INHERIT` 三態，`INHERIT` 刪掉覆寫退回世界、全域與內建層），世界與全域層走 `config.yml` 的 `rule-defaults`。
+
+底下還有一組只用在跨越邊界時的規則動作：`BLOCK_MOVE_IN`、`BLOCK_MOVE_OUT`、`FLUID_ENTER`、`FLUID_EXIT`、`ITEM_TRANSFER_IN`、`ITEM_TRANSFER_OUT`、`DISPENSER_CROSS_BOUNDARY`。跨界這組沒有可調整的介面，只有 `explain` 讀得到判定結果。這七個加上上面 11 個就是全部 18 個規則動作，18 加 5 加 18 剛好是 41。
 
 ## 判定鏈的層級
 
@@ -192,10 +198,10 @@
 | 順序 | 層級 | 備註 |
 | --- | --- | --- |
 | 1 | 子領地規則 | |
-| 2 | 領地規則 | |
-| 3 | 世界預設 | |
-| 4 | 全域預設 | |
-| 5 | 隱含拒絕 | |
+| 2 | 領地規則 | `/land rule` 寫的就是這一層 |
+| 3 | 世界預設 | `config.yml` 的 `rule-defaults.worlds.<世界>` |
+| 4 | 全域預設 | `config.yml` 的 `rule-defaults.global` |
+| 5 | 內建預設 | 會動的機器類放行、會破壞的擋下；都沒設定時就用它 |
 
 規則鏈刻意不含主人保障，所以環境規則對領地主人同樣有效。
 

@@ -38,26 +38,26 @@ ChunkLand 的核心逻辑非常纯粹：**在特定的位置，某位玩家（�
 | --- | --- | --- |
 | 服务器核心 | Folia 26.2 | 必备，不支持标准 Paper 或其他分支 |
 | Java 运行环境 | Java 25 | 必备 |
-| 基础前置插件 | AceLib 1.3.0 | 必备，缺少则无法启动插件 |
+| 基础前置插件 | AceLib 1.5.0 | 必备，缺少则无法启动插件 |
 | 可选依赖 | Vault 系列经济插件、LuckPerms、CoreProtect | 可选：经济插件支持圈地计费、LuckPerms 提供额度元数据、CoreProtect 支持 `/land history` |
 
 特别注意：**ChunkLand 仅支持 Folia 26.2**。插件描述文件与编译配置中标记的 `26.1.2` 仅为依赖构建所需，不代表兼容旧版本或 Paper。
 
 ## 安装步骤
 
-1. 将 AceLib 1.3.0 放入服务器的 `plugins/` 目录。ChunkLand 声明了 `depend: [AceLib]`，缺少前置时服务器会拒绝加载。
+1. 将 AceLib 1.5.0 放入服务器的 `plugins/` 目录。ChunkLand 声明了 `depend: [AceLib]`，缺少前置时服务器会拒绝加载。
 2. 从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载 `chunkland-plugin-0.1.0.jar`，复制至 `plugins/`。单这一个 jar 就已内置核心依赖（API 模块、SQLite 驱动、SnakeYAML），不需要额外在 `plugins/` 补充运行库；同一 Release 内的 `SHA256SUMS` 列出各附件的预期摘要值。
 
    若要改从源码构建：
 
    ```bash
-   ./scripts/build-acelib.sh          # 下载并校验编译所需的 AceLib 1.3.0
+   ./scripts/build-acelib.sh          # 下载并校验编译所需的 AceLib 1.5.0
    ./gradlew build --no-daemon --console=plain
    ```
 
    编译产物位于 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。
 3. 启动服务器。初次加载会自动生成 `plugins/ChunkLand/` 目录，内含默认 `config.yml`、语言文件（`lang/en_US.yml`、`lang/zh_TW.yml`）以及 SQLite 数据库 `chunkland.db`。
-4. 根据服务器需求微调 `config.yml` 后重启服务器。**Folia 环境下不提供 reload 命令**，任何配置变更皆需重启服务器生效。
+4. 根据服务器需求微调 `config.yml` 后用 `/land reload` 套用（主控台也能用）。多数配置不重启就生效；新增或删除世界、任一世界的垂直模式、经济与审计整段改完仍要重启。
 
 更详细的服主运维指南（包含配置文件损坏时的自动恢复机制）请参阅[服务器管理指南](docs/zh-CN/server-guide.md)。
 
@@ -79,7 +79,7 @@ ChunkLand 的核心逻辑非常纯粹：**在特定的位置，某位玩家（�
 
 为了避免服务器刚装好就被随意圈地，所有权限节点默认皆锁定给管理员（`default: op`）。也就是说，**普通玩家刚进服时是无法圈地、信任朋友或打开管理界面的**。
 
-服主需通过 LuckPerms 等权限插件将节点分配给玩家或权限组，大家才能开始圈地。常用的 29 个节点请参考[权限参考](docs/zh-CN/reference/permissions.md)；其中 `chunkland.admin.*` 与 `chunkland.debug.*` 请务必保留给管理团队。
+服主需通过 LuckPerms 等权限插件将节点分配给玩家或权限组，大家才能开始圈地。常用的 32 个节点请参考[权限参考](docs/zh-CN/reference/permissions.md)；其中 `chunkland.admin.*` 与 `chunkland.debug.*` 请务必保留给管理团队，`chunkland.command.land.reload` 也是（它重读整份服务器配置）。
 
 ## 正式运营前建议留意的两个默认值
 
@@ -89,9 +89,9 @@ ChunkLand 的核心逻辑非常纯粹：**在特定的位置，某位玩家（�
      global:
        ENTRY: DENY
    ```
-2. **十一项领地规则目前由系统默认托管**：包含 PVP、爆炸、火焰蔓延、生物破坏、水流、活塞与漏斗跨界等机制，目前尚未开放命令或界面调整，一律采用内置默认：水流、活塞、漏斗传输与敌对／被动生物生成在领地内照原版运作；PVP、爆炸、火焰蔓延与烧毁、生物破坏一律拦截。活塞、液体、漏斗只要跨越领地边界（不论进出）一律拦截。`config.yml` 中的 `rule-defaults` 注释区块暂未接线。
+2. **十一项领地规则默认从严、地主可调**：包含 PVP、爆炸、火焰蔓延、生物破坏、水流、活塞与漏斗跨界等机制，默认是水流、活塞、漏斗传输与敌对／被动生物生成在领地内照原版运作；PVP、爆炸、火焰蔓延与烧毁、生物破坏一律拦截。地主用 `/land rule` 逐领地开关，世界与全局层走 `config.yml` 的 `rule-defaults`。活塞、液体、漏斗只要跨越领地边界（不论进出）一律拦截，没有开关。在领地内点火按人判定、默认拒绝；岩浆、闪电这类无主点火改走火焰蔓延规则裁决，默认挡得下。
 
-其余已知的运行特性（例如点火行为未受保护、`/tp` 传送不受拦截、被封锁者在下次移动时推回等），请查阅 [LIMITATIONS.md](LIMITATIONS.md)。
+其余已知的运行特性（例如 `/tp` 传送不受拦截、被封锁者在下次移动时推回等），请查阅 [LIMITATIONS.md](LIMITATIONS.md)。
 
 ## 说明文档一览
 
@@ -137,6 +137,8 @@ ChunkLandEventBus bus = plugin.publicEventBus(); // 只有首次启用前才会�
 ```
 
 目前 `ChunkLandApi` 提供九个查询方法。做保护判定时，先确认 `isReady()`，再调用 `decideAtBlock(...)`，它返回的就是 ChunkLand 自己的监听器所执行的裁决。其中只有 `getRule()` 尚未对接正式数据（固定返回空值），请先不要依赖它。完整公开接口约定请参考[API 参考](docs/zh-CN/reference/api.md)。
+
+程序化写入走 `plugin.getMutations()` 的型别化入口（操作者、目标地主、目标领地、版本期望、操作识别码五个字段全检查），不重复与授权约定见 [API 参考](docs/zh-CN/reference/api.md#用-getmutations-做程序化写入)。
 
 ## 开源授权
 

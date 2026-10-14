@@ -4,7 +4,7 @@
 
 # 指令參考
 
-這裡整理了 `/land` 旗下的 25 個子指令與除錯專用的 `/chunkland` 指令，詳細權限節點可對照[權限參考](permissions.md)。
+這裡整理了 `/land` 旗下的 28 個子指令與除錯專用的 `/chunkland` 指令，詳細權限節點可對照[權限參考](permissions.md)。
 
 執行指令時請留意兩大前置條件：
 1. **權限節點檢查**：若未被指派對應節點，會收到「你沒有使用這個指令的權限」提示。
@@ -26,6 +26,7 @@
 | `rename` | `chunkland.command.land.rename` | `/land rename <new_name>` | 更改腳下領地的顯示名稱 |
 | `delete` | `chunkland.command.land.delete` | `/land delete confirm <revision>` | 永久刪除領地並全額退費。第一次執行 `/land delete` 只會取得確認指令 |
 | `subland` | `chunkland.command.land.subland` | `/land subland (select\|create\|update\|delete\|extend) [generation revision] [名稱]` | 選取、建立、更新、刪除或延伸子領地 |
+| `selection` | `chunkland.command.land.selection` | `/land selection (chunk\|rectangle\|toggle\|add\|remove\|info) [x z]` | 不動魔杖按鍵，用聊天指令微調選取：`chunk` 切換單塊編輯、`rectangle` 回到角落點選、`toggle` 兩者切換、`add`／`remove` 加減一塊（站立處或指定座標）、`info` 回報區塊數 |
 
 ## 權限與成員
 
@@ -39,6 +40,7 @@
 | `binding` | `chunkland.command.land.binding` | `/land binding (bind\|unbind) player <player> <profile> \| group <group> <profile> [--in-subland]` | 建立、更新或移除通用權限綁定 |
 | `group` | `chunkland.command.land.group` | `/land group (create\|list\|add\|remove\|delete) [參數]` | 維護綁定所使用的玩家群組 |
 | `profile` | `chunkland.command.land.profile` | `/land profile (create\|list\|set\|delete) [參數]` | 維護可重複使用的權限組合。`set` 的狀態只能是 `ALLOW`、`DENY`、`INHERIT` |
+| `rule` | `chunkland.command.land.rule` | `/land rule [規則] [ALLOW\|DENY\|INHERIT]` | 查看或寫入領地環境規則。不帶參數列出十一項的明確值、有效值與來源層；帶規則名查單項；再帶狀態就寫入領地覆寫（`INHERIT` 刪掉覆寫，退回世界、全域與內建層）。寫入前會先釘住你看到的基線，過期的畫面不能悄悄覆蓋別人的新變更。節點之外另過 `MANAGE_PERMISSION` 管理閘門 |
 | `manage` | `chunkland.command.land.manage` | `/land manage` | 開啟兩層管理介面：權限頁、成員名單頁、封鎖名單頁 |
 
 ## 查詢
@@ -50,7 +52,7 @@
 | `log` | `chunkland.command.land.log` | `/land log [u:玩家UUID] [t:7d] [a:動作] [land:領地UUID] [world:世界UUID] [limit:筆數] [page:頁數]` | 依篩選條件與分頁查詢審計紀錄 |
 | `history` | `chunkland.command.land.history` | `/land history` | 顯示你附近最近的方塊變更，需要伺服器上裝了 CoreProtect；沒有時會回覆功能暫時無法使用 |
 
-`<action>` 用的是動作識別字，不分大小寫：`BLOCK_PLACE`、`BLOCK_BREAK`、`CONTAINER_OPEN`、`ENTRY`、`ENTITY_DAMAGE` 這樣的形式。`default` 接受 17 個、`profile set` 接受 22 個、`explain` 接受全部 40 個，各指令接受哪些寫在[權限參考](permissions.md#動作識別字)。
+`<action>` 用的是動作識別字，不分大小寫：`BLOCK_PLACE`、`BLOCK_BREAK`、`CONTAINER_OPEN`、`ENTRY`、`ENTITY_DAMAGE` 這樣的形式。`default` 接受 18 個、`profile set` 接受 23 個、`explain` 接受全部 41 個，各指令接受哪些寫在[權限參考](permissions.md#動作識別字)。
 
 ## 管理員
 
@@ -58,6 +60,7 @@
 | --- | --- | --- | --- |
 | `bypass` | `chunkland.admin.bypass` | `/land bypass [on\|off]` | 切換你自己的管理員豁免。這個節點只允許你「嘗試」切換，切換本身會留下審計紀錄 |
 | `admin` | `chunkland.admin.ledger`（`orphan` 分支另有節點） | `/land admin (ledger\|orphan) ...` | 帳本處理與孤兒世界管理 |
+| `reload` | `chunkland.command.land.reload` | `/land reload` | 不重啟重讀 `config.yml`。主控台也能用。熱套用的欄位下次讀取就生效；世界增減、垂直模式、經濟與稽核整段會整筆拒絕並說明原因，那些改完要重啟。失敗保留舊設定並說明原因，內容沒變則直接回報無變更 |
 
 `/land admin` 的兩個分支用不同權限節點，`ledger` 與 `orphan` 互不授權：
 
@@ -75,8 +78,9 @@
 | 子指令 | 補完什麼 |
 | --- | --- |
 | `help` | 全部子指令名稱 |
-| `explain` | 全部 40 個動作識別字 |
-| `default` | 可設領地預設的那 17 個；第三個參數補 `ALLOW`、`DENY`、`INHERIT` |
+| `explain` | 全部 41 個動作識別字 |
+| `default` | 可設領地預設的那 18 個；第三個參數補 `ALLOW`、`DENY`、`INHERIT` |
+| `rule` | 十一項環境規則名；第三個參數同樣補三態 |
 | `trust`、`untrust`、`ban`、`unban`、`inspect` | **線上**玩家名稱 |
 | `subland` | `select`、`create`、`update`、`delete`、`extend` |
 | `group` | `create`、`list`、`add`、`remove`、`delete` |

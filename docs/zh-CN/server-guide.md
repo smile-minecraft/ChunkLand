@@ -6,23 +6,23 @@
 
 ## 装起来
 
-1. 把 AceLib 1.3.0 放进服务器的 `plugins/` 目录。ChunkLand 在 `plugin.yml` 里声明了 `depend: [AceLib]`，缺了它服务器不会加载 ChunkLand。
+1. 把 AceLib 1.5.0 放进服务器的 `plugins/` 目录。ChunkLand 在 `plugin.yml` 里声明了 `depend: [AceLib]`，缺了它服务器不会加载 ChunkLand。
 2. 从 [v0.1.0 Release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0) 下载 `chunkland-plugin-0.1.0.jar`，复制到 `plugins/`。这个 jar 自带依赖，API 模块、SQLite、SnakeYAML 都在里面，`plugins/` 里不用再放别的 jar；同一个 Release 里的 `SHA256SUMS` 列出各附件的预期摘要值。
 
    要改从源码构建的话：
 
    ```bash
-   ./scripts/build-acelib.sh          # 取得编译用的 AceLib 1.3.0
+   ./scripts/build-acelib.sh          # 取得编译用的 AceLib 1.5.0
    ./gradlew build --no-daemon --console=plain
    ```
 
-   产物是 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。
+   产物是 `chunkland-plugin/build/libs/chunkland-plugin-0.1.0.jar`。原来跑的是 AceLib 1.3.0 的话：先停服，把 `plugins/` 里的 AceLib 换成 1.5.0，再启动。AceLib 这次升级不需要搬移 ChunkLand 的数据或配置。
 3. 重启服务器。首次启动会创建 `plugins/ChunkLand/`。
-4. 按需修改 `config.yml`，再重启一次。
+4. 按需修改 `config.yml`，再用 `/land reload` 套用（主控台也能用）。多数组段不重启就生效；新增或删除世界、任一世界的垂直模式、经济与审计整段改完仍要重启。
 
 构建步骤和脚本细节在[开发者指南](developer-guide.md#编译前先取-acelib)里。
 
-**没有 reload 命令。** Bukkit 的 `/reload` 也不支持。任何配置改动都要重启服务器才生效。
+**改完配置先用 `/land reload` 试试。** 多数字段不重启就生效，完整范围见[配置参考](reference/configuration.md#哪些字段热套用哪些要重启)：上限制、消息、选取、主客默认、规则默认、反馈、决策缓存上限、既有世界的可圈地开关都是热套用；世界增减、任一世界的垂直模式、经济整段、审计整段改完要重启，碰到这四类重载会整笔拒绝并说明原因。Bukkit 的 `/reload` 依然不支持。
 
 ## 第一次启动会生成什么
 
@@ -55,11 +55,11 @@ subject-defaults:
     ENTRY: DENY
 ```
 
-**十一项领地规则没有入口可调。** PVP、爆炸、火焰蔓延、生物破坏、水流、活塞、漏斗传输、生物生成全部走内置默认：水流、活塞、漏斗传输与敌对／被动生物生成在领地内照原版运作；PVP、爆炸、火焰蔓延与烧毁、生物破坏一律拒绝。活塞、液体、漏斗只要跨越领地边界（不论进出）一律拒绝。`config.yml` 里被注释掉的 `rule-defaults` 只是示例，还没接上实际功能，写了也不会生效。
+**十一项领地规则默认从严、地主可调。** PVP、爆炸、火焰蔓延、生物破坏、水流、活塞、漏斗传输、生物生成默认走内置：水流、活塞、漏斗传输与敌对／被动生物生成在领地内照原版运作；PVP、爆炸、火焰蔓延与烧毁、生物破坏一律拒绝。地主用 `/land rule` 逐领地开关，世界与全局层走 `config.yml` 的 `rule-defaults`。活塞、液体、漏斗只要跨越领地边界（不论进出）一律拒绝，没有开关。
 
 ## 普通玩家用不了命令，直到你授权
 
-全部 29 个权限节点的默认值都是 `op`，开箱状态下只有管理员能圈地、信任成员、打开管理界面。授权方式就是常规的权限插件或 `permissions.yml`，插件自己不提供任何玩家端开关，也没有自动开放。
+全部 32 个权限节点的默认值都是 `op`，开箱状态下只有管理员能圈地、信任成员、打开管理界面。授权方式就是常规的权限插件或 `permissions.yml`，插件自己不提供任何玩家端开关，也没有自动开放。
 
 最省事的做法是把日常需要的几个节点发给玩家组：
 
@@ -70,12 +70,15 @@ chunkland.command.land.trust
 chunkland.command.land.untrust
 chunkland.command.land.ban
 chunkland.command.land.unban
+chunkland.command.land.default
+chunkland.command.land.rule
+chunkland.command.land.selection
 chunkland.command.land.inspect
 chunkland.command.land.explain
 chunkland.command.land.manage
 ```
 
-完整清单和每个节点管什么，见[权限参考](reference/permissions.md)。
+`chunkland.command.land.reload` 留给管理员：它重读整份服务器配置。完整清单和每个节点管什么，见[权限参考](reference/permissions.md)。
 
 ## 配置文件坏了怎么办
 

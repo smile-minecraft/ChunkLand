@@ -4,12 +4,31 @@ English · [繁體中文](../../zh-TW/reference/configuration.md) · [简体中�
 
 `plugins/ChunkLand/config.yml`. Two rules first:
 
-- **There is no reload command.** Change a value, restart the server. A
-  successful load copies the content to `config-last-known-good.yml`.
 - **Unknown top-level keys fail the load.** Until a section is implemented, its
   top-level key is rejected rather than ignored, so a typo or a premature paste
   stops startup with an error naming the key. Recovery steps are in the
   [server guide](../server-guide.md#when-the-config-file-is-broken).
+- **A successful load copies the content to `config-last-known-good.yml`.**
+  That file is only refreshed on a successful load — never by `/land reload`.
+
+## Reloading without a restart
+
+`/land reload` (node `chunkland.command.land.reload`, console included)
+re-reads the file and applies it live:
+
+- **Hot — applies on the next read:** `limits` quotas, `messages` settings,
+  `selection` sessions and budgets, `subject-defaults` and `rule-defaults`,
+  `feedback` tuning, the decision-cache budget, and `claim-enabled` of
+  already-listed worlds.
+- **Needs a restart — refuses the whole reload, never a partial apply:** added
+  or removed worlds, any world's `vertical-mode`, the whole `economy` section,
+  and the whole `audit` section. The refusal names the reason; restart the
+  server for those. Bukkit's `/reload` stays unsupported.
+
+A reload that fails to read or validate keeps the previous settings and says
+why. A reload whose content matches the live settings answers "no change"
+without publishing anything. A reload that commits but whose follow-up
+notification fails still has the new settings active and says so distinctly.
 
 ## messages
 
@@ -162,8 +181,9 @@ never fall back to each other.
 A missing section, a missing entry, or an explicit `INHERIT` all mean "fall
 through to the next resolver layer", ending at implicit `DENY`. Action keys are
 case-insensitive; world names are case-sensitive. Land bindings, land defaults
-and subland layers are not configured here — they have no durable source wired
-yet and stay `INHERIT`.
+and subland layers are not configured here — they are managed in game with
+`/land trust`, `/land default`, `/land binding`, `/land subland` and
+`/land manage`.
 
 The shipped default is:
 
@@ -179,13 +199,26 @@ claims to everyone who is not trusted.
 
 ## rule-defaults
 
-`rule-defaults` has the same shape and is documented in the shipped file as a
-commented example. **It is not wired to anything yet** — the eleven land rules
-run on built-in defaults (fluid flow, pistons, hopper transfer and mob spawning
-allowed inside a land; PVP, explosions, fire and mob griefing denied; anything
-crossing a land boundary refused), and no player or administrator interface can
-change them. Editing this block
-has no effect today.
+`rule-defaults` has the same shape: `rule-defaults.global.<RULE>` and
+`rule-defaults.worlds.<world>.<RULE>`, values `ALLOW` / `DENY` / `INHERIT`. It
+feeds the world and global layers of the rule chain — land, world, global,
+built-in — so a world entry overrides the global one and both override the
+built-in defaults below. A missing entry or an explicit `INHERIT` falls through
+to the next layer. The per-land layer above them is written in game with
+`/land rule`, which is also where the owner sees the explicit, effective and
+source values side by side.
+
+Built-in rule defaults, used when no layer sets a value:
+
+| Value | Rules |
+| --- | --- |
+| `ALLOW` | `FLUID_FLOW`, `PISTON`, `HOPPER_TRANSFER`, `HOSTILE_MOB_SPAWN`, `PASSIVE_MOB_SPAWN` |
+| `DENY` | `PVP`, `EXPLOSION_TERRAIN`, `EXPLOSION_ENTITY`, `FIRE_SPREAD`, `FIRE_BURN`, `MOB_GRIEFING` |
+
+These rules only cover what stays inside one land. A piston, a fluid or a
+hopper reaching across a land boundary — in either direction — is always
+refused, and no entry here opens it. Unlike the subject chain, the rule chain
+has no owner guarantee: the owner is bound by the same rules as everyone else.
 
 ## Language files
 

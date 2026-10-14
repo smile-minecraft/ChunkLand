@@ -39,7 +39,7 @@ build:
 # 是安裝到磁碟，跨階段一定留得住。
 #
 # 只發布 chunkland-api：
-#   - 不建置 chunkland-plugin。它是 compileOnly 依賴 AceLib 1.3.0 的 server plugin，
+#   - 不建置 chunkland-plugin。它是 compileOnly 依賴 AceLib 1.5.0 的 server plugin，
 #     而 AceLib 只存在於 GitHub Release asset，JitPack 的乾淨容器沒有它；在此建置
 #     必然解析失敗，同時也會把 Bukkit/Paper、SQLite 帶進 JitPack 的建置環境。
 #   - 不在 settings.gradle.kts 宣告的 flatDir 依賴上下文中解析 AceLib。

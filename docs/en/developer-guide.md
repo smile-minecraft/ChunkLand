@@ -9,7 +9,7 @@ classpath.
 ## Building ChunkLand locally
 
 ```bash
-./scripts/build-acelib.sh          # AceLib 1.3.0 into the cache dir, SHA-256 verified
+./scripts/build-acelib.sh          # AceLib 1.5.0 into the cache dir, SHA-256 verified
 ./gradlew build --no-daemon --console=plain
 ```
 
@@ -67,7 +67,7 @@ depend: [ChunkLand]
 Keep it `compileOnly`. The server provides these classes; bundling them creates
 two copies of the same types and the classloader picks one of them at random.
 
-## Getting the two entry points
+## Getting the three entry points
 
 ```java
 Plugin found = Bukkit.getPluginManager().getPlugin("ChunkLand");
@@ -81,9 +81,10 @@ if (!(found instanceof ChunkLandPlugin plugin) || !plugin.isEnabled()) {
 | --- | --- | --- |
 | `plugin.getReadApi()` | Never null. Returns a holder that reads as an empty registry before the first enable and after disable | Safe to cache. Each call returns a lightweight holder over the live snapshot, so you can keep the first one and still observe later changes |
 | `plugin.publicEventBus()` | **`null` only before the first enable**. A disable leaves the previous bus in place, so a stale handle is non-null but permanently silent | Acquire it per enable. Re-acquire after every enable and never keep a handle across a disable |
+| `plugin.getMutations()` | **`null` while the mutation flows are not assembled**. After a disable the previous handle keeps rejecting instead of running | Null-check every time. Only typed requests execute; reconcile by operation id |
 
-Neither is thread-restricted on the calling side, but see the Folia section
-below before you do real work in a listener.
+None of the three is thread-restricted on the calling side, but see the Folia
+section below before you do real work in a listener.
 
 ## Reading state
 
@@ -185,27 +186,28 @@ after the event with the suffix changed — `LandCreatePostEvent` becomes
 `LandCreatePostBukkitEvent`. Prefer the API bus; the Bukkit views exist for
 plugins that cannot take a compile-time dependency.
 
-One caveat: `RuleChangedEvent` is declared on both channels but is never
-actually fired, because land rules have no writable interface yet. Do not build
-a listener around it.
+One caveat: `RuleChangedEvent` fires from durable per-land rule writes, so a
+listener around it runs whenever a `/land rule` change (or the equivalent
+typed `RULE_CHANGE`) commits.
+
+## Writing through `getMutations()`
+
+The write entry runs the same production sagas the chat handlers use, so your
+plugin gets the same validation, pricing, ledger, economy and recovery — with
+your own operation id carried end to end for idempotent resubmits. The full
+contract (the five envelope fields, version checks, resubmit convergence,
+content-mismatch rejection, cancellation, and why a delegated manager passes
+chat but not this entry) is in the
+[API reference](reference/api.md#writing-through-getmutations).
 
 ## What is not available yet
 
-- **No supported way to reach the write facade.**
-  `com.smile.chunkland.api.mutation.ChunkLandMutations` is in your classpath
-  and declares `submit(MutationRequest)`, and the plugin contains an
-  implementation of it — but `ChunkLandPlugin` exposes no accessor for it
-  (only `getReadApi()` and `publicEventBus()`), so there is no supported entry
-  point. Use the commands; there is no supported programmatic claim.
 - **No offline name guarantee for you.** The command layer resolves player
   references as: raw UUID first, then an exact case-sensitive online name, then
   an offline-player lookup that runs on an async executor and fails closed on
   timeout. That last lookup only answers for players the server already knows.
   `ChunkLandApi` takes UUIDs throughout, so resolve names yourself and expect
   empty for names that never joined.
-- **No reload notification.** `ConfigService.reload()` exists and bumps the
-  global and per-world policy epochs, but no command triggers it. Restart is the
-  only path today.
 
 ## Related pages
 

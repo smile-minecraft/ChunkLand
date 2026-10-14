@@ -38,7 +38,7 @@
 ## 建置與測試流程
 
 ```bash
-./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.3.0
+./scripts/build-acelib.sh          # 下載並校驗編譯所需的 AceLib 1.5.0
 ./gradlew build --no-daemon --console=plain
 ```
 
@@ -137,8 +137,8 @@ Vault、LuckPerms 與 CoreProtect 均為軟相依整合。這三項服務的探�
 
 | 元件位置 | 當前狀態說明 |
 | --- | --- |
-| `ChunkLandApi.getRule()` | 規則查詢來源恆定回傳空 `Optional` |
-| `config.yml` 的 `rule-defaults` 區段 | 僅保留註解範例，尚未連結內部規則引擎 |
-| `ChunkLandPlugin` 設定重載機制 | 保留內部重載 API，尚未對接玩家或管理指令 |
+| `ChunkLandApi.getRule()` | 規則查詢來源恆定回傳空 `Optional`（讀取 API 側的 fail-closed 設計；領地規則在遊戲內已可用 `/land rule` 調整，保護裁決走 `decideAtBlock`） |
 
 `getRule()` 目前未接線，切勿用於正式的保護裁決或使用者介面顯示，原因請見[API 參考](reference/api.md#getrule-為什麼固定回空)。要做保護裁決請改用 `decideAtBlock`，見[在方塊上做保護裁決](reference/api.md#在方塊上做保護裁決)。
+
+程序化寫入走 `ChunkLandPlugin.getMutations()` 的型別化入口（操作者、目標地主、目標領地、版本期望、操作識別碼五個欄位全檢查），完整約定見 [API 參考](reference/api.md#用-getmutations-做程序化寫入)。`/land reload` 走同一套閘門，熱套用範圍見[設定參考](reference/configuration.md#哪些欄位熱套用哪些要重啟)。

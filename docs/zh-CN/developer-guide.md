@@ -21,7 +21,7 @@ AceLib 是编译期依赖，从本地缓存目录解析，所以 Gradle 配置�
 ./scripts/build-acelib.sh
 ```
 
-脚本下载固定的 AceLib 1.3.0 GitHub Release 附件，然后核对固定的 SHA-256、`plugin.yml` 里的版本号，以及 `AceLibVersion.class` 是否存在。任何一项不对——摘要不符、版本不对、拿回来的不是 JAR、缺类——都以非零退出码中止。产物落在 `$XDG_CACHE_HOME/chunkland-acelib`（一般是 `~/.cache/chunkland-acelib`），要换位置设 `ACE_OUTPUT_DIR`。
+脚本下载固定的 AceLib 1.5.0 GitHub Release 附件，然后核对固定的 SHA-256、`plugin.yml` 里的版本号，以及 `AceLibVersion.class` 是否存在。任何一项不对——摘要不符、版本不对、拿回来的不是 JAR、缺类——都以非零退出码中止。产物落在 `$XDG_CACHE_HOME/chunkland-acelib`（一般是 `~/.cache/chunkland-acelib`），要换位置设 `ACE_OUTPUT_DIR`。
 
 AceLib 不走浮动版本：`SNAPSHOT`、`latest`、`mavenLocal()` 都没有用到。
 
@@ -84,7 +84,7 @@ ChunkLandApi api = plugin.getReadApi();          // 不会是 null；启用前�
 ChunkLandEventBus bus = plugin.publicEventBus(); // 只有首次启用前才会是 null；之后每次启用都要重新获取
 ```
 
-读 API 有九个查询方法，事件总线有 `register`、`unregister`、`publish` 三个方法。两者的生命周期、方法语义、当前接上线到什么程度，都写在[API 参考](reference/api.md)里——尤其是 `getRule()` 目前不接正式数据，固定回空；要做保护裁决请先确认 `isReady()`，再用 `decideAtBlock`，见[在方块上做保护裁决](reference/api.md#在方块上做保护裁决)。
+读 API 有九个查询方法，事件总线有 `register`、`unregister`、`publish` 三个方法，程序化写入走 `plugin.getMutations()` 的型别化入口。几者的生命周期、方法语义、当前接上线到什么程度，都写在[API 参考](reference/api.md)里——尤其是 `getRule()` 目前不接正式数据，固定回空；要做保护裁决请先确认 `isReady()`，再用 `decideAtBlock`，见[在方块上做保护裁决](reference/api.md#在方块上做保护裁决)。
 
 ## 动手前值得知道的两条不变量
 

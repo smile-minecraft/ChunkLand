@@ -22,9 +22,9 @@ import java.util.Set;
  *
  * <p>This envelope cannot carry the safety fields the typed contract requires
  * (operation id, expected version, separated actor and target owner). New
- * callers should use {@link TypedMutationRequest}; the typed submission
- * entries refuse execution until the pipeline can actually receive those
- * fields. There is no entry point that accepts a legacy envelope together
+ * callers should use {@link TypedMutationRequest}; the production typed entry
+ * executes those requests and enforces every safety field before any side
+ * effect. There is no entry point that accepts a legacy envelope together
  * with safety supplements.
  *
  * <p>Thread-safe immutable value object.

@@ -51,7 +51,7 @@ runs inside a land, and sub-lands, all under the shipped defaults.*
 | --- | --- |
 | Server | Folia 26.2 |
 | Java | 25 |
-| Required plugin | AceLib 1.3.0 |
+| Required plugin | AceLib 1.5.0 |
 | Optional | a Vault-ecosystem economy plugin (claim pricing), LuckPerms (quota metadata), CoreProtect (`/land history`) |
 
 Folia only. Paper is not a supported runtime. The plugin descriptor declares
@@ -60,7 +60,7 @@ are compile markers, not a compatibility claim.
 
 ## Install
 
-1. Put AceLib 1.3.0 in the server's `plugins/` directory. ChunkLand declares
+1. Put AceLib 1.5.0 in the server's `plugins/` directory. ChunkLand declares
    `depend: [AceLib]`, so the server will refuse to start ChunkLand without it.
 2. Download `chunkland-plugin-0.1.0.jar` from the
    [v0.1.0 release](https://github.com/smile-minecraft/ChunkLand/releases/tag/v0.1.0)
@@ -72,7 +72,7 @@ are compile markers, not a compatibility claim.
    To build it from source instead:
 
    ```bash
-   ./scripts/build-acelib.sh          # fetches AceLib 1.3.0 for compilation
+   ./scripts/build-acelib.sh          # fetches AceLib 1.5.0 for compilation
    ./gradlew build --no-daemon --console=plain
    ```
 
@@ -80,8 +80,9 @@ are compile markers, not a compatibility claim.
 3. Restart the server. The first start creates `plugins/ChunkLand/` with
    `config.yml`, `lang/en_US.yml`, `lang/zh_TW.yml` and the SQLite database
    `chunkland.db`.
-4. Edit `config.yml` if you need to, then restart again. **There is no reload
-   command** — every configuration change needs a restart.
+4. Edit `config.yml` if you need to, then run `/land reload` (or restart).
+   Most settings apply live; added or removed worlds, any world's vertical
+   mode, and the whole `economy` and `audit` sections still need a restart.
 
 Full operator instructions, including what happens when the config file is
 broken, are in the [server guide](docs/en/server-guide.md).
@@ -108,7 +109,7 @@ operators can claim land, trust members, or open the management screen.** A
 regular player needs the relevant nodes granted explicitly, or they will be
 told the command is not allowed. There is no player-facing toggle for this.
 
-All 29 nodes and what each one gates are in the
+All 32 nodes and what each one gates are in the
 [permission reference](docs/en/reference/permissions.md). The
 `chunkland.admin.*` and `chunkland.debug.*` nodes are for operators; do not hand
 them to players.
@@ -125,14 +126,16 @@ subject-defaults:
     ENTRY: DENY
 ```
 
-**The eleven land rules cannot be changed from anywhere.** They run on built-in
-defaults. Inside a land, fluid flow, pistons, hopper transfer and both kinds of
+**The eleven land rules start on built-in defaults and are adjustable.**
+Inside a land, fluid flow, pistons, hopper transfer and both kinds of
 mob spawning follow vanilla; PVP, explosions, fire spread and burn, and mob
-griefing are denied. A piston, fluid or hopper that reaches across a land
-boundary — in either direction — is always refused. The commented
-`rule-defaults` block in `config.yml` is an example, not a wired setting.
+griefing are denied — until the owner changes them with `/land rule`. A
+piston, fluid or hopper that reaches across a land boundary — in either
+direction — is always refused, and no rule opens that. Starting a fire is
+judged per player and denied by default; unlit fire from lava or lightning
+follows the fire-spread rule instead.
 
-The rest of the rough edges — starting a fire is unprotected, `/tp` is not
+The rest of the rough edges — `/tp` is not
 intercepted, banned players are pushed out on their next move rather than
 immediately — are in [LIMITATIONS.md](LIMITATIONS.md).
 
@@ -201,6 +204,11 @@ ChunkLandEventBus bus = plugin.publicEventBus(); // null only before the first e
 ChunkLand's own listeners enforce. One method is not backed by production data
 yet — `getRule()` always returns empty — so read the
 [API reference](docs/en/reference/api.md) before you rely on it.
+
+Programmatic writes go through `plugin.getMutations()` with typed requests
+carrying actor, target owner, target land, expected version and operation id.
+See [Writing through `getMutations()`](docs/en/reference/api.md#writing-through-getmutations)
+for the idempotency and authorisation contract.
 
 ## License
 
