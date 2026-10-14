@@ -16,9 +16,11 @@ import java.util.Set;
 /**
  * Production step-one validator for land shrink over in-memory state only.
  *
- * <p>Checks, in order: the required session generation, selection revision
- * and structure tokens against their live sources (any missing, stale or
- * unresolvable token fails closed), target resolution with owner and world
+ * <p>Checks, in order: the session generation, selection revision and
+ * structure tokens against their live sources (a stale or unresolvable
+ * token fails closed; a missing session-binding token fails closed for
+ * untracked requests, while an explicitly tracked operation skips only
+ * the absent session binding — the structure token stays required), target resolution with owner and world
  * agreement, delta membership (every removed chunk must belong to the target
  * land in the same world), the zero remainder (removing the last chunk is
  * rejected towards the delete flow and never writes an empty land), remaining
@@ -88,6 +90,13 @@ public final class SnapshotShrinkValidator implements ShrinkValidator {
     private void checkGeneration(ShrinkRequest request) {
         Long expected = request.sessionGeneration();
         if (expected == null) {
+            if (request.tracked()) {
+                // Explicitly tracked operation without a wand session to
+                // bind to (the typed public entry): the structure token
+                // below still enforces staleness. Untracked requests keep
+                // the historical fail-closed behaviour.
+                return;
+            }
             throw new ClaimRejectedException("shrink.stale");
         }
         OptionalLong current;
@@ -104,6 +113,12 @@ public final class SnapshotShrinkValidator implements ShrinkValidator {
     private void checkRevision(ShrinkRequest request) {
         Long expected = request.selectionRevision();
         if (expected == null) {
+            if (request.tracked()) {
+                // Same explicitly-tracked exemption as the session
+                // generation above; the structure token still enforces
+                // staleness and untracked requests stay fail-closed.
+                return;
+            }
             throw new ClaimRejectedException("shrink.stale");
         }
         OptionalLong current;

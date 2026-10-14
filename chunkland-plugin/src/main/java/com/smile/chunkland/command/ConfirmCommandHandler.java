@@ -127,7 +127,7 @@ public final class ConfirmCommandHandler implements LandCommand.Handler {
         try {
             request = new ClaimRequest(OwnerRef.player(actor), actor, accepted.session().worldId(),
                     accepted.session().selectedChunks(), displayName, token, generation,
-                    accepted.structureToken(), accepted.target());
+                    accepted.structureToken(), accepted.target(), UUID.randomUUID());
         } catch (RuntimeException invalid) {
             releaseIfOurs(actor, accepted);
             sink.reply("command.land.confirm.usage", Map.of());

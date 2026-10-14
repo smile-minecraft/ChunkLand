@@ -31,8 +31,9 @@ import org.bukkit.entity.Player;
  * session that targets that same land and holds at least one delta chunk; a
  * {@link ShrinkRequest} is built from the session delta plus the full token
  * triple (selection revision, session generation and the session base
- * structure revision) and handed to the saga. The saga owns the operation id
- * end to end, mirroring the expand flow.
+ * structure revision) plus a freshly minted operation id, and handed to the
+ * saga. The saga carries that id as the Economy idempotency key and records
+ * it on the ledger row, mirroring the expand flow.
  *
  * <p>Owner resolution follows the already-published target snapshot: when the
  * target land is Server-owned the request carries the Server owner so a
@@ -265,7 +266,7 @@ public final class ShrinkCommandHandler implements LandCommand.Handler {
         try {
             request = new ShrinkRequest(resolveRequestOwner(target.get(), actor), actor,
                     session.worldId(), target.get(), delta, session.selectionRevision(),
-                    session.sessionGeneration(), session.baseStructureRevision());
+                    session.sessionGeneration(), session.baseStructureRevision(), UUID.randomUUID(), false);
         } catch (RuntimeException invalid) {
             sink.reply("command.land.shrink.failed", Map.of("reason", "shrink.failed"));
             return;

@@ -17,10 +17,12 @@ import java.util.Set;
  * Production step-one validator for land expansion over in-memory state only.
  *
  * <p>Checks, in order: the per-world {@code claim-enabled} policy for player
- * land (server-owned land keeps its existing bypass), the required session
+ * land (server-owned land keeps its existing bypass), the session
  * generation, selection revision and structure tokens against their live
- * sources (any missing, stale or unresolvable token fails closed), target
- * resolution with owner and world agreement, per-delta collision (overlap with
+ * sources (a stale or unresolvable token fails closed; a missing
+ * session-binding token fails closed for untracked requests, while an
+ * explicitly tracked operation skips only the absent session binding —
+ * the structure token stays required), target resolution with owner and world agreement, per-delta collision (overlap with
  * the target, adjacency to another land of the same owner, or occupation by a
  * third party), and union connectivity without holes over the target plus the
  * delta. Limit checks stay with the saga's quota reservation; the database
@@ -135,6 +137,13 @@ public final class SnapshotExpandValidator implements ExpandValidator {
     private void checkGeneration(ExpandRequest request) {
         Long expected = request.sessionGeneration();
         if (expected == null) {
+            if (request.tracked()) {
+                // Explicitly tracked operation without a wand session to
+                // bind to (the typed public entry): the structure token
+                // below still enforces staleness. Untracked requests keep
+                // the historical fail-closed behaviour.
+                return;
+            }
             throw new ClaimRejectedException("expand.stale");
         }
         OptionalLong current;
@@ -151,6 +160,12 @@ public final class SnapshotExpandValidator implements ExpandValidator {
     private void checkRevision(ExpandRequest request) {
         Long expected = request.selectionRevision();
         if (expected == null) {
+            if (request.tracked()) {
+                // Same explicitly-tracked exemption as the session
+                // generation above; the structure token still enforces
+                // staleness and untracked requests stay fail-closed.
+                return;
+            }
             throw new ClaimRejectedException("expand.stale");
         }
         OptionalLong current;

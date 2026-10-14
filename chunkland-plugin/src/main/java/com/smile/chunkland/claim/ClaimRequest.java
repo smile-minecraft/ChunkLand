@@ -25,6 +25,16 @@ import java.util.UUID;
  * against the live structure revision of that target and rejects stale or
  * unverifiable confirmations. Requests without a target skip the structure
  * check entirely.
+ *
+ * <p>{@code operationId} is the idempotency key of this operation. Chat
+ * confirmations mint a fresh key per accepted confirmation; the typed public
+ * entry carries the caller-supplied key through. A {@code null} key preserves
+ * the legacy behaviour: the saga mints its own key deep inside, so resubmits
+ * run as independent operations. A non-null key is carried end to end into the
+ * ledger, so a resubmit converges on the recorded result instead of running
+ * twice. Absent optional tokens are skipped by the validator (a claim
+ * without a target carries no structure expectation); legacy and keyed
+ * requests behave alike here, so existing callers observe no change.
  */
 public record ClaimRequest(
         OwnerRef owner,
@@ -35,7 +45,8 @@ public record ClaimRequest(
         Long selectionRevision,
         Long sessionGeneration,
         Long structureRevision,
-        LandId targetLandId) {
+        LandId targetLandId,
+        UUID operationId) {
 
     public ClaimRequest {
         Objects.requireNonNull(owner, "owner");
@@ -69,18 +80,30 @@ public record ClaimRequest(
 
     /** Convenience for claims without a confirmation revision token. */
     public ClaimRequest(OwnerRef owner, UUID actorUuid, UUID worldId, Set<ChunkKey> chunks, String displayName) {
-        this(owner, actorUuid, worldId, chunks, displayName, null, null, null, null);
+        this(owner, actorUuid, worldId, chunks, displayName, null, null, null, null, null);
     }
 
     /** Convenience for confirmations that carry a selection token but no structure target. */
     public ClaimRequest(OwnerRef owner, UUID actorUuid, UUID worldId, Set<ChunkKey> chunks,
             String displayName, Long selectionRevision) {
-        this(owner, actorUuid, worldId, chunks, displayName, selectionRevision, null, null, null);
+        this(owner, actorUuid, worldId, chunks, displayName, selectionRevision, null, null, null, null);
     }
 
     /** Convenience for confirmations that carry selection and generation tokens but no structure target. */
     public ClaimRequest(OwnerRef owner, UUID actorUuid, UUID worldId, Set<ChunkKey> chunks,
             String displayName, Long selectionRevision, Long sessionGeneration) {
-        this(owner, actorUuid, worldId, chunks, displayName, selectionRevision, sessionGeneration, null, null);
+        this(owner, actorUuid, worldId, chunks, displayName, selectionRevision, sessionGeneration, null, null, null);
+    }
+
+    /**
+     * Legacy nine-argument form without an idempotency key. Delegates with a
+     * {@code null} key so historical callers keep the legacy mint-inside
+     * behaviour unchanged.
+     */
+    public ClaimRequest(OwnerRef owner, UUID actorUuid, UUID worldId, Set<ChunkKey> chunks,
+            String displayName, Long selectionRevision, Long sessionGeneration,
+            Long structureRevision, LandId targetLandId) {
+        this(owner, actorUuid, worldId, chunks, displayName, selectionRevision, sessionGeneration,
+                structureRevision, targetLandId, null);
     }
 }

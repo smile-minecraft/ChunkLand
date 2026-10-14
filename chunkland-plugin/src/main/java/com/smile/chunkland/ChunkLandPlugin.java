@@ -39,6 +39,7 @@ import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.land.SubLandSnapshot;
+import com.smile.chunkland.api.mutation.ChunkLandMutations;
 import com.smile.chunkland.api.limit.LimitType;
 import com.smile.chunkland.api.permission.PermissionContext;
 import com.smile.chunkland.api.permission.PermissionDecision;
@@ -182,6 +183,7 @@ import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.index.SubLandIndex;
 import com.smile.chunkland.runtime.vertical.SnapshotProtectionDepthLookup;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
+import com.smile.chunkland.runtime.mutation.SagaBackedMutations;
 import com.smile.chunkland.runtime.rule.LandRuleService;
 import com.smile.chunkland.runtime.vertical.DepthExtendEventAdapter;
 import com.smile.chunkland.runtime.vertical.DepthExtendService;
@@ -455,6 +457,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private ExpandSaga expandSaga;
     private ShrinkSaga shrinkSaga;
     private DeleteSaga deleteSaga;
+    /**
+     * Public typed mutation handle over the same sagas the chat handlers
+     * use. {@code null} while the flows are not (or no longer) assembled;
+     * external callers must null-check. Disable closes the handle first so
+     * a cached reference keeps rejecting instead of running half-wired.
+     */
+    private SagaBackedMutations landMutations;
     private OwnerQuotaService claimQuotas;
     /**
      * Optional external limit provider (LuckPerms when present). Discovered
@@ -2866,6 +2875,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
                             orphanAdminHandler,
                             buildHistoryHandler(() -> this.historyProvider,
                                     buildPlayerScheduler(this))));
+        assembleLandMutations(atomicContexts);
         ManagementGateResolver landGateResolver = buildManagementGateResolver(this.protectionStore,
                 () -> atomicContexts,
                 PluginManagementGateResolver.TargetLandResolver.currentLocation(),
@@ -4710,6 +4720,24 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * The public typed mutation handle of this enable generation, for
+     * external plugins that create, delete, expand, shrink or rename land
+     * programmatically. It runs the same production sagas the chat
+     * handlers use — same validation, pricing, ledger, economy and
+     * recovery — with the caller-supplied operation id carried end to end
+     * for idempotent resubmits.
+     *
+     * <p>{@code null} while the flows are not assembled, and after disable
+     * the previous handle keeps rejecting instead of running: external
+     * callers must null-check and must reconcile by operation id. The
+     * legacy envelope entry stays unsupported; only typed requests
+     * execute.
+     */
+    public ChunkLandMutations getMutations() {
+        return landMutations;
+    }
+
+    /**
      * Production Bukkit bridge: dispatches one Bukkit view through the given
      * plugin manager, synchronously on the publishing thread. Pre bridges run
      * on the mutation caller thread before any Economy or durable side
@@ -6019,6 +6047,53 @@ public final class ChunkLandPlugin extends JavaPlugin {
     }
 
     /**
+     * Assembles the public typed mutation handle over the same sagas the
+     * chat handlers use. Must run after the saga runners below so the
+     * saga fields already reflect this enable generation. Any missing
+     * part keeps the slot fail-closed ({@code null}) with a warning, so
+     * external callers never run a half-wired flow.
+     */
+    private void assembleLandMutations(SnapshotPermissionContextProvider atomicContexts) {
+        ClaimStartupBootstrap bootstrap = this.claimStartup;
+        OperationLedger ledger = bootstrap == null ? null : bootstrap.ledger();
+        LandRegistryStore store = this.protectionStore;
+        if (this.claimSaga == null || this.expandSaga == null || this.shrinkSaga == null
+                || this.deleteSaga == null || this.landRenameService == null
+                || ledger == null || store == null || atomicContexts == null) {
+            getLogger().warning("ChunkLand typed mutations stay unavailable: "
+                    + "a mutation flow is not assembled.");
+            this.landMutations = null;
+            return;
+        }
+        try {
+            this.landMutations = new SagaBackedMutations(
+                    request -> {
+                        throw new IllegalStateException("legacy mutations are not supported");
+                    },
+                    Set.of(),
+                    this.claimSaga, this.expandSaga, this.shrinkSaga, this.deleteSaga,
+                    this.landRenameService, ledger,
+                    store::snapshot,
+                    () -> atomicContexts,
+                    uuid -> {
+                        try {
+                            Player online = getServer().getPlayer(uuid);
+                            return online != null && online.hasPermission(
+                                    PluginManagementGateResolver.SERVER_LAND_STEWARD_NODE);
+                        } catch (RuntimeException denied) {
+                            return false;
+                        }
+                    },
+                    adminBypassLookup(),
+                    Clock.systemUTC());
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand typed mutation assembly failed; "
+                    + "typed mutations stay unavailable: " + failure.getMessage());
+            this.landMutations = null;
+        }
+    }
+
+    /**
      * Live claim runner sharing the bootstrap ledger, Economy and rebuilder.
      * Null when recovery never started: the handler then replies
      * {@code claim.unavailable}. Assembly failure degrades the same way and
@@ -7141,6 +7216,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
             } catch (RuntimeException ignored) {
             }
             claimStartup = null;
+        }
+        if (landMutations != null) {
+            try {
+                landMutations.close();
+            } catch (RuntimeException ignored) {
+            }
+            landMutations = null;
         }
         claimSaga = null;
         deleteSaga = null;

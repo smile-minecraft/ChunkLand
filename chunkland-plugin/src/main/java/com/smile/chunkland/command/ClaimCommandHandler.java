@@ -28,9 +28,9 @@ import org.bukkit.entity.Player;
  * built from the session (owner and actor are the player, the world and chunks
  * come from the session, the request revision pins the live selection revision
  * so the validator rejects stale confirmations) and handed to the saga. The
- * saga owns the operation id end to end: it is generated inside the saga,
- * carried as the Economy idempotency key outside any SQL transaction, and
- * recorded on the ledger row.
+ * handler mints a fresh operation id per accepted execution and hands it in
+ * with the request: the saga carries it as the Economy idempotency key
+ * outside any SQL transaction and records it on the ledger row.
  *
  * <p>Fail-closed contract: console senders, missing or empty selections, and
  * blank or invalid names reply without touching the saga (no ledger row, no
@@ -175,7 +175,7 @@ public final class ClaimCommandHandler implements LandCommand.Handler {
         try {
             request = new ClaimRequest(OwnerRef.player(actor), actor, session.worldId(),
                     chunks, displayName, session.selectionRevision(), session.sessionGeneration(),
-                    structureTokenOf(session), session.targetLandId().orElse(null));
+                    structureTokenOf(session), session.targetLandId().orElse(null), UUID.randomUUID());
         } catch (RuntimeException invalid) {
             sink.reply("command.land.usage", Map.of());
             return;

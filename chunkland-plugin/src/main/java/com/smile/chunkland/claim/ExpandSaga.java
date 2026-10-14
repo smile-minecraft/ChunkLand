@@ -233,7 +233,8 @@ public final class ExpandSaga {
             chunkReservation = chunks.get();
         }
         final Set<String> reservationKeys = reservationKeys(plan);
-        final UUID operationId = UUID.randomUUID();
+        final UUID operationId = request.operationId() != null
+                ? request.operationId() : UUID.randomUUID();
         if (!reservations.tryAcquire(reservationKeys, operationId)) {
             releaseQuota(chunkReservation);
             return completed(ClaimOutcome.rejected("reservation.conflict"));

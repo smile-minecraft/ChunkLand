@@ -24,10 +24,11 @@ import org.bukkit.entity.Player;
  * <p>Two-step confirmation: a bare {@code /land delete} resolves the land
  * under the sender and replies a confirm prompt carrying the live structure
  * revision; {@code /land delete confirm <revision>} builds a {@link
- * DeleteRequest} with that token and hands it to the saga. The saga owns the
- * operation id end to end and revalidates the token against the live source,
- * so a land that changed between prompt and confirm fails closed with a stale
- * reply instead of deleting something the actor never reviewed.
+ * DeleteRequest} with that token plus a freshly minted operation id and hands
+ * it to the saga. The saga carries that id as the Economy idempotency key
+ * and records it on the ledger row, and revalidates the token against the
+ * live source, so a land that changed between prompt and confirm fails closed
+ * with a stale reply instead of deleting something the actor never reviewed.
  *
  * <p>Owner resolution follows the already-published target snapshot: when the
  * target land is Server-owned the request carries the Server owner so a
@@ -219,7 +220,8 @@ public final class LandDeleteCommandHandler implements LandCommand.Handler {
         }
         DeleteRequest request;
         try {
-            request = new DeleteRequest(owner, actor, view.worldId(), target, structureRevision);
+            request = new DeleteRequest(owner, actor, view.worldId(), target, structureRevision,
+                    UUID.randomUUID());
         } catch (RuntimeException invalid) {
             sink.reply("command.land.delete.failed", Map.of("reason", "delete.failed"));
             return;

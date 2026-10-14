@@ -16,6 +16,27 @@ import java.util.UUID;
  * sessionGeneration} and {@code structureRevision} — so any stale or
  * unverifiable confirmation fails closed in the validator instead of passing
  * by default.
+ *
+ * <p>{@code operationId} is the idempotency key of this operation. Chat
+ * handlers mint a fresh key per accepted execution; the typed public entry
+ * carries the caller-supplied key through. A {@code null} key preserves the
+ * legacy behaviour: the saga mints its own key deep inside, so resubmits run
+ * as independent operations. A non-null key is carried end to end into the
+ * ledger, so a resubmit converges on the recorded result instead of running
+ * twice. Validators additionally treat an explicitly tracked operation
+ * (see {@code tracked} below) as sessionless: session-binding tokens that
+ * are absent are skipped (the typed entry has no wand session to bind to)
+ * while the structure token stays required and enforced. Legacy requests
+ * without a key keep the historical strict behaviour, so existing callers
+ * observe no change.
+ *
+ * <p>{@code tracked} marks an explicitly tracked operation: one that
+ * carries an idempotency key end to end and has no wand session to bind
+ * to (the typed public entry). Validators skip only absent session-binding
+ * tokens for tracked operations; the structure token stays required.
+ * Tracking without a key is rejected, and untracked requests keep the
+ * historical strict behaviour even when they happen to carry a key, so a
+ * future caller can never silently inherit the exemption.
  */
 public record ShrinkRequest(
         OwnerRef owner,
@@ -25,7 +46,9 @@ public record ShrinkRequest(
         Set<ChunkKey> delta,
         Long selectionRevision,
         Long sessionGeneration,
-        Long structureRevision) {
+        Long structureRevision,
+        UUID operationId,
+        boolean tracked) {
 
     public ShrinkRequest {
         Objects.requireNonNull(owner, "owner");
@@ -52,5 +75,26 @@ public record ShrinkRequest(
         if (structureRevision != null && structureRevision < 0) {
             throw new IllegalArgumentException("structureRevision must not be negative");
         }
+        if (tracked && operationId == null) {
+            throw new IllegalArgumentException("tracked operations carry an operationId");
+        }
+    }
+
+    /**
+     * Legacy eight-argument form without an idempotency key. Delegates
+     * untracked with a {@code null} key so historical callers keep the
+     * legacy mint-inside behaviour unchanged.
+     */
+    public ShrinkRequest(
+            OwnerRef owner,
+            UUID actorUuid,
+            UUID worldId,
+            LandId targetLandId,
+            Set<ChunkKey> delta,
+            Long selectionRevision,
+            Long sessionGeneration,
+            Long structureRevision) {
+        this(owner, actorUuid, worldId, targetLandId, delta, selectionRevision,
+                sessionGeneration, structureRevision, null, false);
     }
 }

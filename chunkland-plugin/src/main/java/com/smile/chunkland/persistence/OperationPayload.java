@@ -83,7 +83,7 @@ public record OperationPayload(
         Objects.requireNonNull(actorUuid, "actorUuid");
         Objects.requireNonNull(worldUuid, "worldUuid");
         Objects.requireNonNull(chunkSet, "chunkSet");
-        if (chunkSet.isEmpty()) {
+        if (chunkSet.isEmpty() && !"RENAME".equals(operationType)) {
             throw new IllegalArgumentException("chunkSet must not be empty");
         }
         if (priceMinorUnits < 0) {
@@ -241,6 +241,26 @@ public record OperationPayload(
         return new OperationPayload(operationId, "DELETE", actorUuid, worldUuid, targetLandId,
                 chunkSet, refundMinorUnits, economyProviderId, null,
                 createdAt, createdAt, CURRENT_SCHEMA_VERSION, landDisplayName, null, null);
+    }
+
+    /**
+     * Rename payload: a rename swaps only the display name and key, so it
+     * carries no chunk set. The empty set is legal only for this type (the
+     * constructor carve-out above); every other type keeps the non-empty
+     * requirement, and no recovery path replays a rename row.
+     */
+    public static OperationPayload rename(
+            UUID operationId,
+            UUID actorUuid,
+            UUID worldUuid,
+            LandId targetLandId,
+            String newDisplayName,
+            String economyProviderId,
+            Instant createdAt) {
+        Objects.requireNonNull(targetLandId, "targetLandId");
+        return new OperationPayload(operationId, "RENAME", actorUuid, worldUuid, targetLandId,
+                List.of(), 0L, economyProviderId, null,
+                createdAt, createdAt, CURRENT_SCHEMA_VERSION, newDisplayName, null, null);
     }
 
     public String toJson() {

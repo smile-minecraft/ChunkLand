@@ -34,8 +34,9 @@ import org.bukkit.entity.Player;
  * a live selection session that targets that same land and holds at least one
  * delta chunk; an {@link ExpandRequest} is built from the session delta plus
  * the full token triple (selection revision, session generation and the
- * session base structure revision) and handed to the saga. The saga owns the
- * operation id end to end, mirroring the claim flow.
+ * session base structure revision) plus a freshly minted operation id, and
+ * handed to the saga. The saga carries that id as the Economy idempotency
+ * key and records it on the ledger row, mirroring the claim flow.
  *
  * <p>Fail-closed contract: console senders, wilderness positions, missing or
  * empty selections, sessions without a target, a session target that does not
@@ -258,7 +259,7 @@ public final class ExpandCommandHandler implements ManagementGatedHandler {
         try {
             request = new ExpandRequest(gateRequestOwner(gateTarget, actor), actor, session.worldId(),
                     gateRequest.landId(), wilderness, session.selectionRevision(),
-                    session.sessionGeneration(), session.baseStructureRevision());
+                    session.sessionGeneration(), session.baseStructureRevision(), UUID.randomUUID(), false);
         } catch (RuntimeException invalid) {
             sink.reply("command.land.expand.failed", Map.of("reason", "expand.failed"));
             return;
@@ -396,7 +397,7 @@ public final class ExpandCommandHandler implements ManagementGatedHandler {
         try {
             request = new ExpandRequest(resolveRequestOwner(target.get(), actor), actor, session.worldId(),
                     target.get(), delta, session.selectionRevision(),
-                    session.sessionGeneration(), session.baseStructureRevision());
+                    session.sessionGeneration(), session.baseStructureRevision(), UUID.randomUUID(), false);
         } catch (RuntimeException invalid) {
             sink.reply("command.land.expand.failed", Map.of("reason", "expand.failed"));
             return;

@@ -190,7 +190,8 @@ public final class DeleteSaga {
         if (fireDeletePre(plan)) {
             return completed(DeleteOutcome.rejected(PublicEventCancelledException.DIAGNOSTIC_KEY));
         }
-        final UUID operationId = UUID.randomUUID();
+        final UUID operationId = request.operationId() != null
+                ? request.operationId() : UUID.randomUUID();
         final Set<String> reservationKeys = reservationKeys(plan);
         if (!reservations.tryAcquire(reservationKeys, operationId)) {
             return completed(DeleteOutcome.rejected("delete.reservation_conflict"));
