@@ -11,6 +11,7 @@ import com.smile.chunkland.api.permission.PermissionResolver;
 import com.smile.chunkland.api.permission.PermissionState;
 import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.api.rule.LandRuleType;
+import com.smile.chunkland.protection.LandAuthorisationSnapshot;
 import com.smile.chunkland.runtime.index.LandRegistry;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import java.util.Objects;
@@ -35,6 +36,7 @@ public final class ChunkLandReadApi implements ChunkLandApi {
     private final ProtectionDepthLookup depthLookup;
     private final BooleanSupplier readiness;
     private final BlockDecisionLookup blockDecisions;
+    private final Supplier<LandAuthorisationSnapshot> policySnapshots;
 
     /**
      * Read API without a block decision source: {@link #isReady()} reports ready
@@ -72,12 +74,44 @@ public final class ChunkLandReadApi implements ChunkLandApi {
                             ProtectionDepthLookup depthLookup,
                             BooleanSupplier readiness,
                             BlockDecisionLookup blockDecisions) {
+        this(registrySupplier, contextProvider, ruleLookup, depthLookup, readiness, blockDecisions,
+                null);
+    }
+
+    /**
+     * Full read API with the durable policy generation overlaid on served
+     * snapshots.
+     *
+     * <p>Structural snapshots freeze their policy revision once the land
+     * exists — authorisation writes only republish the authorisation
+     * snapshot — so without the overlay an external caller that records
+     * the generation through {@link #getLandSnapshot} and sends it back
+     * with a mutation would always lag one write behind and every second
+     * change would reject as stale. The overlay serves the same durable
+     * generation the typed write entry compares against; when the
+     * authorisation snapshot is missing or unloaded both sides fall back
+     * to the structural value, so the two ends stay consistent in every
+     * combination. Protection decisions read the registry directly and
+     * never pass through here.
+     *
+     * @param policySnapshots live authorisation snapshots carrying the
+     *         durable policy generation per land; {@code null} serves the
+     *         structural snapshots unchanged
+     */
+    public ChunkLandReadApi(Supplier<LandRegistry> registrySupplier,
+                            PermissionContextProvider contextProvider,
+                            LandRuleLookup ruleLookup,
+                            ProtectionDepthLookup depthLookup,
+                            BooleanSupplier readiness,
+                            BlockDecisionLookup blockDecisions,
+                            Supplier<LandAuthorisationSnapshot> policySnapshots) {
         this.registrySupplier = Objects.requireNonNull(registrySupplier, "registrySupplier");
         this.contextProvider = Objects.requireNonNull(contextProvider, "contextProvider");
         this.ruleLookup = Objects.requireNonNull(ruleLookup, "ruleLookup");
         this.depthLookup = Objects.requireNonNull(depthLookup, "depthLookup");
         this.readiness = Objects.requireNonNull(readiness, "readiness");
         this.blockDecisions = Objects.requireNonNull(blockDecisions, "blockDecisions");
+        this.policySnapshots = policySnapshots;
     }
 
     public ChunkLandReadApi(LandRegistryStore store) {
@@ -100,7 +134,41 @@ public final class ChunkLandReadApi implements ChunkLandApi {
         LandRegistry snapshot = registrySupplier.get();
         Objects.requireNonNull(snapshot, "registry snapshot must not be null");
         LandSnapshot found = snapshot.land(landId);
-        return Optional.ofNullable(found);
+        if (found == null) {
+            return Optional.empty();
+        }
+        return Optional.of(overlayPolicyRevision(landId, found));
+    }
+
+    /**
+     * Serve the durable policy generation on a structural snapshot. A
+     * land absent from a loaded authorisation snapshot pins zero, the
+     * durable value of a land no authorisation write has touched yet;
+     * anything unreadable serves the structural snapshot unchanged and
+     * the write entry falls back the same way.
+     */
+    private LandSnapshot overlayPolicyRevision(LandId landId, LandSnapshot structural) {
+        Supplier<LandAuthorisationSnapshot> source = policySnapshots;
+        if (source == null) {
+            return structural;
+        }
+        LandAuthorisationSnapshot policies;
+        try {
+            policies = source.get();
+        } catch (RuntimeException unavailable) {
+            return structural;
+        }
+        if (policies == null || !policies.loaded()) {
+            return structural;
+        }
+        Long revision = policies.policyRevision(landId).orElse(0L);
+        if (revision == structural.landPolicyRevision()) {
+            return structural;
+        }
+        return new LandSnapshot(structural.id(), structural.displayName(), structural.nameKey(),
+                structural.ownerRef(), structural.worldId(), structural.chunks(),
+                structural.subLands(), structural.structureRevision(), revision,
+                structural.createdAt(), structural.updatedAt());
     }
 
     @Override

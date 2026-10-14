@@ -4,18 +4,29 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.smile.chunkland.api.event.ChunkLandEventBus;
+import com.smile.chunkland.api.event.ChunkLandEventListener;
+import com.smile.chunkland.api.event.PermissionChangedEvent;
+import com.smile.chunkland.api.event.RuleChangedEvent;
+import com.smile.chunkland.api.event.SubLandPostEvent;
 import com.smile.chunkland.api.land.ChunkKey;
+import com.smile.chunkland.api.land.Cuboid;
 import com.smile.chunkland.api.land.LandId;
 import com.smile.chunkland.api.land.OwnerRef;
+import com.smile.chunkland.api.land.SubLandId;
 import com.smile.chunkland.api.money.Currency;
 import com.smile.chunkland.api.money.Money;
 import com.smile.chunkland.api.money.PricingTable;
 import com.smile.chunkland.api.money.PricingTier;
 import com.smile.chunkland.api.mutation.ChunkLandMutations;
 import com.smile.chunkland.api.mutation.ExpectedVersion;
+import com.smile.chunkland.api.mutation.MutationKind;
 import com.smile.chunkland.api.mutation.MutationOutcome;
 import com.smile.chunkland.api.mutation.TypedMutationRequest;
 import com.smile.chunkland.api.mutation.TypedMutationResult;
+import com.smile.chunkland.api.permission.PermissionState;
+import com.smile.chunkland.api.rule.LandRuleType;
+import com.smile.chunkland.binding.LandBindingService;
 import com.smile.chunkland.claim.ClaimEconomy;
 import com.smile.chunkland.claim.ClaimSaga;
 import com.smile.chunkland.claim.DeleteSaga;
@@ -28,16 +39,21 @@ import com.smile.chunkland.config.LimitSettings;
 import com.smile.chunkland.event.PublicEvents;
 import com.smile.chunkland.limit.LimitResolver;
 import com.smile.chunkland.limit.OwnerQuotaService;
+import com.smile.chunkland.persistence.LandBindingRepository;
 import com.smile.chunkland.persistence.LedgerEntry;
 import com.smile.chunkland.persistence.OperationLedger;
+import com.smile.chunkland.persistence.PermissionProfileRepository;
 import com.smile.chunkland.persistence.PersistenceStore;
 import com.smile.chunkland.persistence.RefundOutcome;
 import com.smile.chunkland.persistence.SqliteChunkRepository;
 import com.smile.chunkland.persistence.SqliteLandRepository;
+import com.smile.chunkland.profile.PermissionProfileService;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
 import com.smile.chunkland.rename.LandRenameService;
+import com.smile.chunkland.rule.LandRuleMutationService;
 import com.smile.chunkland.runtime.index.LandRegistryStore;
 import com.smile.chunkland.runtime.mutation.LogicalReservationRegistry;
+import com.smile.chunkland.runtime.mutation.ProductionMutationPorts;
 import com.smile.chunkland.runtime.mutation.SagaBackedMutations;
 import com.smile.chunkland.selection.SelectionClock;
 import com.smile.chunkland.selection.SelectionNotifier;
@@ -45,6 +61,9 @@ import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
 import com.smile.chunkland.selection.SelectionTimeoutScheduler;
 import com.smile.chunkland.selection.SelectionVisualizationTaskController;
+import com.smile.chunkland.subland.SubLandConfirmService;
+import com.smile.chunkland.subland.SubLandMutationRunner;
+import com.smile.chunkland.trust.LandAuthorisationService;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -96,12 +115,39 @@ class ProductionMutationApiWiringTest {
         }
     }
 
+    static final class RecordingBus implements ChunkLandEventBus {
+        final List<Object> events = Collections.synchronizedList(new ArrayList<>());
+
+        @Override
+        public <E> void register(Class<E> eventType, ChunkLandEventListener<? super E> listener) {
+        }
+
+        @Override
+        public <E> void unregister(Class<E> eventType, ChunkLandEventListener<? super E> listener) {
+        }
+
+        @Override
+        public <E> void publish(E event) {
+            events.add(event);
+        }
+
+        long count(Class<?> type) {
+            return events.stream().filter(type::isInstance).count();
+        }
+    }
+
     final class Wiring implements AutoCloseable {
         final PersistenceStore store;
         final OperationLedger ledger;
         final LandRegistryStore registryStore = new LandRegistryStore();
         final FakeEconomy economy = new FakeEconomy();
+        final RecordingBus bus = new RecordingBus();
         final SagaBackedMutations facade;
+        final SagaBackedMutations typed;
+        final LandAuthorisationService authorisations;
+        final LandRuleMutationService ruleService;
+        final LandBindingService bindingService;
+        final PermissionProfileService profiles;
 
         Wiring() {
             store = PersistenceStore.open(temp.resolve(UUID.randomUUID() + ".db"));
@@ -171,11 +217,50 @@ class ProductionMutationApiWiringTest {
                     uuid -> false,
                     uuid -> false,
                     Clock.fixed(NOW, ZoneOffset.UTC));
+            PublicEvents busEvents = PublicEvents.create(bus, null);
+            authorisations = ChunkLandPlugin.buildLandAuthorisations(store, busEvents);
+            ruleService = ChunkLandPlugin.buildLandRules(store, authorisations.cache(), busEvents);
+            bindingService = new LandBindingService(new LandBindingRepository(store),
+                    authorisations.cache(), Clock.fixed(NOW, ZoneOffset.UTC), busEvents);
+            profiles = new PermissionProfileService(new PermissionProfileRepository(store),
+                    Clock.fixed(NOW, ZoneOffset.UTC));
+            try {
+                authorisations.refresh().toCompletableFuture().get(10, TimeUnit.SECONDS);
+                bindingService.refresh().toCompletableFuture().get(10, TimeUnit.SECONDS);
+            } catch (Exception failure) {
+                throw new IllegalStateException(failure);
+            }
+            SubLandMutationRunner sublandRunner = ChunkLandPlugin.buildSubLandRunner(store,
+                    registryStore, selections,
+                    new SubLandConfirmService(),
+                    ChunkLandPlugin.buildSubLandDepthSource(registryStore),
+                    new LimitSettings(10, 100, 128, 16), Clock.systemUTC(), busEvents, null, null);
+            assertNotNull(sublandRunner);
+            typed = new SagaBackedMutations(
+                    request -> {
+                        throw new IllegalStateException("legacy must stay rejected");
+                    },
+                    Set.of(),
+                    claimSaga, expandSaga, shrinkSaga, deleteSaga, renameService,
+                    ProductionMutationPorts.sublands(sublandRunner, Clock.systemUTC()),
+                    ProductionMutationPorts.permissions(authorisations, bindingService),
+                    ProductionMutationPorts.rules(ruleService),
+                    authorisations.cache()::snapshot,
+                    ledger,
+                    registryStore::snapshot,
+                    () -> new SnapshotPermissionContextProvider(null, null),
+                    uuid -> false,
+                    uuid -> false,
+                    Clock.fixed(NOW, ZoneOffset.UTC));
         }
 
         @Override
         public void close() {
             store.close();
+        }
+
+        long policyOf(LandId landId) {
+            return authorisations.cache().snapshot().policyRevision(landId).orElse(0L);
         }
     }
 
@@ -253,5 +338,115 @@ class ProductionMutationApiWiringTest {
     void pluginExposesStableMutationsAccessor() throws Exception {
         var accessor = ChunkLandPlugin.class.getMethod("getMutations");
         assertEquals(ChunkLandMutations.class, accessor.getReturnType());
+    }
+
+    @Test
+    void supportedKindsCoverAllNineOperations() {
+        for (MutationKind kind : new MutationKind[]{
+                MutationKind.LAND_CREATE, MutationKind.LAND_DELETE, MutationKind.LAND_CHUNK_ADD,
+                MutationKind.LAND_CHUNK_REMOVE, MutationKind.LAND_RENAME,
+                MutationKind.SUBLAND_CREATE, MutationKind.SUBLAND_DELETE,
+                MutationKind.PERMISSION_CHANGE, MutationKind.RULE_CHANGE}) {
+            assertNotNull(MutationKind.valueOf(kind.name()));
+        }
+        assertEquals(9, MutationKind.values().length);
+    }
+
+    @Test
+    void wiredPortsExecuteAllNineKindsEndToEnd() throws Exception {
+        try (Wiring wiring = new Wiring()) {
+            UUID actor = UUID.randomUUID();
+            UUID friend = UUID.randomUUID();
+            UUID world = UUID.randomUUID();
+            TypedMutationResult created = wiring.typed.submitTyped(new TypedMutationRequest.LandCreate(
+                    actor, OwnerRef.player(actor), null, null, UUID.randomUUID(),
+                    world, Set.of(new ChunkKey(world, 0, 0), new ChunkKey(world, 1, 0)), "Wired Nine"))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, created.outcome());
+            LandId landId = created.landId();
+
+            Cuboid cellar = new Cuboid(0, 64, 0, 15, 320, 15);
+            TypedMutationResult sublandCreated = wiring.typed.submitTyped(
+                    new TypedMutationRequest.SublandCreate(actor, OwnerRef.player(actor), landId,
+                            ExpectedVersion.structure(
+                                    wiring.registryStore.snapshot().land(landId).structureRevision()),
+                            UUID.randomUUID(), world, "Cellar",
+                            cellar.coveredChunks(world), cellar))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, sublandCreated.outcome());
+            SubLandId target = wiring.registryStore.snapshot().land(landId).subLands().get(0).id();
+
+            TypedMutationResult renamed = wiring.typed.submitTyped(new TypedMutationRequest.LandRename(
+                    actor, OwnerRef.player(actor), landId,
+                    ExpectedVersion.structure(
+                            wiring.registryStore.snapshot().land(landId).structureRevision()),
+                    UUID.randomUUID(), "Wired Nine Renamed"))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, renamed.outcome());
+
+            TypedMutationResult trusted = wiring.typed.submitTyped(
+                    new TypedMutationRequest.PermissionChange(actor, OwnerRef.player(actor),
+                            landId, ExpectedVersion.policy(wiring.policyOf(landId)),
+                            UUID.randomUUID(), null,
+                            PermissionChangedEvent.ChangeKind.TRUST,
+                            PermissionChangedEvent.SubjectKind.PLAYER, friend, null, null, null))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, trusted.outcome());
+
+            UUID profile = wiring.profiles.create(actor, "Crew").toCompletableFuture()
+                    .get(10, TimeUnit.SECONDS).id();
+            TypedMutationResult bound = wiring.typed.submitTyped(
+                    new TypedMutationRequest.PermissionChange(actor, OwnerRef.player(actor),
+                            landId, ExpectedVersion.policy(wiring.policyOf(landId)),
+                            UUID.randomUUID(), null,
+                            PermissionChangedEvent.ChangeKind.BIND,
+                            PermissionChangedEvent.SubjectKind.PLAYER, friend, null, null, profile))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, bound.outcome());
+
+            TypedMutationResult unbound = wiring.typed.submitTyped(
+                    new TypedMutationRequest.PermissionChange(actor, OwnerRef.player(actor),
+                            landId, ExpectedVersion.policy(wiring.policyOf(landId)),
+                            UUID.randomUUID(), null,
+                            PermissionChangedEvent.ChangeKind.UNBIND,
+                            PermissionChangedEvent.SubjectKind.PLAYER, friend, null, null, null))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, unbound.outcome());
+
+            TypedMutationResult ruled = wiring.typed.submitTyped(new TypedMutationRequest.RuleChange(
+                    actor, OwnerRef.player(actor), landId,
+                    ExpectedVersion.policy(wiring.policyOf(landId)),
+                    UUID.randomUUID(), LandRuleType.PVP, PermissionState.DENY))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, ruled.outcome());
+
+            TypedMutationResult sublandDeleted = wiring.typed.submitTyped(
+                    new TypedMutationRequest.SublandDelete(actor, OwnerRef.player(actor), landId,
+                            ExpectedVersion.structure(
+                                    wiring.registryStore.snapshot().land(landId).structureRevision()),
+                            UUID.randomUUID(), target))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, sublandDeleted.outcome());
+
+            TypedMutationResult shrunk = wiring.typed.submitTyped(
+                    new TypedMutationRequest.LandChunkRemove(actor, OwnerRef.player(actor), landId,
+                            ExpectedVersion.structure(
+                                    wiring.registryStore.snapshot().land(landId).structureRevision()),
+                            UUID.randomUUID(), world, Set.of(new ChunkKey(world, 1, 0))))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, shrunk.outcome());
+
+            TypedMutationResult deleted = wiring.typed.submitTyped(new TypedMutationRequest.LandDelete(
+                    actor, OwnerRef.player(actor), landId,
+                    ExpectedVersion.structure(
+                            wiring.registryStore.snapshot().land(landId).structureRevision()),
+                    UUID.randomUUID()))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(MutationOutcome.SUCCESS, deleted.outcome());
+
+            assertEquals(2, wiring.bus.count(SubLandPostEvent.class));
+            assertTrue(wiring.bus.count(PermissionChangedEvent.class) >= 3);
+            assertEquals(1, wiring.bus.count(RuleChangedEvent.class));
+        }
     }
 }

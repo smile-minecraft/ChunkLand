@@ -486,6 +486,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
     private SubLandMutationRunner subLandRunner;
     private LandAuthorisationCache landAuthorisationCache;
     private LandAuthorisationService landAuthorisationService;
+    private LandBindingService landBindingService;
     /**
      * Durable per-land environment rule mutations on the shared store and
      * the shared authorisation cache. No command or GUI writes through it
@@ -2744,6 +2745,7 @@ public final class ChunkLandPlugin extends JavaPlugin {
         LandBindingService bindingService = authorisationStore == null ? null
                 : new LandBindingService(new LandBindingRepository(authorisationStore),
                         this.landAuthorisationCache, Clock.systemUTC(), this.publicEvents);
+        this.landBindingService = bindingService;
         java.util.function.Supplier<java.util.concurrent.CompletionStage<Void>> bindingRefresh =
                 bindingService == null
                         ? () -> java.util.concurrent.CompletableFuture.completedFuture(null)
@@ -6052,6 +6054,13 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * saga fields already reflect this enable generation. Any missing
      * part keeps the slot fail-closed ({@code null}) with a warning, so
      * external callers never run a half-wired flow.
+     *
+     * <p>The four newer kinds ride the same handle: SubLand commits go
+     * through the production SubLand runner, permission changes through
+     * the direct-trust and binding services, and rule changes through
+     * the conditional rule write. A missing seam only narrows its own
+     * kinds back to {@code mutation.unsupported}; the five original
+     * kinds keep working.
      */
     private void assembleLandMutations(SnapshotPermissionContextProvider atomicContexts) {
         ClaimStartupBootstrap bootstrap = this.claimStartup;
@@ -6065,6 +6074,36 @@ public final class ChunkLandPlugin extends JavaPlugin {
             this.landMutations = null;
             return;
         }
+        com.smile.chunkland.runtime.mutation.SublandWritePort sublandPort = null;
+        com.smile.chunkland.runtime.mutation.PermissionWritePort permissionPort = null;
+        com.smile.chunkland.runtime.mutation.RuleWritePort rulePort = null;
+        java.util.function.Supplier<
+                com.smile.chunkland.protection.LandAuthorisationSnapshot> policySnapshots = null;
+        try {
+            if (this.subLandRunner != null) {
+                sublandPort = com.smile.chunkland.runtime.mutation.ProductionMutationPorts.sublands(
+                        this.subLandRunner, Clock.systemUTC());
+            }
+            if (this.landAuthorisationService != null && this.landBindingService != null) {
+                permissionPort = com.smile.chunkland.runtime.mutation.ProductionMutationPorts.permissions(
+                        this.landAuthorisationService, this.landBindingService);
+            }
+            if (this.landRuleMutationService != null) {
+                rulePort = com.smile.chunkland.runtime.mutation.ProductionMutationPorts.rules(
+                        this.landRuleMutationService);
+            }
+            if (this.landAuthorisationCache != null) {
+                LandAuthorisationCache cache = this.landAuthorisationCache;
+                policySnapshots = cache::snapshot;
+            }
+        } catch (RuntimeException failure) {
+            getLogger().warning("ChunkLand typed subland/permission/rule ports stay unavailable: "
+                    + failure.getMessage());
+            sublandPort = null;
+            permissionPort = null;
+            rulePort = null;
+            policySnapshots = null;
+        }
         try {
             this.landMutations = new SagaBackedMutations(
                     request -> {
@@ -6072,7 +6111,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                     },
                     Set.of(),
                     this.claimSaga, this.expandSaga, this.shrinkSaga, this.deleteSaga,
-                    this.landRenameService, ledger,
+                    this.landRenameService, sublandPort, permissionPort, rulePort,
+                    policySnapshots, ledger,
                     store::snapshot,
                     () -> atomicContexts,
                     uuid -> {
@@ -7524,6 +7564,24 @@ public final class ChunkLandPlugin extends JavaPlugin {
     static ChunkLandReadApi buildReadApi(Supplier<com.smile.chunkland.runtime.index.LandRegistry> registrySupplier,
             ProtectionDepthLookup depthLookup, PermissionContextProvider contexts,
             ProtectionEngine engine, BooleanSupplier active, LandRuleLookup rules) {
+        return buildReadApi(registrySupplier, depthLookup, contexts, engine, active, rules, null);
+    }
+
+    /**
+     * Production assembly with permission, rule and block decisions wired
+     * plus the durable policy generation overlaid on served snapshots, so
+     * the generation an external caller records through
+     * {@code getLandSnapshot} is the same one the typed write entry
+     * compares against.
+     *
+     * @param policySnapshots live authorisation snapshots carrying the
+     *         durable policy generation per land; {@code null} serves the
+     *         structural snapshots unchanged
+     */
+    static ChunkLandReadApi buildReadApi(Supplier<com.smile.chunkland.runtime.index.LandRegistry> registrySupplier,
+            ProtectionDepthLookup depthLookup, PermissionContextProvider contexts,
+            ProtectionEngine engine, BooleanSupplier active, LandRuleLookup rules,
+            Supplier<com.smile.chunkland.protection.LandAuthorisationSnapshot> policySnapshots) {
         Supplier<com.smile.chunkland.runtime.index.LandRegistry> activeSupplier =
                 registrySupplier == null
                         ? com.smile.chunkland.runtime.index.LandRegistry::empty : registrySupplier;
@@ -7540,7 +7598,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 () -> activeGate.getAsBoolean() && engine != null && engine.isRegistryReady(),
                 engine == null
                         ? (actor, worldId, x, y, z, action, snapshot) -> null
-                        : engine::decideAtBlockOnSnapshot);
+                        : engine::decideAtBlockOnSnapshot,
+                policySnapshots);
     }
 
     /**
@@ -7592,7 +7651,8 @@ public final class ChunkLandPlugin extends JavaPlugin {
             LandAuthorisationCache liveAuth = authCache;
             rules = new SnapshotLandRuleLookup(liveDefaults::view, liveAuth::snapshot);
         }
-        return buildReadApi(gated, lookup, contexts, this.protectionEngine, () -> captured.active, rules);
+        return buildReadApi(gated, lookup, contexts, this.protectionEngine, () -> captured.active,
+                rules, authCache == null ? null : authCache::snapshot);
     }
 
     static Command commandForTest(String name) {
