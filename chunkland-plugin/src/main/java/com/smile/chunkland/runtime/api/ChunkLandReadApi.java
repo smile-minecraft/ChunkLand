@@ -148,10 +148,18 @@ public final class ChunkLandReadApi implements ChunkLandApi {
         Objects.requireNonNull(rule, "rule");
         LandRegistry snapshot = registrySupplier.get();
         Objects.requireNonNull(snapshot, "registry snapshot must not be null");
+        if (!isReady()) {
+            return Optional.empty();
+        }
         if (snapshot.land(landId) == null) {
             return Optional.empty();
         }
-        Optional<PermissionState> result = ruleLookup.getRule(landId, rule, snapshot);
+        Optional<PermissionState> result;
+        try {
+            result = ruleLookup.getRule(landId, rule, snapshot);
+        } catch (RuntimeException unavailable) {
+            return Optional.empty();
+        }
         return result != null ? result : Optional.empty();
     }
 

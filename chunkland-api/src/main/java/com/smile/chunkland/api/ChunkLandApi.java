@@ -50,7 +50,13 @@ public interface ChunkLandApi {
 
     /**
      * Effective rule state for {@code rule} on {@code landId}, or empty if the
-     * Land does not exist. Signature is provisional (see class Javadoc).
+     * Land does not exist, the index is not ready, or the rule rows are not
+     * loaded. Signature is provisional (see class Javadoc).
+     *
+     * <p>The query names the owning land's own policy. It carries no block
+     * position, so it never resolves which subland covers a position and never
+     * consults subland rules. Callers needing the decision at one position
+     * use {@link #decideAtBlock} instead.
      */
     Optional<PermissionState> getRule(LandId landId, LandRuleType rule);
 

@@ -217,6 +217,7 @@ import com.smile.chunkland.rename.LandRenameService;
 import com.smile.chunkland.rule.LandRuleMutationService;
 import com.smile.chunkland.rule.LandRuleView;
 import com.smile.chunkland.rule.LandRuleViewService;
+import com.smile.chunkland.rule.SnapshotLandRuleLookup;
 import com.smile.chunkland.trust.LandAuthorisationService;
 import com.smile.chunkland.wand.WandGiveHandler;
 import com.smile.chunkland.wand.WandFeedback;
@@ -7406,10 +7407,41 @@ public final class ChunkLandPlugin extends JavaPlugin {
      * report a hydrated index. A {@code null} provider keeps {@code can()}
      * fail-closed; a {@code null} engine keeps every block decision a DENY and
      * readiness false.
+     *
+     * <p>The rule query of this overload always answers empty. It exists only
+     * for tests and as a conservative fallback; production wiring uses the
+     * six-argument overload below, so calling this one from production code
+     * silently revives the empty-rule symptom.
      */
     static ChunkLandReadApi buildReadApi(Supplier<com.smile.chunkland.runtime.index.LandRegistry> registrySupplier,
             ProtectionDepthLookup depthLookup, PermissionContextProvider contexts,
             ProtectionEngine engine, BooleanSupplier active) {
+        return buildReadApi(registrySupplier, depthLookup, contexts, engine, active,
+                (landId, rule, snapshot) -> Optional.empty());
+    }
+
+    /**
+     * Production assembly with permission, rule and block decisions wired.
+     *
+     * <p>{@code can()} resolves through the same atomic context provider the
+     * protection engine uses, against the snapshot the read API observed, and
+     * {@code decideAtBlock()} delegates to the engine's snapshot-bound block
+     * decision, so external callers see exactly what the listeners enforce.
+     * {@code getRule()} resolves through the same land, world, global and
+     * built-in chain the engine uses, against the same observed land snapshot
+     * plus one captured config view and one captured durable snapshot. Each of
+     * those two sources is read exactly once per call through its own volatile
+     * reference, so a reload landing between the two reads can pair adjacent
+     * generations; each source on its own stays self-consistent, which is the
+     * same characteristic the engine's atomic provider has. Readiness requires the
+     * enable generation to be active and the engine to report a hydrated
+     * index. A {@code null} provider keeps {@code can()} fail-closed; a
+     * {@code null} rule source keeps {@code getRule()} empty; a {@code null}
+     * engine keeps every block decision a DENY and readiness false.
+     */
+    static ChunkLandReadApi buildReadApi(Supplier<com.smile.chunkland.runtime.index.LandRegistry> registrySupplier,
+            ProtectionDepthLookup depthLookup, PermissionContextProvider contexts,
+            ProtectionEngine engine, BooleanSupplier active, LandRuleLookup rules) {
         Supplier<com.smile.chunkland.runtime.index.LandRegistry> activeSupplier =
                 registrySupplier == null
                         ? com.smile.chunkland.runtime.index.LandRegistry::empty : registrySupplier;
@@ -7417,9 +7449,11 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 depthLookup == null ? (landId, snapshot) -> Optional.empty() : depthLookup;
         PermissionContextProvider activeContexts =
                 contexts == null ? (actor, landId, action, snapshot) -> null : contexts;
+        LandRuleLookup activeRules =
+                rules == null ? (landId, rule, snapshot) -> Optional.empty() : rules;
         BooleanSupplier activeGate = active == null ? () -> false : active;
         return new ChunkLandReadApi(activeSupplier, activeContexts,
-                (landId, rule, snapshot) -> Optional.empty(),
+                activeRules,
                 activeLookup,
                 () -> activeGate.getAsBoolean() && engine != null && engine.isRegistryReady(),
                 engine == null
@@ -7467,7 +7501,16 @@ public final class ChunkLandPlugin extends JavaPlugin {
                         : com.smile.chunkland.runtime.index.LandRegistry.empty();
         PermissionDefaultsCache defaults = this.permissionDefaults;
         PermissionContextProvider contexts = defaults == null ? null : defaults.provider();
-        return buildReadApi(gated, lookup, contexts, this.protectionEngine, () -> captured.active);
+        LandAuthorisationCache authCache = this.landAuthorisationCache;
+        LandRuleLookup rules;
+        if (defaults == null || authCache == null) {
+            rules = (landId, rule, snapshot) -> Optional.empty();
+        } else {
+            PermissionDefaultsCache liveDefaults = defaults;
+            LandAuthorisationCache liveAuth = authCache;
+            rules = new SnapshotLandRuleLookup(liveDefaults::view, liveAuth::snapshot);
+        }
+        return buildReadApi(gated, lookup, contexts, this.protectionEngine, () -> captured.active, rules);
     }
 
     static Command commandForTest(String name) {
