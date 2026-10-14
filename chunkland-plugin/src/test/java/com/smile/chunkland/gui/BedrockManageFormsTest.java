@@ -120,15 +120,18 @@ class BedrockManageFormsTest {
                 BedrockManageForms.Capability.EXPLAIN));
         assertEquals(BedrockManageForms.BedrockPath.MANAGE_FORM, paths.get(
                 BedrockManageForms.Capability.DELETE));
-        assertEquals(BedrockManageForms.BedrockPath.CHAT_DOWNGRADE, paths.get(
-                BedrockManageForms.Capability.SUBLAND), "multi-step selection flow stays chat");
-        assertEquals(BedrockManageForms.BedrockPath.CHAT_DOWNGRADE, paths.get(
-                BedrockManageForms.Capability.GROUP));
-        assertEquals(BedrockManageForms.BedrockPath.CHAT_DOWNGRADE, paths.get(
-                BedrockManageForms.Capability.PROFILE));
-        assertEquals(BedrockManageForms.BedrockPath.CHAT_DOWNGRADE, paths.get(
+        assertEquals(BedrockManageForms.BedrockPath.MANAGE_FORM, paths.get(
+                BedrockManageForms.Capability.SUBLAND),
+                "subland now ships a real form path through the shared subland slot");
+        assertEquals(BedrockManageForms.BedrockPath.MANAGE_FORM, paths.get(
+                BedrockManageForms.Capability.GROUP),
+                "groups now ship a real form path through the shared group slot");
+        assertEquals(BedrockManageForms.BedrockPath.MANAGE_FORM, paths.get(
+                BedrockManageForms.Capability.PROFILE),
+                "profiles now ship a real form path through the shared profile slot");
+        assertEquals(BedrockManageForms.BedrockPath.MANAGE_FORM, paths.get(
                 BedrockManageForms.Capability.LAND_RULE),
-                "no dedicated rule slot exists; the route must say so instead of faking success");
+                "rules now ship a real form path through the shared rule slot");
     }
 
     // ------------------------------------------------------------------

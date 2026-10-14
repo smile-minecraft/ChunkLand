@@ -18,13 +18,23 @@ import com.smile.chunkland.api.land.LandName;
 import com.smile.chunkland.api.land.LandSnapshot;
 import com.smile.chunkland.api.land.OwnerRef;
 import com.smile.chunkland.capability.Capabilities;
+import com.smile.chunkland.adapter.gui.ManagementRosterController;
 import com.smile.chunkland.command.BedrockManageFormHandler;
 import com.smile.chunkland.command.LandCommand;
+import com.smile.chunkland.command.LandRuleCommandHandler;
 import com.smile.chunkland.command.ManageGuiCommandHandler;
 import com.smile.chunkland.command.ManagementGateResolver;
+import com.smile.chunkland.command.OfflinePlayerResolver;
+import com.smile.chunkland.command.PlayerScheduler;
 import com.smile.chunkland.command.ReplySink;
+import com.smile.chunkland.command.RosterChangeOperation;
 import com.smile.chunkland.gui.BedrockFormNavigator;
+import com.smile.chunkland.gui.BedrockManageForms;
+import com.smile.chunkland.gui.GuiClickContext;
+import com.smile.chunkland.gui.GuiNavigator;
+import com.smile.chunkland.gui.GuiPage;
 import com.smile.chunkland.gui.ManagementGuiModel;
+import com.smile.chunkland.gui.ManagementRosterTexts;
 import com.smile.chunkland.protection.SnapshotPermissionContextProvider;
 import com.smile.chunkland.runtime.api.PermissionContextProvider;
 import com.smile.chunkland.runtime.index.LandRegistry;
@@ -487,6 +497,164 @@ class BedrockManageWiringTest {
         } catch (java.lang.reflect.InvocationTargetException failure) {
             throw (RuntimeException) failure.getCause();
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 正式接線：全部接縫加晚註冊槽位解析
+    // ------------------------------------------------------------------
+
+    private static int rootIndexOf(
+            com.smile.chunkland.gui.BedrockManageForms.Capability capability) {
+        java.util.List<com.smile.chunkland.gui.BedrockManageForms.CapabilityRoute> routes =
+                com.smile.chunkland.gui.BedrockManageForms.routes();
+        for (int index = 0; index < routes.size(); index++) {
+            if (routes.get(index).capability() == capability) {
+                return index;
+            }
+        }
+        throw new IllegalStateException("no route for " + capability);
+    }
+
+    private static com.smile.acelib.form.FormResponse valid(int button) {
+        return new com.smile.acelib.form.FormResponse(
+                com.smile.acelib.form.FormResponseStatus.VALID, button, java.util.List.of());
+    }
+
+    static final class RecordingHandler implements LandCommand.Handler {
+        final AtomicLong calls = new AtomicLong();
+        volatile String[] lastArgs;
+
+        @Override
+        public void handle(org.bukkit.command.CommandSender sender, String[] args,
+                ReplySink sink) {
+            calls.incrementAndGet();
+            lastArgs = args == null ? null : args.clone();
+        }
+    }
+
+    /**
+     * 接線測試用的真實名單控制器：與正式外掛同一個原始字串入口，
+     * 回報只記錄鍵。規則路徑不會碰到它，断言保持為空即證明分流正確。
+     */
+    private static ManagementRosterController wiringRoster(
+            java.util.List<String> tells) {
+        ManagementRosterController.Navigation navigation =
+                new ManagementRosterController.Navigation() {
+                    @Override
+                    public GuiNavigator navigator() {
+                        return null;
+                    }
+
+                    @Override
+                    public void render(UUID viewer, long generation, GuiPage page) {
+                    }
+
+                    @Override
+                    public void back(GuiClickContext click) {
+                    }
+                };
+        ManagementRosterController.Rosters rosters =
+                new ManagementRosterController.Rosters() {
+                    @Override
+                    public Optional<Set<UUID>> members(LandId landId) {
+                        return Optional.of(Set.of());
+                    }
+
+                    @Override
+                    public Optional<Set<UUID>> bans(LandId landId) {
+                        return Optional.of(Set.of());
+                    }
+
+                    @Override
+                    public UUID ownerOf(LandId landId) {
+                        return OWNER;
+                    }
+                };
+        RosterChangeOperation operation = new RosterChangeOperation(
+                name -> Optional.empty(),
+                new OfflinePlayerResolver(name -> Optional.empty(), null, null),
+                PlayerScheduler.direct(),
+                (viewer, landId, slot) -> true, viewer -> true, landId -> true,
+                () -> true, null, slot -> null);
+        ManagementRosterController.People people =
+                new ManagementRosterController.People() {
+                    @Override
+                    public String nameOf(UUID playerId) {
+                        return null;
+                    }
+
+                    @Override
+                    public java.util.List<com.smile.chunkland.gui.ManagementRosterPages.Entry> online() {
+                        return java.util.List.of();
+                    }
+                };
+        return new ManagementRosterController(navigation, rosters,
+                (viewer, landId, slot) -> true,
+                new ManagementRosterController.Changes(null, null, null, null),
+                people, (viewer, key, vars) -> tells.add(key),
+                (viewer, task) -> task.run(),
+                viewer -> ManagementRosterTexts.english(),
+                operation, viewer -> player(viewer));
+    }
+
+    private static java.util.List<com.smile.chunkland.rule.LandRuleView> elevenRuleViews() {
+        java.util.List<com.smile.chunkland.rule.LandRuleView> views = new java.util.ArrayList<>();
+        for (com.smile.chunkland.api.rule.LandRuleType rule
+                : com.smile.chunkland.api.rule.LandRuleType.values()) {
+            views.add(new com.smile.chunkland.rule.LandRuleView(rule,
+                    com.smile.chunkland.api.permission.PermissionState.INHERIT,
+                    com.smile.chunkland.api.permission.PermissionState.DENY,
+                    com.smile.chunkland.rule.LandRuleView.Source.BUILT_IN));
+        }
+        return views;
+    }
+
+    /**
+     * 正式的完整組裝：傳入全部接縫，並且規則槽位在組裝「之後」才放入
+     * 同一份活的處理器對應表（正式外掛就是這個順序）。規則表單送出必須
+     * 到達規則槽位並完成寫入，證明晚註冊的槽位解析得到。
+     */
+    @Test
+    void fullAssemblyResolvesLateRegisteredRuleSlot() {
+        StubFormService forms = new StubFormService();
+        StubBedrockService bedrock = new StubBedrockService(forms);
+        bedrock.bedrock = true;
+        Capabilities capabilities = fullCapabilities(bedrock, new InlineScheduler());
+        Map<String, LandCommand.Handler> handlers = new HashMap<>();
+        RecordingHandler rule = new RecordingHandler();
+        java.util.List<String> rosterTells = new java.util.concurrent.CopyOnWriteArrayList<>();
+        BedrockManageFormHandler manage = ChunkLandPlugin.buildBedrockManageForms(
+                capabilities, fixed(ownerRequest()),
+                (actor, landId) -> ManagementGuiModel.unavailable(), handlers, List::of, null,
+                wiringRoster(rosterTells),
+                landId -> Optional.of(elevenRuleViews()),
+                (actor, landId, action) -> Optional.of(
+                        com.smile.chunkland.api.permission.PermissionState.DENY),
+                (landId, ruleType) -> Optional.of(new LandRuleCommandHandler.Baseline(
+                        com.smile.chunkland.api.permission.PermissionState.INHERIT, 11L)),
+                actor -> Optional.of(new BedrockManageFormHandler.SublandTokens(7L, 3L)),
+                viewer -> true, () -> true);
+        assertNotNull(manage, "the full assembly wires the manage branch");
+
+        // 規則槽位在組裝之後才註冊，與正式外掛的順序一致。
+        handlers.put("rule", rule);
+
+        RecordingSink sink = new RecordingSink();
+        manage.handle(player(OWNER), new String[] {"manage"}, sink);
+        assertEquals(1, forms.sends.get(), "the root menu opens");
+
+        forms.lastCallback.accept(valid(rootIndexOf(BedrockManageForms.Capability.LAND_RULE)));
+        forms.lastCallback.accept(valid(0));
+        forms.lastCallback.accept(valid(BedrockManageForms.RULE_ALLOW_BUTTON));
+
+        assertEquals(1, rule.calls.get(),
+                "the rule submit reaches the late-registered rule slot");
+        String expectedRule =
+                com.smile.chunkland.api.rule.LandRuleType.values()[0].name();
+        assertEquals(java.util.List.of("rule", expectedRule, "ALLOW"),
+                java.util.List.of(rule.lastArgs),
+                "Bedrock submits the same args the chat command would");
+        assertTrue(rosterTells.isEmpty(), "the rule path never touches the roster entry");
     }
 
     private static Set<String> placeholders(String template) {

@@ -149,7 +149,13 @@ class NoAceLibImplDependencyTest {
                 || ref.startsWith("com.smile.acelib.form.FormSpec$")
                 || ref.equals("com.smile.acelib.form.FormSendResult")
                 || ref.equals("com.smile.acelib.form.FormResponse")
-                || ref.equals("com.smile.acelib.form.FormResponseStatus");
+                || ref.equals("com.smile.acelib.form.FormResponseStatus")
+                // Custom-form answers arrive only as these public value types
+                // behind the supported FormResponse.values(); reading a text
+                // input or a dropdown without them is impossible, and none of
+                // them is an implementation class.
+                || ref.equals("com.smile.acelib.form.FormValue")
+                || ref.startsWith("com.smile.acelib.form.FormValue$");
             if (!allowed) {
                 return ref;
             }

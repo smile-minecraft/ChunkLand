@@ -209,6 +209,7 @@ command:
       denied: "<red>Cannot open the management menu: stand inside a land you manage and try again.</red>"
       bedrock:
         unsupported: "<yellow>That step is not available as a Bedrock form yet. Use /land <subcommand> in chat instead.</yellow>"
+        forms_unavailable: "<yellow>Bedrock forms are unavailable (<reason>). Use /land <subcommand> in chat instead.</yellow>"
     bypass:
       console: "<red>Only players can toggle admin bypass.</red>"
       usage: "<yellow>Usage: /land bypass [on|off]</yellow>"
@@ -790,19 +791,91 @@ bedrock:
       delete: "Delete land"
     trust:
       title: "Members"
-      content: "Choose an action. For offline players use the chat command."
+      content: "Choose an action, or enter a name below. Offline players: use the name entry in the form."
       add: "Trust a player"
       remove: "Untrust a player"
     ban:
       title: "Banned players"
-      content: "Choose an action. For offline players use the chat command."
+      content: "Choose an action, or enter a name below. Offline players: use the name entry in the form."
       add: "Ban a player"
       remove: "Unban a player"
     choice:
       title: "<value>: choose a player"
-      content: "Choose the player to apply “<value>” to. For offline players use the chat command."
+      content: "Choose the player to apply “<value>” to, or enter a name for offline players."
       empty_title: "<value>: nobody online"
-      empty_content: "Nobody else is online right now. For offline players use the chat command."
+      empty_content: "Nobody else is online right now. Use the name entry instead; it also finds offline players."
+      input: "Enter a name"
+    name_input:
+      title: "<action>: enter a name"
+      content: "Type the player name for <action>. Known offline names work; unknown names are refused."
+      placeholder: "Player name"
+      submit: "Submit"
+    rule_list:
+      title: "Land rules (page <page>/<pages>)"
+      content: "Choose a rule to change. Page <page> of <pages>."
+    rule_confirm:
+      title: "Rule: <rule>"
+      content: "Rule <rule>: now <explicit> (effective <effective> from <source>). Choose the new value."
+      allow: "Allow"
+      deny: "Deny"
+      inherit: "Inherit"
+      cancel: "Cancel"
+    permission_confirm:
+      title: "Permission: <action>"
+      content: "Change <action> from <current> to <target>?"
+    confirm:
+      ok: "Confirm"
+      cancel: "Cancel"
+    subland:
+      title: "SubLands"
+      content: "Choose a SubLand step. Creation needs an active selection first."
+      select: "Start selection here"
+      create: "Create SubLand"
+      update: "Update SubLand"
+      delete: "Delete SubLand"
+      extend: "Extend SubLand"
+      empty_title: "No active selection"
+      empty_content: "There is no active selection to work on. Start a selection first, then come back."
+    group:
+      title: "Groups"
+      content: "Choose a group step. Groups live outside lands and outlive them."
+      create: "Create group"
+      list: "List groups"
+      add: "Add member"
+      remove: "Remove member"
+      delete: "Delete group"
+    group_member:
+      title: "<action>: choose group and player"
+      content: "Type the group and the player for <action>."
+      group_placeholder: "Group name or id"
+      player_placeholder: "Player name or id"
+      submit: "Submit"
+    profile:
+      title: "Permission profiles"
+      content: "Choose a profile step. Profiles live outside lands and outlive them."
+      create: "Create profile"
+      list: "List profiles"
+      set: "Set profile entry"
+      delete: "Delete profile"
+    profile_set:
+      title: "Set profile entry"
+      content: "Type the profile, then pick the permission and the new value."
+      profile_placeholder: "Profile name or id"
+      action_label: "Permission"
+      state_label: "Value"
+      submit: "Submit"
+    delete_choice:
+      title: "Delete <target>?"
+      content: "Delete <target>? A plain delete is refused while anything still uses it; force delete removes those uses as well."
+      delete: "Delete"
+      force_delete: "Delete with references"
+      keep: "Keep"
+    error:
+      title: "Something did not work"
+      content: "The step could not continue: <reason>. Go back and try again."
+    pager:
+      prev: "Previous"
+      next: "Next"
     delete:
       title: "Delete land"
       content: "Delete the land “<land_name>”? This cannot be undone. Confirming shows the delete prompt; follow the instruction in chat to finish."

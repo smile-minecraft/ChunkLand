@@ -34,6 +34,65 @@ public interface BedrockFormTexts {
     String DELETE_CONTENT = "bedrock.manage.delete.content";
     String DELETE_CONFIRM = "bedrock.manage.delete.confirm";
     String DELETE_CANCEL = "bedrock.manage.delete.cancel";
+    String NAME_INPUT_TITLE = "bedrock.manage.name_input.title";
+    String NAME_INPUT_CONTENT = "bedrock.manage.name_input.content";
+    String NAME_INPUT_PLACEHOLDER = "bedrock.manage.name_input.placeholder";
+    String NAME_INPUT_SUBMIT = "bedrock.manage.name_input.submit";
+    String CHOICE_INPUT = "bedrock.manage.choice.input";
+    String RULE_LIST_TITLE = "bedrock.manage.rule_list.title";
+    String RULE_LIST_CONTENT = "bedrock.manage.rule_list.content";
+    String RULE_CONFIRM_TITLE = "bedrock.manage.rule_confirm.title";
+    String RULE_CONFIRM_CONTENT = "bedrock.manage.rule_confirm.content";
+    String RULE_ALLOW = "bedrock.manage.rule_confirm.allow";
+    String RULE_DENY = "bedrock.manage.rule_confirm.deny";
+    String RULE_INHERIT = "bedrock.manage.rule_confirm.inherit";
+    String RULE_CANCEL = "bedrock.manage.rule_confirm.cancel";
+    String PERMISSION_CONFIRM_TITLE = "bedrock.manage.permission_confirm.title";
+    String PERMISSION_CONFIRM_CONTENT = "bedrock.manage.permission_confirm.content";
+    String CONFIRM_OK = "bedrock.manage.confirm.ok";
+    String CONFIRM_CANCEL = "bedrock.manage.confirm.cancel";
+    String SUBLAND_TITLE = "bedrock.manage.subland.title";
+    String SUBLAND_CONTENT = "bedrock.manage.subland.content";
+    String SUBLAND_SELECT = "bedrock.manage.subland.select";
+    String SUBLAND_CREATE = "bedrock.manage.subland.create";
+    String SUBLAND_UPDATE = "bedrock.manage.subland.update";
+    String SUBLAND_DELETE = "bedrock.manage.subland.delete";
+    String SUBLAND_EXTEND = "bedrock.manage.subland.extend";
+    String SUBLAND_EMPTY_TITLE = "bedrock.manage.subland.empty_title";
+    String SUBLAND_EMPTY_CONTENT = "bedrock.manage.subland.empty_content";
+    String GROUP_TITLE = "bedrock.manage.group.title";
+    String GROUP_CONTENT = "bedrock.manage.group.content";
+    String GROUP_CREATE = "bedrock.manage.group.create";
+    String GROUP_LIST = "bedrock.manage.group.list";
+    String GROUP_ADD = "bedrock.manage.group.add";
+    String GROUP_REMOVE = "bedrock.manage.group.remove";
+    String GROUP_DELETE = "bedrock.manage.group.delete";
+    String GROUP_MEMBER_TITLE = "bedrock.manage.group_member.title";
+    String GROUP_MEMBER_CONTENT = "bedrock.manage.group_member.content";
+    String GROUP_MEMBER_GROUP_PLACEHOLDER = "bedrock.manage.group_member.group_placeholder";
+    String GROUP_MEMBER_PLAYER_PLACEHOLDER = "bedrock.manage.group_member.player_placeholder";
+    String GROUP_MEMBER_SUBMIT = "bedrock.manage.group_member.submit";
+    String PROFILE_TITLE = "bedrock.manage.profile.title";
+    String PROFILE_CONTENT = "bedrock.manage.profile.content";
+    String PROFILE_CREATE = "bedrock.manage.profile.create";
+    String PROFILE_LIST = "bedrock.manage.profile.list";
+    String PROFILE_SET = "bedrock.manage.profile.set";
+    String PROFILE_DELETE = "bedrock.manage.profile.delete";
+    String PROFILE_SET_TITLE = "bedrock.manage.profile_set.title";
+    String PROFILE_SET_CONTENT = "bedrock.manage.profile_set.content";
+    String PROFILE_SET_PROFILE_PLACEHOLDER = "bedrock.manage.profile_set.profile_placeholder";
+    String PROFILE_SET_ACTION_LABEL = "bedrock.manage.profile_set.action_label";
+    String PROFILE_SET_STATE_LABEL = "bedrock.manage.profile_set.state_label";
+    String PROFILE_SET_SUBMIT = "bedrock.manage.profile_set.submit";
+    String DELETE_CHOICE_TITLE = "bedrock.manage.delete_choice.title";
+    String DELETE_CHOICE_CONTENT = "bedrock.manage.delete_choice.content";
+    String DELETE_NOW = "bedrock.manage.delete_choice.delete";
+    String FORCE_DELETE = "bedrock.manage.delete_choice.force_delete";
+    String DELETE_KEEP = "bedrock.manage.delete_choice.keep";
+    String ERROR_TITLE = "bedrock.manage.error.title";
+    String ERROR_CONTENT = "bedrock.manage.error.content";
+    String PAGER_PREV = "bedrock.manage.pager.prev";
+    String PAGER_NEXT = "bedrock.manage.pager.next";
 
     /** Shared with the Java management GUI so both screens read alike. */
     String BACK = "gui.manage.details.back_name";
@@ -88,19 +147,93 @@ public interface BedrockFormTexts {
                 Map.entry(MENU_PREFIX + "explain", "Explain"),
                 Map.entry(MENU_PREFIX + "delete", "Delete land"),
                 Map.entry(TRUST_TITLE, "Trust members"),
-                Map.entry(TRUST_CONTENT, "Choose an action. Offline players: use chat instead."),
+                Map.entry(TRUST_CONTENT, "Choose an action, or enter a name below. "
+                        + "Offline players: use the name entry in the form."),
                 Map.entry(TRUST_ADD, "Trust player"),
                 Map.entry(TRUST_REMOVE, "Untrust player"),
                 Map.entry(BAN_TITLE, "Ban management"),
-                Map.entry(BAN_CONTENT, "Choose an action. Offline players: use chat instead."),
+                Map.entry(BAN_CONTENT, "Choose an action, or enter a name below. "
+                        + "Offline players: use the name entry in the form."),
                 Map.entry(BAN_ADD, "Ban player"),
                 Map.entry(BAN_REMOVE, "Unban player"),
                 Map.entry(CHOICE_TITLE, "<value> - choose player"),
-                Map.entry(CHOICE_CONTENT, "Choose a player for <value>. "
-                        + "Offline players: use the chat command instead."),
+                Map.entry(CHOICE_CONTENT, "Choose a player for <value>, "
+                        + "or enter a name for offline players."),
                 Map.entry(CHOICE_EMPTY_TITLE, "<value> - no players online"),
                 Map.entry(CHOICE_EMPTY_CONTENT, "No online players right now. "
-                        + "For offline players, use the chat command instead."),
+                        + "Use the name entry instead; it also finds offline players."),
+                Map.entry(CHOICE_INPUT, "Enter a name"),
+                Map.entry(NAME_INPUT_TITLE, "<action> - enter name"),
+                Map.entry(NAME_INPUT_CONTENT, "Type the player name for <action>. "
+                        + "Known offline names work; unknown names are refused."),
+                Map.entry(NAME_INPUT_PLACEHOLDER, "Player name"),
+                Map.entry(NAME_INPUT_SUBMIT, "Submit"),
+                Map.entry(RULE_LIST_TITLE, "Land rules (page <page>/<pages>)"),
+                Map.entry(RULE_LIST_CONTENT, "Choose a rule to change. "
+                        + "Page <page> of <pages>."),
+                Map.entry(RULE_CONFIRM_TITLE, "Rule: <rule>"),
+                Map.entry(RULE_CONFIRM_CONTENT, "Rule <rule>: now <explicit> "
+                        + "(effective <effective> from <source>). Choose the new value."),
+                Map.entry(RULE_ALLOW, "Allow"),
+                Map.entry(RULE_DENY, "Deny"),
+                Map.entry(RULE_INHERIT, "Inherit"),
+                Map.entry(RULE_CANCEL, "Cancel"),
+                Map.entry(PERMISSION_CONFIRM_TITLE, "Permission: <action>"),
+                Map.entry(PERMISSION_CONFIRM_CONTENT, "Change <action> "
+                        + "from <current> to <target>?"),
+                Map.entry(CONFIRM_OK, "Confirm"),
+                Map.entry(CONFIRM_CANCEL, "Cancel"),
+                Map.entry(SUBLAND_TITLE, "SubLands"),
+                Map.entry(SUBLAND_CONTENT, "Choose a SubLand step. "
+                        + "Creation needs an active selection first."),
+                Map.entry(SUBLAND_SELECT, "Start selection here"),
+                Map.entry(SUBLAND_CREATE, "Create SubLand"),
+                Map.entry(SUBLAND_UPDATE, "Update SubLand"),
+                Map.entry(SUBLAND_DELETE, "Delete SubLand"),
+                Map.entry(SUBLAND_EXTEND, "Extend SubLand"),
+                Map.entry(SUBLAND_EMPTY_TITLE, "No active selection"),
+                Map.entry(SUBLAND_EMPTY_CONTENT, "There is no active selection "
+                        + "to work on. Start a selection first, then come back."),
+                Map.entry(GROUP_TITLE, "Groups"),
+                Map.entry(GROUP_CONTENT, "Choose a group step. "
+                        + "Groups live outside lands and outlive them."),
+                Map.entry(GROUP_CREATE, "Create group"),
+                Map.entry(GROUP_LIST, "List groups"),
+                Map.entry(GROUP_ADD, "Add member"),
+                Map.entry(GROUP_REMOVE, "Remove member"),
+                Map.entry(GROUP_DELETE, "Delete group"),
+                Map.entry(GROUP_MEMBER_TITLE, "<action> - choose group and player"),
+                Map.entry(GROUP_MEMBER_CONTENT, "Type the group and the player "
+                        + "for <action>."),
+                Map.entry(GROUP_MEMBER_GROUP_PLACEHOLDER, "Group name or id"),
+                Map.entry(GROUP_MEMBER_PLAYER_PLACEHOLDER, "Player name or id"),
+                Map.entry(GROUP_MEMBER_SUBMIT, "Submit"),
+                Map.entry(PROFILE_TITLE, "Permission profiles"),
+                Map.entry(PROFILE_CONTENT, "Choose a profile step. "
+                        + "Profiles live outside lands and outlive them."),
+                Map.entry(PROFILE_CREATE, "Create profile"),
+                Map.entry(PROFILE_LIST, "List profiles"),
+                Map.entry(PROFILE_SET, "Set profile entry"),
+                Map.entry(PROFILE_DELETE, "Delete profile"),
+                Map.entry(PROFILE_SET_TITLE, "Set profile entry"),
+                Map.entry(PROFILE_SET_CONTENT, "Type the profile, then pick "
+                        + "the permission and the new value."),
+                Map.entry(PROFILE_SET_PROFILE_PLACEHOLDER, "Profile name or id"),
+                Map.entry(PROFILE_SET_ACTION_LABEL, "Permission"),
+                Map.entry(PROFILE_SET_STATE_LABEL, "Value"),
+                Map.entry(PROFILE_SET_SUBMIT, "Submit"),
+                Map.entry(DELETE_CHOICE_TITLE, "Delete <target>?"),
+                Map.entry(DELETE_CHOICE_CONTENT, "Delete <target>? A plain "
+                        + "delete is refused while anything still uses it; "
+                        + "force delete removes those uses as well."),
+                Map.entry(DELETE_NOW, "Delete"),
+                Map.entry(FORCE_DELETE, "Delete with references"),
+                Map.entry(DELETE_KEEP, "Keep"),
+                Map.entry(ERROR_TITLE, "Something did not work"),
+                Map.entry(ERROR_CONTENT, "The step could not continue: <reason>. "
+                        + "Go back and try again."),
+                Map.entry(PAGER_PREV, "Previous"),
+                Map.entry(PAGER_NEXT, "Next"),
                 Map.entry(DELETE_TITLE, "Delete land"),
                 Map.entry(DELETE_CONTENT, "Delete land <land_name>? This cannot be undone. "
                         + "Confirming runs the usual delete prompt; finish with the "

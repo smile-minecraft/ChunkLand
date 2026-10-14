@@ -197,6 +197,7 @@ import com.smile.chunkland.selection.SelectionLandBoundaryLookup;
 import com.smile.chunkland.selection.SelectionLandContext;
 import com.smile.chunkland.selection.SelectionLandLookup;
 import com.smile.chunkland.selection.SelectionLifecycleListener;
+import com.smile.chunkland.selection.SelectionSession;
 import com.smile.chunkland.selection.SelectionSessionManager;
 import com.smile.chunkland.selection.SelectionStructureRevisionLookup;
 import com.smile.chunkland.selection.OccupiedPreviewController;
@@ -2870,7 +2871,10 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 adminBypassLookup());
         // Bedrock 管理表單分支：與 Java 共用 gate resolver 與不可變快照模型，
         // 轉交的 handlers 直接引用正式 map 的其他槽位（絕不轉交 manage 自己，
-        // 所以不會遞迴）。半接線時沒有分支，原本的 Java 路徑原樣保留。
+        // 所以不會遞迴）。名單寫入走名單控制器的原始字串入口（與 Java GUI、
+        // 聊天指令同一共用操作，含離線解析）；規則與預設確認讀各自槽位
+        // 的基線；子領地送出讀即時選區序號。半接線時沒有分支，
+        // 原本的 Java 路徑原樣保留。
         BedrockManageFormHandler bedrockManage = buildBedrockManageForms(
                 this.capabilities.orElse(null),
                 landGateResolver,
@@ -2880,14 +2884,22 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 this::listOnlinePlayerNames,
                 com.smile.chunkland.adapter.gui.BedrockFormTextProvider.over(
                         () -> this.landMessagePipeline == null
-                                ? null : this.landMessagePipeline.orElse(null)));
+                                ? null : this.landMessagePipeline.orElse(null)),
+                this.managementRoster,
+                this::buildRuleViews,
+                (actor, landId, action) -> readDefaultBaseline(landId, action)
+                        .map(LandDefaultCommandHandler.Baseline::current),
+                this::readRuleBaseline,
+                this::readBedrockSublandTokens,
+                this::rosterViewerOnline,
+                () -> this.bedrockFormNavigator != null);
         this.bedrockFormNavigator = bedrockManage == null ? null : bedrockManage.navigator();
         landHandlers.put("manage", wrapManageWithBedrock(landHandlers.get("manage"), bedrockManage));
         // Per-land environment rules behind /land rule: the handler carries
         // its own conditional mutation plus the display rows, so it slots
         // straight into the map like the selection chat verbs below. The
-        // Bedrock manage menu keeps its existing unsupported-rule branch;
-        // rule forms arrive with the later Bedrock milestone.
+        // Bedrock manage menu lists the same eleven rules with a three-state
+        // confirm and submits through this slot.
         landHandlers.put("rule", ruleHandler);
         // Chunk-edit selection slot: the chat verbs share one edit service
         // with the wand clicks, and Bedrock players get the same operations
@@ -5033,6 +5045,33 @@ public final class ChunkLandPlugin extends JavaPlugin {
             Map<String, LandCommand.Handler> handlers,
             BedrockManageFormHandler.OnlineNames onlineNames,
             BedrockManageFormHandler.TextSource texts) {
+        return buildBedrockManageForms(capabilities, gateResolver, models, handlers,
+                onlineNames, texts, null, null, null, null, null, null, null);
+    }
+
+    /**
+     * Full assembly: roster writes go through the management roster
+     * controller's raw-string entry (the same shared operation the Java GUI
+     * and the chat commands use, with offline resolution), rule and default
+     * confirms read the same baselines their slots write through, SubLand
+     * submits read live session tokens, and every submit re-checks presence
+     * plus enable liveness. Any {@code null} flow seam fails its own flow
+     * closed; a {@code null} presence or liveness denies every submit.
+     */
+    static BedrockManageFormHandler buildBedrockManageForms(
+            Capabilities capabilities,
+            ManagementGateResolver gateResolver,
+            BedrockManageFormHandler.ModelSource models,
+            Map<String, LandCommand.Handler> handlers,
+            BedrockManageFormHandler.OnlineNames onlineNames,
+            BedrockManageFormHandler.TextSource texts,
+            com.smile.chunkland.adapter.gui.ManagementRosterController roster,
+            BedrockManageFormHandler.RuleViews ruleViews,
+            BedrockManageFormHandler.DefaultBaseline defaultBaseline,
+            BedrockManageFormHandler.RuleBaseline ruleBaseline,
+            BedrockManageFormHandler.SublandTokensSource sublandTokens,
+            BedrockManageFormHandler.Presence presence,
+            java.util.function.BooleanSupplier alive) {
         if (capabilities == null || gateResolver == null || models == null
                 || handlers == null || onlineNames == null) {
             return null;
@@ -5061,7 +5100,43 @@ public final class ChunkLandPlugin extends JavaPlugin {
                 navigator,
                 onlineNames,
                 scheduler,
-                texts);
+                texts,
+                roster,
+                ruleViews,
+                defaultBaseline,
+                ruleBaseline,
+                sublandTokens,
+                presence,
+                alive);
+    }
+
+    /**
+     * Bedrock 子領地送出的即時選區序號：送出當下重讀玩家自己的 live
+     * session，序號過期或根本沒有選區就回空，呼叫端呈現空頁而不寫入。
+     * 序號只在送出時讀取，表單本身不暫存、不猜測。
+     */
+    private Optional<BedrockManageFormHandler.SublandTokens> readBedrockSublandTokens(
+            UUID actor) {
+        SelectionSessionManager selections = this.selectionSessionManager;
+        if (actor == null || selections == null) {
+            return Optional.empty();
+        }
+        final Optional<SelectionSession> live;
+        try {
+            live = selections.sessionFor(actor);
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
+        if (live == null || live.isEmpty() || live.get() == null) {
+            return Optional.empty();
+        }
+        try {
+            SelectionSession session = live.get();
+            return Optional.of(new BedrockManageFormHandler.SublandTokens(
+                    session.sessionGeneration(), session.selectionRevision()));
+        } catch (RuntimeException unresolved) {
+            return Optional.empty();
+        }
     }
 
     /**

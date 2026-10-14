@@ -24,6 +24,7 @@ import com.smile.chunkland.api.permission.ProtectionActionType;
 import com.smile.chunkland.gui.BedrockFormNavigator;
 import com.smile.chunkland.gui.BedrockManageForms;
 import com.smile.chunkland.gui.ManagementGuiModel;
+import com.smile.chunkland.gui.ManagementRosterPages;
 import com.smile.chunkland.protection.ManagementPermissionGate;
 import com.smile.chunkland.protection.PermissionExplain;
 import com.smile.chunkland.protection.PermissionExplainLayer;
@@ -209,10 +210,26 @@ class BedrockManageFormHandlerTest {
     private static Map<String, RecordingHandler> handlers() {
         Map<String, RecordingHandler> recorders = new HashMap<>();
         for (String slot : List.of("trust", "untrust", "ban", "unban", "inspect",
-                "explain", "delete", "binding", "default")) {
+                "explain", "delete", "binding", "default", "rule", "group",
+                "profile", "subland")) {
             recorders.put(slot, new RecordingHandler());
         }
         return recorders;
+    }
+
+    /** 名單共用操作的測試替身：記錄原始字串送出，不做解析。 */
+    static final class RecordingRoster implements BedrockManageFormHandler.RosterSubmit {
+        record Call(UUID viewer, LandId landId, ManagementRosterPages.Kind kind, boolean add,
+                String raw) {
+        }
+
+        final List<Call> calls = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void addByReference(UUID viewer, LandId landId, ManagementRosterPages.Kind kind,
+                boolean add, String raw) {
+            calls.add(new Call(viewer, landId, kind, add, raw));
+        }
     }
 
     private static Map<String, LandCommand.Handler> handlerMap(Map<String, RecordingHandler> recorders) {
@@ -225,8 +242,8 @@ class BedrockManageFormHandlerTest {
             ManagementGateResolver resolver, BedrockManageFormHandler.ModelSource models,
             Map<String, RecordingHandler> recorders, FakeSender sender,
             com.smile.acelib.scheduler.SafeScheduler scheduler) {
-        return new BedrockManageFormHandler(lookup, resolver, models, handlerMap(recorders),
-                new BedrockFormNavigator(sender), List::of, scheduler);
+        return handler(lookup, resolver, models, recorders, sender, scheduler,
+                List::of, new RecordingRoster());
     }
 
     private static BedrockManageFormHandler handler(FakeLookup lookup,
@@ -234,8 +251,18 @@ class BedrockManageFormHandlerTest {
             Map<String, RecordingHandler> recorders, FakeSender sender,
             com.smile.acelib.scheduler.SafeScheduler scheduler,
             BedrockManageFormHandler.OnlineNames names) {
+        return handler(lookup, resolver, models, recorders, sender, scheduler, names,
+                new RecordingRoster());
+    }
+
+    private static BedrockManageFormHandler handler(FakeLookup lookup,
+            ManagementGateResolver resolver, BedrockManageFormHandler.ModelSource models,
+            Map<String, RecordingHandler> recorders, FakeSender sender,
+            com.smile.acelib.scheduler.SafeScheduler scheduler,
+            BedrockManageFormHandler.OnlineNames names, RecordingRoster roster) {
         return new BedrockManageFormHandler(lookup, resolver, models, handlerMap(recorders),
-                new BedrockFormNavigator(sender), names, scheduler);
+                new BedrockFormNavigator(sender), names, scheduler, null, roster, null, null,
+                null, null, viewer -> true, () -> true);
     }
 
     private static ManagementGateResolver fixed(ManagementGateResolver.Request request) {
@@ -297,7 +324,7 @@ class BedrockManageFormHandlerTest {
 
         assertTrue(tookOver, "unknown player kind still takes over fail-closed");
         assertEquals(0, sender.sends.get());
-        assertEquals(List.of("command.land.manage.denied"), sink.keys);
+        assertEquals(List.of("command.land.manage.bedrock.forms_unavailable"), sink.keys);
     }
 
     @Test
@@ -366,7 +393,8 @@ class BedrockManageFormHandlerTest {
 
             assertTrue(tookOver);
             assertEquals(0, totalHandlerCalls(recorders), "mode " + mode + " touches no mutation");
-            assertEquals(List.of("command.land.manage.denied"), sink.keys, "mode " + mode);
+            assertEquals(List.of("command.land.manage.bedrock.forms_unavailable"), sink.keys,
+                    "mode " + mode + " names the forms outage instead of a bare denial");
         }
     }
 
@@ -421,7 +449,8 @@ class BedrockManageFormHandlerTest {
         BedrockFormNavigator navigator = new BedrockFormNavigator(sender);
         new BedrockManageFormHandler(lookup, fixed(ownerRequest()),
                 (actor, landId) -> twoRowModel(), handlerMap(recorders), navigator,
-                List::of, new BedrockClaimFormHandlerTest.ImmediateScheduler())
+                List::of, new BedrockClaimFormHandlerTest.ImmediateScheduler(), null,
+                new RecordingRoster(), null, null, null, null, viewer -> true, () -> true)
                 .handle(player(OWNER), new String[] {"manage"}, sink);
 
         long live = navigator.currentGeneration(OWNER).orElseThrow();
@@ -494,7 +523,7 @@ class BedrockManageFormHandlerTest {
                 new BedrockClaimFormHandlerTest.ImmediateScheduler())
                 .handle(player(OWNER), new String[] {"manage"}, sink);
 
-        sender.fire(valid(rootIndexOf(BedrockManageForms.Capability.BASIC_PERMISSION)));
+        sender.fire(valid(rootIndexOf(BedrockManageForms.Capability.EXPLAIN)));
         String rowAction = twoRowModel().rows().get(0).action().name();
         sender.fire(valid(0));
 
@@ -551,19 +580,25 @@ class BedrockManageFormHandlerTest {
         FakeSender sender = new FakeSender();
         Map<String, RecordingHandler> recorders = handlers();
         RecordingSink sink = new RecordingSink();
+        RecordingRoster roster = new RecordingRoster();
         handler(lookup, fixed(ownerRequest()),
                 (actor, landId) -> twoRowModel(), recorders, sender,
                 new BedrockClaimFormHandlerTest.ImmediateScheduler(),
-                () -> List.of("Alice", "Bob"))
+                () -> List.of("Alice", "Bob"), roster)
                 .handle(player(OWNER), new String[] {"manage"}, sink);
 
         sender.fire(valid(rootIndexOf(BedrockManageForms.Capability.TRUST_UNTRUST)));
         sender.fire(valid(1));
         sender.fire(valid(1));
 
-        assertEquals(1, recorders.get("untrust").calls.get());
-        assertArrayEquals(new String[] {"untrust", "Bob"}, recorders.get("untrust").lastArgs);
+        assertEquals(1, roster.calls.size());
+        RecordingRoster.Call call = roster.calls.get(0);
+        assertEquals(ManagementRosterPages.Kind.MEMBERS, call.kind());
+        assertFalse(call.add(), "the second mode button is untrust");
+        assertEquals("Bob", call.raw());
         assertEquals(0, recorders.get("trust").calls.get());
+        assertEquals(0, recorders.get("untrust").calls.get(),
+                "roster writes go through the shared controller, not the chat slots");
     }
 
     @Test
@@ -573,18 +608,23 @@ class BedrockManageFormHandlerTest {
         FakeSender sender = new FakeSender();
         Map<String, RecordingHandler> recorders = handlers();
         RecordingSink sink = new RecordingSink();
+        RecordingRoster roster = new RecordingRoster();
         handler(lookup, fixed(ownerRequest()),
                 (actor, landId) -> twoRowModel(), recorders, sender,
                 new BedrockClaimFormHandlerTest.ImmediateScheduler(),
-                () -> List.of("Alice"))
+                () -> List.of("Alice"), roster)
                 .handle(player(OWNER), new String[] {"manage"}, sink);
 
         sender.fire(valid(rootIndexOf(BedrockManageForms.Capability.BAN_UNBAN)));
         sender.fire(valid(0));
         sender.fire(valid(0));
 
-        assertEquals(1, recorders.get("ban").calls.get());
-        assertArrayEquals(new String[] {"ban", "Alice"}, recorders.get("ban").lastArgs);
+        assertEquals(1, roster.calls.size());
+        RecordingRoster.Call call = roster.calls.get(0);
+        assertEquals(ManagementRosterPages.Kind.BANS, call.kind());
+        assertTrue(call.add(), "the first mode button is ban");
+        assertEquals("Alice", call.raw());
+        assertEquals(0, recorders.get("ban").calls.get());
     }
 
     // ------------------------------------------------------------------
@@ -649,10 +689,10 @@ class BedrockManageFormHandlerTest {
 
     private static void openTrustFlowToChoice(FakeLookup lookup, ManagementGateResolver resolver,
             Map<String, RecordingHandler> recorders, FakeSender sender, RecordingSink sink,
-            Player player, List<String> names) {
+            Player player, List<String> names, RecordingRoster roster) {
         handler(lookup, resolver,
                 (actor, landId) -> twoRowModel(), recorders, sender,
-                new BedrockClaimFormHandlerTest.ImmediateScheduler(), () -> names)
+                new BedrockClaimFormHandlerTest.ImmediateScheduler(), () -> names, roster)
                 .handle(player, new String[] {"manage"}, sink);
 
         assertEquals(1, sender.sends.get(), "the opener passes the open gate and sees the menu");
@@ -687,11 +727,14 @@ class BedrockManageFormHandlerTest {
         FakeSender sender = new FakeSender();
         Map<String, RecordingHandler> recorders = handlers();
         RecordingSink sink = new RecordingSink();
+        RecordingRoster roster = new RecordingRoster();
         openTrustFlowToChoice(lookup, fixed(pinned), recorders, sender, sink,
-                player(member), List.of("Alice"));
+                player(member), List.of("Alice"), roster);
 
         assertEquals(0, recorders.get("trust").calls.get(),
                 "submit-time member gate must block the trust mutation");
+        assertTrue(roster.calls.isEmpty(),
+                "the denied submit never reaches the shared roster entry");
         assertEquals(List.of("command.land.manage.denied"), sink.keys);
     }
 
@@ -703,12 +746,14 @@ class BedrockManageFormHandlerTest {
         FakeSender sender = new FakeSender();
         Map<String, RecordingHandler> recorders = handlers();
         RecordingSink sink = new RecordingSink();
+        RecordingRoster roster = new RecordingRoster();
         Player player = playerWithNodes(pinned.actor(), Set.of(LandPermissions.MANAGE));
         openTrustFlowToChoice(lookup, fixed(pinned), recorders, sender, sink,
-                player, List.of("Alice"));
+                player, List.of("Alice"), roster);
 
         assertEquals(0, recorders.get("trust").calls.get(),
                 "the trust Bukkit node is required at submit time, like the chat path");
+        assertTrue(roster.calls.isEmpty());
         assertEquals(List.of("command.land.manage.denied"), sink.keys);
     }
 
@@ -731,11 +776,13 @@ class BedrockManageFormHandlerTest {
         FakeSender sender = new FakeSender();
         Map<String, RecordingHandler> recorders = handlers();
         RecordingSink sink = new RecordingSink();
+        RecordingRoster roster = new RecordingRoster();
         openTrustFlowToChoice(lookup, moving, recorders, sender, sink,
-                player(OWNER), List.of("Alice"));
+                player(OWNER), List.of("Alice"), roster);
 
         assertEquals(0, recorders.get("trust").calls.get(),
                 "a submit after moving must not re-adjudicate onto the new land");
+        assertTrue(roster.calls.isEmpty());
         assertEquals(0, totalHandlerCalls(recorders),
                 "no management slot may run once the standing land leaves the pinned target");
         assertEquals(List.of("command.land.manage.denied"), sink.keys);
@@ -744,10 +791,6 @@ class BedrockManageFormHandlerTest {
     @Test
     void downgradeCapabilitiesReplyExplicitlyWithoutClaimingSuccess() {
         for (BedrockManageForms.Capability capability : List.of(
-                BedrockManageForms.Capability.SUBLAND,
-                BedrockManageForms.Capability.GROUP,
-                BedrockManageForms.Capability.PROFILE,
-                BedrockManageForms.Capability.LAND_RULE,
                 BedrockManageForms.Capability.CLAIM,
                 BedrockManageForms.Capability.EXPAND,
                 BedrockManageForms.Capability.SHRINK)) {
@@ -767,6 +810,36 @@ class BedrockManageFormHandlerTest {
                     capability + " must not touch any mutation through the menu");
             assertEquals(List.of("command.land.manage.bedrock.unsupported"), sink.keys,
                     capability + " replies its downgrade explicitly");
+        }
+    }
+
+    @Test
+    void completedCapabilitiesOpenRealFormsInsteadOfDowngrades() {
+        for (BedrockManageForms.Capability capability : List.of(
+                BedrockManageForms.Capability.SUBLAND,
+                BedrockManageForms.Capability.GROUP,
+                BedrockManageForms.Capability.PROFILE,
+                BedrockManageForms.Capability.LAND_RULE)) {
+            FakeLookup lookup = new FakeLookup();
+            lookup.bedrock = true;
+            FakeSender sender = new FakeSender();
+            Map<String, RecordingHandler> recorders = handlers();
+            RecordingSink sink = new RecordingSink();
+            handler(lookup, fixed(ownerRequest()),
+                    (actor, landId) -> twoRowModel(), recorders, sender,
+                    new BedrockClaimFormHandlerTest.ImmediateScheduler())
+                    .handle(player(OWNER), new String[] {"manage"}, sink);
+
+            long sendsBefore = sender.sends.get();
+            sender.fire(valid(rootIndexOf(capability)));
+
+            assertTrue(sender.sends.get() > sendsBefore,
+                    capability + " must open a real form, not a downgrade notice");
+            assertTrue(sink.keys.stream().noneMatch(
+                    key -> key.equals("command.land.manage.bedrock.unsupported")),
+                    capability + " never replies its old downgrade: " + sink.keys);
+            assertEquals(0, totalHandlerCalls(recorders),
+                    capability + " opens without touching any mutation");
         }
     }
 

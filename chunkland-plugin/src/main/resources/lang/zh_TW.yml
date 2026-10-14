@@ -209,6 +209,7 @@ command:
       denied: "<red>無法開啟管理介面：請站在你可以管理的領地內再試一次。</red>"
       bedrock:
         unsupported: "<yellow>這個步驟尚無 Bedrock 表單。請改用聊天指令 /land <subcommand>。</yellow>"
+        forms_unavailable: "<yellow>Bedrock 表單目前無法使用（<reason>）。請改用聊天指令 /land <subcommand>。</yellow>"
     bypass:
       console: "<red>只有玩家可以切換管理員豁免。</red>"
       usage: "<yellow>用法：/land bypass [on|off]</yellow>"
@@ -790,19 +791,91 @@ bedrock:
       delete: "刪除領地"
     trust:
       title: "成員管理"
-      content: "請選擇動作。離線玩家請改用聊天指令。"
+      content: "請選擇動作，或在下方輸入名稱。離線玩家請用表單的名稱輸入。"
       add: "信任玩家"
       remove: "取消信任"
     ban:
       title: "封鎖名單"
-      content: "請選擇動作。離線玩家請改用聊天指令。"
+      content: "請選擇動作，或在下方輸入名稱。離線玩家請用表單的名稱輸入。"
       add: "封鎖玩家"
       remove: "解除封鎖"
     choice:
       title: "<value>：選擇玩家"
-      content: "請選擇要「<value>」的玩家。離線玩家請改用聊天指令。"
+      content: "請選擇要「<value>」的玩家，離線玩家請用名稱輸入。"
       empty_title: "<value>：沒有線上玩家"
-      empty_content: "目前沒有其他線上玩家。離線玩家請改用聊天指令。"
+      empty_content: "目前沒有其他線上玩家。請用名稱輸入繼續，離線玩家也找得到。"
+      input: "輸入名稱"
+    name_input:
+      title: "<action>：輸入名稱"
+      content: "請輸入要「<action>」的玩家名稱。已知的離線名稱可用，未知的名稱會被拒絕。"
+      placeholder: "玩家名稱"
+      submit: "送出"
+    rule_list:
+      title: "領地規則（第 <page>/<pages> 頁）"
+      content: "請選擇要變更的規則。第 <page> 頁，共 <pages> 頁。"
+    rule_confirm:
+      title: "規則：<rule>"
+      content: "規則 <rule>：目前為 <explicit>（實際生效 <effective>，來源 <source>）。請選擇新的值。"
+      allow: "允許"
+      deny: "拒絕"
+      inherit: "繼承"
+      cancel: "取消"
+    permission_confirm:
+      title: "權限：<action>"
+      content: "要把 <action> 從 <current> 改成 <target> 嗎？"
+    confirm:
+      ok: "確認"
+      cancel: "取消"
+    subland:
+      title: "子領地"
+      content: "請選擇子領地操作。建立需要先有有效的選區。"
+      select: "從這裡開始選取"
+      create: "建立子領地"
+      update: "更新子領地"
+      delete: "刪除子領地"
+      extend: "擴張子領地"
+      empty_title: "沒有有效的選區"
+      empty_content: "目前沒有可以使用的選區。請先開始選取，再回來繼續。"
+    group:
+      title: "群組"
+      content: "請選擇群組操作。群組獨立於領地存在，不會隨領地消失。"
+      create: "建立群組"
+      list: "列出群組"
+      add: "加入成員"
+      remove: "移除成員"
+      delete: "刪除群組"
+    group_member:
+      title: "<action>：選擇群組與玩家"
+      content: "請輸入要「<action>」的群組與玩家。"
+      group_placeholder: "群組名稱或編號"
+      player_placeholder: "玩家名稱或編號"
+      submit: "送出"
+    profile:
+      title: "權限組合"
+      content: "請選擇權限組合操作。權限組合獨立於領地存在，不會隨領地消失。"
+      create: "建立權限組合"
+      list: "列出權限組合"
+      set: "設定組合內容"
+      delete: "刪除權限組合"
+    profile_set:
+      title: "設定組合內容"
+      content: "請輸入權限組合，再選擇權限與新的值。"
+      profile_placeholder: "權限組合名稱或編號"
+      action_label: "權限"
+      state_label: "值"
+      submit: "送出"
+    delete_choice:
+      title: "刪除 <target>？"
+      content: "確定要刪除 <target> 嗎？一般刪除在仍有引用時會被拒絕；強制刪除會一併移除那些引用。"
+      delete: "刪除"
+      force_delete: "一併刪除引用"
+      keep: "保留"
+    error:
+      title: "操作沒有完成"
+      content: "這個步驟無法繼續：<reason>。請返回重試。"
+    pager:
+      prev: "上一頁"
+      next: "下一頁"
     delete:
       title: "刪除領地"
       content: "確定要刪除領地「<land_name>」嗎？刪除後無法復原。確認後會顯示刪除提示，請依聊天欄的指示完成最後一步。"
